@@ -89,8 +89,8 @@ export function signRequest(statement: RequestStatement, privateKeyPem: string, 
 
 /**
  * The key half of the requester check: the id is on the contract's allowlist and the key handed in is that entry's own.
- * Undefined when both hold. It does not judge the environment: seal, propose-cleanup, propose-removal and the GCP_API engine's
- * seal call `requesterRefusal`, which does.
+ * Undefined when both hold. It does not judge the environment: seal, propose-cleanup and propose-removal call `requesterRefusal`,
+ * which does. The GCP_API engine never checks a requester itself: the driver's seal and apply do (docs/act-pilot-gcp-api-driver.md, D2).
  */
 export function requesterKeyRefusal(contract: PilotContract, requesterId: string, privateKeyPem: string): { ok: false; code: "REQUESTER_NOT_ALLOWED" | "REQUESTER_KEY_MISMATCH"; message: string } | undefined {
   const entry = contract.approvers.find((a) => a.id === requesterId);

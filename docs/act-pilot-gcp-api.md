@@ -1,226 +1,413 @@
 # ACT pilot path 6: GCP API-native provisioning (`GCP_API`)
 
-Status: engineering only. **ACT = DISABLED**, the repository ships no pilot contract (the contract's `authorize` entry is the switch; there is no pin), and nothing in this path has run against Google Cloud. All evidence is **SYNTHETIC**. The engine is not admitted: `src/apply/contract.ts` names GCP API-native only as a planned path, so admission refuses a contract that names it with `NOT_IMPLEMENTED`, and nothing in the product can reach the engine. The authorization lane admits it later, under the same gates as every path.
+Status: engineering only. **ACT = DISABLED.** The repository ships no pilot contract: the contract's `authorize` entry is the switch, and there is no pin. Nothing in this path has run against Google Cloud. All evidence is **SYNTHETIC** or **EMULATED**.
 
-Owner decision 6443352284 names six paths for the narrow ACT-DEV release. The coordinator default in 6443800275 picks the engine for path 6: a small typed request engine, chosen over Infrastructure Manager, which is Terraform underneath and would duplicate path 5.
+The engine is **not registered**. `GCP_API` is not in `SPECS` (`src/apply/engine-spec.ts`), and it stays in `PLANNED_PATHS` (`src/apply/contract.ts`). So admission refuses a contract that names it, with `NOT_IMPLEMENTED`, and nothing in the product can reach the spec. Registering it is INT-2's change ("What INT-2 must add" below).
 
-- Code: `src/apply/engines/gcp-api.ts`
-- Tests: `test/apply-gcp-api.test.ts`
+- **Design:** `docs/act-pilot-gcp-api-driver.md` (D1 to D20). The owner accepted D4, D9, D11, D12 and D16 on #39 (6483366237).
+- **Code:** `src/apply/engines/gcp-api.ts` (lane G2). The shared prerequisites came from INT-5 (#356):
+  - the target shape, `src/apply/gcp-api-target.ts`;
+  - the GCP_API unit, `src/apply/unit.ts`;
+  - the blueprint mapper, `blueprintFromGcpApiTopic` in `src/observe/blueprint.ts`;
+  - the one token exchange, `src/tools/gcp-credentials.ts`.
+- **Tests:**
+  - `test/apply-gcp-api.test.ts` (SYNTHETIC; in-memory emulator);
+  - `test/apply-emulated-gcp-api.test.ts` (EMULATED; loopback emulator);
+  - the emulator itself: `test/helpers/gcp-api-emulator.ts`.
+- **Typed-request example:** `qualification/gcp/act-dev1-canary-api/request.json`.
 
-## Minimal workload
+## What the engine is
 
-The workload is one labeled Pub/Sub topic in the DEV project. Pub/Sub topic (`PUBSUB_TOPIC`) is the only kind the engine allows. Any other kind is refused as `KIND_NOT_ALLOWED`, at seal and again at apply.
+Path 6 is one more `EngineSpec` on the shared pilot driver (`src/apply/driver.ts`). The driver owns everything that is not specific to this engine:
 
-## The request document and the sealed plan
+- the contract, the kill switch, the target and its hash;
+- the requester signature (D2) and the approvals;
+- the once-only ledger (D3) and the evidence;
+- the blueprint, the independent observation and the cleanup proposal.
 
-The requester supplies exactly four fields:
+The engine owns:
+
+- the typed request check;
+- the derived REST calls;
+- the network gate;
+- the workload identity federation token exchange, through the shared one (D20);
+- its own reads of the run's topic.
+
+**What was removed (D19).** These are gone from the engine:
+
+- the five standalone functions of #303 (`sealGcpApiPlan`, `verifyGcpApiPlan`, `applyGcpApiPlan`, `observeGcpApiPlan`, `cleanupGcpApiPlan`);
+- its own requester signature, ledger, target, kill switch and `sealNonce`;
+- its per-call evidence.
+
+The engine writes no file. Tokens live in memory for one call.
+
+The workload is exactly one Pub/Sub topic. It is created once, with the run's unit labels and the contract region's storage policy.
+
+## The request, the target and the name
+
+**The request (D7)** is the project's one file, `request.json`:
 
 ```json
-{ "kind": "PUBSUB_TOPIC", "projectId": "<DEV project>", "topicId": "alz-<name>",
-  "labels": { "alz-managed-by": "alz", "alz-unit": "alzu-<20 hex>", "alz-build": "<build id>" } }
+{ "schemaVersion": 1, "kind": "PUBSUB_TOPIC" }
 ```
 
-Each field is checked as follows.
+| Refusal | When |
+|---|---|
+| `FIELD_NOT_ALLOWED` | any other key |
+| `KIND_NOT_ALLOWED` | any other kind |
+| `REQUEST_INVALID` | any other schema version, or not a JSON object |
+| `PROJECT_NOT_ALLOWED` | the project holds any other file |
+| `ENGINE_VERSION_NOT_SUPPORTED` | the manifest's engine version is not `gcp-api-1` |
 
-| Field | Rule | Refusal |
+**Everything else is derived.** The requester cannot ask for anything the contract does not already say.
+
+**The target (D9)** is the shared `GCP_API_TARGET`. It holds:
+
+- `projectId` and `region` (the GCP provider's account fields);
+- `parent`, which is optional;
+- `backend`, exactly `GCP_API_NO_STATE`;
+- `workspace`, exactly `default`;
+- `topicPrefix`, matching `^alz-[a-z0-9-]{1,40}-$`;
+- `canary`.
+
+The engine checks the target again, and refuses a mismatch as `TARGET_NOT_IN_CONTRACT`. `parent` is never read. Wherever this path shows it, it is labeled **owner-declared, not observed**.
+
+**The name (D4, D10).** At seal, the engine draws 6 random bytes. The topic id is `topicPrefix` followed by those 12 hex characters.
+
+- The suffix is inside the artifact, so each approver signs one exact topic.
+- `rederive` takes the suffix from the sealed artifact. Nothing on apply, retry or cleanup draws a new one.
+- A new seal is a new name.
+
+**The unit (D10)** is the product's, from `pilotUnitOf` with engine `GCP_API`: one unit per contract target. The labels are exactly its three tags: `alz-managed-by` = `alz`, `alz-unit`, and `alz-build`.
+
+## The artifact and what approvers see (D7, D13)
+
+The sealed artifact is the canonical JSON of the derived values and the exact three calls:
+
+```text
+{ schemaVersion: 1, kind: "GCP_API_PUBSUB_TOPIC", projectId, topicId, labels,
+  messageStoragePolicy: { allowedPersistenceRegions: [region] }, precondition: "ABSENT",
+  create:   { method: "PUT",    url: "https://pubsub.googleapis.com/v1/projects/<p>/topics/<t>", body: { labels, messageStoragePolicy } },
+  readBack: { method: "GET",    url: <same> },
+  cleanup:  { method: "DELETE", url: <same> } }
+```
+
+**The change list is one line:** `google_pubsub_topic.<full topic id>`, type `google_pubsub_topic`, action `CREATE`.
+
+**The canary (D8).** The canary judge runs at seal and again in `rederive`. The owner's entry must be exactly `{ "type": "google_pubsub_topic", "count": 1 }`. `canaryTypeOk` accepts that one type and nothing else: no wildcard, no pattern, no Cloud Asset name.
+
+**Re-derivation.** `rederive` derives every byte again from the contract target, the run's unit and the sealed suffix. Anything not byte-identical is `ARTIFACT_TAMPERED`, for example:
+
+- another URL, method, body field, label or storage policy;
+- an extra call;
+- a topic outside the prefix.
+
+A plan renamed consistently to another suffix derives its own change list. The driver's comparison with the sealed change list refuses it.
+
+**What the preview proves (D13).**
+
+1. The request is the allowlisted kind with no other field, and every derived value comes from the reviewed contract.
+2. The change is one `CREATE` of `google_pubsub_topic`, within the canary.
+3. Under DISCOVERY, the exact topic reads absent (`GET` gives 404), and the unit sweep is complete and empty.
+4. Both identities are configured, separate and of the target project. DISCOVERY's token was minted and used. APPLY makes no call at seal.
+5. The calls:
+   - the review bundle shows the full topic name and the unit's tags;
+   - the seal notice states the exact URL form, `https://pubsub.googleapis.com/v1/projects/<project>/topics/<that topic>`, and the storage-policy property.
+
+   The literal artifact bytes are not in the review bundle (see "What INT-2 must add").
+
+**What the preview does not prove:**
+
+- that APPLY holds `pubsub.topics.create`;
+- that an organization policy accepts the region;
+- that quota is available.
+
+Each of these can only fail as a definite refusal of the one `PUT`.
+
+## Identities and scopes (D12, D15)
+
+There are two runtime identities, **DISCOVERY** and **APPLY**. They are distinct, and use workload identity federation only. There is no STATE, STATE_WRITE or CHANGESET on this path.
+
+Each identity's variables are path 5's:
+
+- `ALZ_<IDENTITY>_GOOGLE_APPLICATION_CREDENTIALS`: a WIF file source;
+- `ALZ_<IDENTITY>_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT`: a service account of the target project.
+
+**The driver checks them** with `checkApplyIdentities`, `verifyIdentityTargets`, the delivered-token checks for the `gcp-api` delivery path, and `GCP.ambientRefusal`. Any other identity configured is refused.
+
+**The engine checks them again** before any token request. It refuses these as `IDENTITY_NOT_CONFIGURED`:
+
+- a key file;
+- a configuration that carries its own impersonation;
+- a gcloud, metadata or other-cloud variable on an identity;
+- a service account outside the project.
+
+Two identities with the same service account, configuration or token file are refused as `IDENTITY_COLLAPSED`.
+
+| Token | Scope | Used on |
 |---|---|---|
-| any other field | not allowed (no `messageStoragePolicy`, `kmsKeyName`, `schemaSettings`, retention, and so on) | `FIELD_NOT_ALLOWED` |
-| `projectId` | a GCP project id, equal to the contract's project for this environment | `PROJECT_NOT_IN_CONTRACT` |
-| `topicId` | `alz-` prefix, lowercase letters, digits and hyphens, at most 64 characters, so no id needs escaping in a URL path | `TOPIC_ID_INVALID` |
-| `labels` | exactly the three `alz-*` keys from `docs/act-pilot-gcp-terraform-g0.md` (the identity mapping of the product's tag keys); `alz-managed-by` is `alz`; `alz-unit` is a unit id | `LABELS_NOT_IN_CONTRACT` |
+| the STS exchange (the federated token) | `cloud-platform` (GF8) | `iamcredentials.googleapis.com` only |
+| DISCOVERY's and APPLY's Pub/Sub tokens | `pubsub` (GF2) | `pubsub.googleapis.com` only |
+| DISCOVERY's Cloud Asset token (minted by the GCP reader, D15) | `cloud-platform` (GF3) | `cloudasset.googleapis.com` only |
 
-Sealing reads the topic under DISCOVERY first. If the topic already exists, sealing refuses with `TOPIC_EXISTS`. If it is absent, sealing writes a typed JSON plan containing the following:
+**Read-only rests on IAM, not on the OAuth scope.**
 
-- the request;
-- the precondition `ABSENT`;
-- the three exact REST calls the request implies:
-  - `PUT https://pubsub.googleapis.com/v1/projects/<p>/topics/<t>`, with body `{"labels": …}` and nothing else;
-  - `GET` on the same URL, for the read-back;
-  - `DELETE` on the same URL, for cleanup;
-- `sealNonce`, 16 fresh random bytes (hex) drawn by this seal, so every seal is a new artifact (see "Recovery after a stop");
-- `artifactSha256`, computed over the canonical JSON of all of the above;
-- the requester's Ed25519 signature over that hash (`signRequest`, the same `REQUEST` statement as every sealed plan). The requester must be on the contract's allowlist (`requester: REQUESTER` in the tests).
+- DISCOVERY holds `pubsub.topics.get` and the project-scoped `cloudasset.assets.searchAllResources`.
+- APPLY holds `pubsub.topics.create` and `pubsub.topics.delete`.
 
-Apply verifies the plan before it does anything:
-
-- the plan has exactly its fields;
-- the engine and the provider match;
-- the environment and project match the contract;
-- deriving the calls again from the request gives exactly the sealed calls;
-- `sealNonce` is 32 lowercase hex characters;
-- the hash, recomputed with the sealed `sealNonce`, matches;
-- the signature verifies.
-
-A plan that differs in any of these ways is refused as `PLAN_FORGED`, `ENGINE_NOT_ALLOWED`, `ENVIRONMENT_MISMATCH` or a `REQUESTER_*` code, and no call is made.
-
-## Identities
-
-| Identity | Role on this path | OAuth scope requested |
-|---|---|---|
-| DISCOVERY | the read before seal, the precondition read at apply, the read-back (observe), and the read before and after cleanup | `https://www.googleapis.com/auth/pubsub` |
-| APPLY | the one `PUT` (create) and the one `DELETE` (cleanup) | `https://www.googleapis.com/auth/pubsub` |
-
-**Read-only comes from IAM, not from the OAuth scope.** Pub/Sub accepts exactly two scopes on `projects.topics.get`, `.create` and `.delete`: `cloud-platform` and `pubsub` (the public v1 discovery document). A bearer minted with `cloud-platform.read-only` is refused with 403, so a DISCOVERY bearer with that scope could never read the topic. Both identities therefore request `pubsub`, the narrower of the two accepted scopes, which keeps each bearer to Pub/Sub. What each identity may do is set by its service account's IAM grants (#308): DISCOVERY holds only `pubsub.topics.get`, and APPLY holds `pubsub.topics.create` and `pubsub.topics.delete`. The engine also sends only `GET` with DISCOVERY's bearer and only `PUT` and `DELETE` with APPLY's.
-
-The synthetic fake enforces the same rule: it refuses any Pub/Sub request whose bearer was minted with a scope outside those two, so a regression to a read-only scope fails the tests.
-
-The engine reuses path 5's identities and variables (`gcp-plan.md`, section 2; `docs/act-pilot-gcp-terraform-g0.md`):
-
-- `ALZ_<IDENTITY>_GOOGLE_APPLICATION_CREDENTIALS` is the absolute path of a workload identity federation credential configuration.
-- `ALZ_<IDENTITY>_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT` is the identity's service account in the contract's project.
-
-STATE and STATE_WRITE are not used, because there is no state.
-
-**DISCOVERY and APPLY must be separate principals.** Before any token request, the engine runs path 5's identity check (`GCP.ambientRefusal` in `src/apply/providers/gcp.ts`) over the whole environment. Two identities that impersonate the same service account (in any letter case), read the same credential configuration (by path, symlink or hard link), or read the same OIDC token file are refused as `IDENTITY_COLLAPSED`. An identity that carries the operator's own `GOOGLE_*` value is also `IDENTITY_COLLAPSED`, and any other Google, gcloud, metadata or other-cloud variable on an identity is `IDENTITY_NOT_CONFIGURED`. This keeps "DISCOVERY only reads" from resting on IAM alone.
-
-For least privilege, APPLY needs `pubsub.topics.create` and `pubsub.topics.delete`, and DISCOVERY needs `pubsub.topics.get` (for example, `roles/pubsub.viewer`). Path 5's bootstrap grants these roles. This lane does not edit it.
-
-## Tokens: obtained in process, never stored
-
-The engine uses the lighter of the two options: a minimal STS and IAM Credentials exchange, done in process. `gcloud` is not used, so no tool pin is added. The exchange follows the Azure reader's pattern (`src/observe/azure-rest.ts`):
-
-1. Read the identity's credential configuration with path 5's validator, the shared `checkCredentialConfiguration` in `src/tools/gcp-credentials.ts` (re-exported by `src/apply/providers/gcp.ts`), so one file has one verdict on both paths. It is accepted only when all of the following hold:
-   - it is a JSON object of at most 64 KiB;
-   - its keys are within the allowlist `type`, `audience`, `subject_token_type`, `token_url`, `credential_source` and `universe_domain`;
-   - it has no `service_account_impersonation_url` of its own, even one naming the same service account (P1). Impersonation is the identity's `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT` only;
-   - `type` is `external_account`;
-   - `audience` is a workload identity pool provider;
-   - `subject_token_type` is an OIDC token (`jwt` or `id_token`);
-   - `token_url`, if present, is `https://sts.googleapis.com/v1/token` (the engine always sends to that URL);
-   - `universe_domain`, if present, is `googleapis.com`;
-   - `credential_source` is a file source only: `file` (an absolute path), and optionally `format` of type `text`.
-
-   A service-account key file, an authorized-user file, any other key, or a service account outside the contract's project is refused as `IDENTITY_NOT_CONFIGURED` before any request is made.
-2. Read the OIDC token file and exchange it at `sts.googleapis.com` for a federated token, in a single POST.
-3. Use the federated token in a single POST to `iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/<sa>:generateAccessToken`, with the `pubsub` scope and a lifetime of 300 seconds.
-
-All three tokens are held only in memory, for one call. They are never written, cached, logged, or placed in argv, a child environment, a result or an error. Failures are reported as codes such as `CREDENTIALS`, `HTTP_ERROR` or `UNEXPECTED_RESPONSE`. The tests plant canary tokens and prove that none of them appears in any result.
+These grants are the owner's bootstrap (`bootstrap/gcp`, `docs/act-pilot-bootstrap-gcp.md`). The emulator enforces the same custom roles: the tests show that DISCOVERY only sends `GET` and APPLY only sends `PUT` and `DELETE`.
 
 ## Network boundary
 
-Every request passes one gate before it exists:
+Every request of the engine passes one gate (`allowedRequest`) before it exists. Only these pass:
 
 - a `POST` to exactly `https://sts.googleapis.com/v1/token`;
-- a `POST` to an `iamcredentials.googleapis.com` `generateAccessToken` URL;
-- a `GET`, `PUT` or `DELETE` to exactly the sealed topic URL on `pubsub.googleapis.com`.
+- a `POST` to a `generateAccessToken` URL on `iamcredentials.googleapis.com`;
+- a `GET`, `PUT` or `DELETE` to exactly the run's sealed topic URL on `pubsub.googleapis.com`.
 
-The URL must use https, with no port, userinfo, query or fragment, and must be a URL the parser leaves as written. Anything else is never sent. The production client is `fetch` with `redirect: "error"`, which runs through the runner's approved egress, the same path the Azure reader uses. Tests inject a fake.
+The URL must use https, with no port, userinfo, query or fragment, and a path the parser leaves as written.
 
-## Apply: order, idempotency, kill switch, partial failure
+The unit sweep goes through the GCP reader (`src/observe/gcp-rest.ts`), which reads `cloudasset.googleapis.com` behind its own gate.
 
-Apply runs these steps in order and fails closed:
+The production client is `fetch` with `redirect: "error"`. Each request is bounded at **30 seconds** (`REQUEST_TIMEOUT_MS`). A request past the bound, like any failure, is a status of 0: no answer. **Nothing is retried.**
 
-1. **Kill switch.** If it is on, the result is `KILL_SWITCH_ACTIVE`. Nothing is sent and nothing is claimed.
-2. **Plan verification.** The checks are listed above.
-3. **Ledger check.** The ledger directory must be private (see "The ledger"); otherwise the result is `LEDGER_NOT_PRIVATE`. If the plan's `artifactSha256` is already recorded, the result is `ALREADY_APPLIED`.
-4. **Precondition read under DISCOVERY.** If the topic now exists, the result is `PLAN_STALE`.
-5. **Claim.** The plan is claimed by an exclusive create of `gcp-api-<sha>.json` in the ledger directory, mode 0600. A second apply of the same plan, even a concurrent one, is refused as `ALREADY_APPLIED`.
-6. **APPLY token.**
-7. **Kill switch again.** If it is now on, the result is `KILL_SWITCH_DURING_APPLY`. Nothing is created, the claim is recorded as `NOT_APPLIED`, and the plan is consumed. The requester seals a new plan (see "Recovery after a stop").
-8. **The one `PUT`.** The response decides the outcome:
+## Seal
 
-| Response to the `PUT` | Outcome | Ledger record |
+`plan` runs these steps in order:
+
+1. the request, the target and the unit are checked;
+2. both identities' configurations are checked;
+3. the suffix is drawn;
+4. the artifact and the change list are derived;
+5. the canary is judged;
+6. under DISCOVERY, the topic must read absent;
+7. the unit sweep must be complete and empty.
+
+| Refusal | Meaning |
+|---|---|
+| `TOPIC_EXISTS` | the topic reads present |
+| `UNIT_NOT_EMPTY` | anything is listed under the unit |
+| `UNIT_LISTING_INCOMPLETE` | the listing failed or did not finish |
+| a read refusal, such as `ACCESS_DENIED_PUBSUB_HTTP_403` | an unreadable topic, never absence |
+
+## Apply (D14)
+
+`runApply` runs its gates in its usual order. The engine's steps:
+
+1. **`prepare`.** Checks the request, the target, the unit and the identities. Then runs **the second unit sweep** (D10), before any approval is consumed.
+2. **`rederive`.** The byte-for-byte re-derivation and the canary. Then the sealed topic's own DISCOVERY `GET`:
+   - present is `PLAN_STALE`;
+   - unreadable is its read refusal.
+
+   **Placement note.** D14 names `prepare` for this read. `EngineApplyRun.prepare` receives only the snapshot path, and the suffix is in the artifact, which first reaches the engine in `rederive`. Both steps are awaited and come before consumption. The refusal and its "nothing consumed" are the same.
+3. **`execute`.**
+   1. `control.stopWhen()` is read; on, the result is `notStarted` (the driver's `KILL_SWITCH_AFTER_APPROVALS`).
+   2. APPLY's token is minted. A failure throws before any Pub/Sub request: the driver's `APPROVALS_SPENT`.
+   3. `stopWhen()` is read again.
+   4. The one `PUT` is sent exactly once. From the `PUT` on, nothing throws.
+4. **`settle`.** At most 3 DISCOVERY reads, 2 seconds apart, judged by positive evidence only.
+
+| `PUT` answer | Read-back | Outcome |
 |---|---|---|
-| 200 | `APPLIED` | `APPLIED` |
-| 409 (created by someone else in the meantime) | `NOT_APPLIED` with code `PLAN_STALE` | `NOT_APPLIED` |
-| any other 4xx | `NOT_APPLIED` with code `CREATE_REFUSED` | `NOT_APPLIED` |
-| 5xx, or no answer | `UNCERTAIN` with code `CREATE_UNANSWERED` | `UNCERTAIN` |
+| 200 | present, the sealed name, labels and storage policy | `SUCCEEDED` |
+| 200 | anything else (other labels or policy, no policy, absent, unreadable) | `PARTIAL_REQUIRES_REVIEW` |
+| 409 | anything | `PARTIAL_REQUIRES_REVIEW` |
+| 400, 401, 403, 404, 429 | absent (404) on every read | `FAILED_NO_CHANGE` |
+| 400, 401, 403, 404, 429 | present or unreadable | `PARTIAL_REQUIRES_REVIEW` |
+| 5xx, no answer, or any other status (408, for example) | present with the sealed labels and policy | `SUCCEEDED` |
+| 5xx, no answer, or any other status | anything else | `PARTIAL_REQUIRES_REVIEW` |
 
-**Nothing is retried.** An uncertain create is settled by the read-back (`observeGcpApiPlan`), never by sending the create again. Pub/Sub's own `409 ALREADY_EXISTS` makes the create idempotent at the service, and the ledger makes it idempotent here.
+- **Absent** means the `GET` answered 404. A read that fails is unreadable, never absent.
+- There is **no `KILLED`** outcome.
+- The tests send exactly one `PUT` per row.
 
-There is exactly one mutating call, so partial failure has a single meaning: the topic exists or it does not, and the read-back shows which.
+**`stateDocument`** returns what `settle` read, as `{ name, labels }`, with source `GCP_API_TOPIC`. The driver maps it with `blueprintFromGcpApiTopic`.
 
-### Recovery after a stop
+**Recovery.**
 
-A sealed plan is applied at most once, whatever its outcome. Recovery is a **new seal**, never a second apply of the same plan. This is the Terraform driver's rule: there, a ledger record means the sealed plan was used, and retrying needs a new preview (a new plan file, so a new artifact) and new approvals.
+| Situation | Recovery |
+|---|---|
+| Stopped before `execute` started, `APPROVALS_SPENT`, or `KILL_SWITCH_AFTER_APPROVALS` | The driver gives the reservation back. The same sealed plan, with the same name, applies with new approvals. |
+| `FAILED_NO_CHANGE` or `PARTIAL_REQUIRES_REVIEW` | A new seal, so a new name. |
+| A process killed after the `PUT` | Never resumed. The same plan's sweep or its own `GET` refuses it (`UNIT_NOT_EMPTY` or `PLAN_STALE`). `./alz apply record-recovery` (INT-2 wiring) records it. |
 
-To make a new seal a new artifact, sealing draws a fresh `sealNonce` and binds it into `artifactSha256`, which the requester signs. Sealing the same request again therefore gives a different artifact, which the ledger has not seen. Without the nonce, the same request would hash to the same artifact, and after any stop the ledger would answer `ALREADY_APPLIED` forever.
+### Runs that did not succeed
 
-What still holds:
+- The driver makes no cleanup proposal for a run that did not end `SUCCEEDED`. `buildCleanupProposal` refuses it with `OWNERSHIP_AMBIGUOUS` (asserted in the EMULATED test).
+- Its topic keeps every later seal and apply under the target refused (`UNIT_NOT_EMPTY`).
+- **Who resolves it:** the owner, or a cleanup owner the owner names. Never an agent.
+- **How:** that person deletes the one topic by its exact sealed name, with their own credentials, outside the product. Then they run `./alz apply observe --sealed SEALED_PLAN` again. Its DISCOVERY read is the independent absence check, and the verdict `FAILED` (the planned topic is absent) is the expected result.
+- **Evidence:** the hand deletion is recorded as MANUAL on #39 and in `docs/act-pilot-gcp-evidence.md`. It is never product cleanup.
 
-- **The same sealed plan is never applied twice.** The ledger is keyed on `artifactSha256`, and a stopped plan stays recorded as `NOT_APPLIED`. Applying it again is `ALREADY_APPLIED`, and cleaning it up is `NOT_RUN_CREATED`.
-- **A second topic is never created.** Topic names are unique in a project. Every seal reads the topic first and refuses `TOPIC_EXISTS`; every apply reads it again and refuses `PLAN_STALE`; and Pub/Sub itself answers 409 to a duplicate create, which is recorded as `NOT_APPLIED` with `PLAN_STALE`. Two plans sealed from one request while the topic was absent can therefore create it at most once.
+## Cleanup (D16)
 
-Every stop that records `NOT_APPLIED` is recovered the same way:
+Cleanup is the driver's `runCleanup`. It is reached only for a run that ended `SUCCEEDED`, with its proposal, requester, cleanup approvals and ledger.
 
-| Stop | Recorded | Recovery |
+**`planDestroy`.** It accepts exactly one address, `google_pubsub_topic.<topicPrefix><12 hex>`, in the target's project. Then it reads the topic under DISCOVERY. Every refusal comes before any approval is consumed.
+
+| Refusal | When |
+|---|---|
+| `CLEANUP_ADDRESSES_INVALID` | more than one address, or none |
+| `CLEANUP_ADDRESS_NOT_IN_CONTRACT` | an address outside the prefix or project |
+| `CLEANUP_NO_CHANGES` | absent: already absent, not deleted by this run |
+| `CLEANUP_READ_FAILED` | a read that fails (401, 403, 429, 5xx, no answer). **A read or authorization failure is never absence.** |
+| `OWNERSHIP_MISMATCH` | present with other labels than the unit's, or another storage policy. The topic is kept. |
+
+The driver then applies `protectedDeletionIn` and `cleanupScopeProblem`, as for every engine.
+
+**Placement note.** D16 names `prepare` for the read. `EngineCleanupRun.prepare` does not receive the addresses, so the read runs in `planDestroy`, which is also awaited and before consumption.
+
+**`execute`.**
+
+1. `stopWhen()` is read.
+2. APPLY's token is minted.
+3. `stopWhen()` is read again.
+4. One `DELETE` of the exact sealed URL is sent, once.
+
+**`settle`.** At most 3 DISCOVERY reads.
+
+| `DELETE` answer | Read-back | Outcome | `deletedByRun()` |
+|---|---|---|---|
+| 200 | absent | `SUCCEEDED` | `true` |
+| 404 | absent | `SUCCEEDED` | `false`: already absent, **not deleted by this run** |
+| 400, 401, 403, 429 | present and unchanged on every read | `FAILED_NO_CHANGE` | undefined |
+| 400, 401, 403, 429 | anything else | `PARTIAL_REQUIRES_REVIEW` | undefined |
+| timeout, 5xx, no answer, any other status | anything | `PARTIAL_REQUIRES_REVIEW`, never "no change" | undefined |
+| 200 or 404 | present or unreadable | `PARTIAL_REQUIRES_REVIEW` | undefined |
+
+Then `./alz apply verify-cleanup` reads the id and sweeps the unit under DISCOVERY, independently of the APPLY call. **Absence is confirmed only by that read.**
+
+**Nothing else is ever deleted.** Cleanup never deletes:
+
+- by prefix, by label search, or because an inventory listing named something;
+- a subscription, an IAM binding or any project resource.
+
+**Residual (accepted with D16):** `topics.delete` takes no etag, so a label change between the read and the `DELETE` is not caught.
+
+## Observation (D15)
+
+The observation of record is the GCP reader, `GCP_REST` (`src/observe/gcp-rest.ts`), on the blueprint the run left. It checks:
+
+- existence by id;
+- the sweep by unit;
+- for a `google_pubsub_topic`, `messageStoragePolicy.allowedPersistenceRegions` against the contract region. A mismatch is `misplaced`, and the verdict is `FAILED`.
+
+The engine has no observe step. Its own reads in `rederive`, `settle` and `planDestroy` are never the observation of record.
+
+**D11 (owner-accepted).** The create sets exactly one Pub/Sub property, `messageStoragePolicy.allowedPersistenceRegions` = `[<contract region>]`, and it is read back. **This is not a data-residency claim.** It says nothing about the topic as a whole, the project, or Google's processing. The canary publishes nothing, has no subscriptions and processes no payloads.
+
+## The READY hash (D1)
+
+`binarySha256` is the SHA-256 of the canonical JSON of:
+
+```text
+{ kind: "IN_PROCESS_MODULE", engine: "GCP_API", files: [ { path, sha256 } ] }
+```
+
+- `files` are the engine module and its transitive in-repository runtime imports, listed in `GCP_API_MODULE_FILES`, sorted by path, as loaded: `src/**.ts` under tsx, `dist/**.js` in the image.
+- A test computes the real import closure (esbuild's emit, which drops type-only imports) and fails when the list differs.
+- Any listed file changing changes the hash.
+- A missing file gives `undefined`, which the driver refuses at seal and as `ENGINE_BINARY_CHANGED` at apply.
+- `executables` is empty.
+
+## Refusal shapes (D20)
+
+Each refusal from an HTTP answer names the step and the status, never the body. The form is `<CLASS>_<STEP>_HTTP_<status>`, or `<CLASS>_<STEP>_NO_ANSWER`. Examples:
+
+- `CREDENTIALS_STS_HTTP_400`;
+- `CREDENTIALS_IAM_CREDENTIALS_HTTP_403`;
+- `ACCESS_DENIED_PUBSUB_HTTP_403`;
+- `THROTTLED_PUBSUB_HTTP_429`;
+- `HTTP_ERROR_STS_NO_ANSWER`.
+
+Other cases:
+
+- An input the shared exchange refused before sending (`invalidInput`) is `IDENTITY_NOT_CONFIGURED`, never a refused host. The reader maps the same case to `CREDENTIALS`. Both lines are pinned by tests.
+- The gate's refusal is `HOST_REFUSED`.
+- **A first-run `CREDENTIALS_STS_HTTP_400`** before any resource is read is the open GF1 question first, not a bad identity (`docs/act-pilot-gcp-evidence.md`). The owner widens no grant for it.
+
+## Residual risks, stated plainly
+
+- **Cloud Asset is eventually consistent (GF5).** Neither sweep sees a topic created inside the indexing window. Two applies inside that window can both create a topic, so two canary topics of one target can briefly coexist; a test shows it. Each topic has its run-unique name and its own run's records. Once indexed, each run's observation lists the other's topic as `unexpected` and fails. Closing the window would need a per-target lock in the driver's ledger, which does not exist.
+- **No etag on `topics.delete`** (D16, owner-accepted).
+- **DISCOVERY's Cloud Asset visibility is project-wide** (D12, owner-accepted): it sees metadata of every indexed resource in the DEV project, not only topics.
+
+## Google API facts (GF1 to GF11)
+
+Checked on 2026-10-29 against Google's published discovery documents, protos, client libraries and actions, read offline from GitHub. **No Google API endpoint was called.**
+
+- `docs.cloud.google.com` was unreachable from the session, and `cloud.google.com` redirects there.
+- The sources, with the SHA-256 prefix of the copy read:
+  - Pub/Sub `v1` discovery, revision 20261013 (`e33a6754`), `https://raw.githubusercontent.com/googleapis/google-api-go-client/main/pubsub/v1/pubsub-api.json`;
+  - Cloud Asset `v1` discovery, revision 20261017 (`68f965b7`), `.../cloudasset/v1/cloudasset-api.json`;
+  - STS `v1` discovery, revision 20261014 (`6038aaf6`), `.../sts/v1/sts-api.json`;
+  - IAM Credentials `v1` discovery, revision 20260630 (`90d7239b`), `.../iamcredentials/v1/iamcredentials-api.json`;
+  - `googleapis/googleapis` `google/pubsub/v1/pubsub.proto` (`fa9b72b7`) and `google/rpc/code.proto` (`83a63185`);
+  - `googleapis/google-cloud-go` `pubsub/topic.go` (`45899631`) and `pubsub/pstest/fake.go` (`b33f6574`);
+  - `google-github-actions/auth` `README.md` (`9bba6d0b`).
+
+**VERIFIED** means a published source states it. **UNVERIFIED-OWNER-LIVE** means only the owner's live DEV run can show it. Each such row says how the product reports it, failing closed.
+
+| Fact | Status | Source and exact text, or what the live run shows |
 |---|---|---|
-| kill switch between the token and the create (`KILL_SWITCH_DURING_APPLY`) | `NOT_APPLIED` | seal again, then apply |
-| APPLY token failure (`CREDENTIALS`, `HTTP_ERROR`, `UNEXPECTED_RESPONSE`) | `NOT_APPLIED` | fix the identity, seal again, then apply |
-| any 4xx on create, such as a 429 or a 403 (`CREATE_REFUSED`) | `NOT_APPLIED` | seal again, then apply |
-| 5xx or no answer (`CREATE_UNANSWERED`) | `UNCERTAIN` | observe first. If the topic exists, sealing again is refused as `TOPIC_EXISTS`, and the uncertain plan's cleanup owns it. If it is absent, seal again |
-
-A kill switch before the claim (`KILL_SWITCH_ACTIVE`) and a stale precondition (`PLAN_STALE` before the claim) record nothing, so the same plan may be applied later.
-
-Ownership is by unit, not by seal. A re-sealed plan carries the same `alz-unit` label as the stopped one. If an `UNCERTAIN` plan and its re-seal both reach cleanup, either can delete the unit's topic, because it carries their identical sealed labels.
-
-### The ledger
-
-The ledger directory holds one record per applied plan. It decides what cleanup may delete, so apply and cleanup refuse it with `LEDGER_NOT_PRIVATE` unless all of these hold:
-
-- it is a real directory, not a symlink;
-- it is owned by the user running the engine;
-- it has no group or other permission bits (mode `0700` or narrower).
-
-Records are created with mode `0600`. When the authorization lane admits this path, the driver creates and owns the directory, as it does the evidence directory.
-
-Owner gates such as ACT enabled, human invocation, the contract target, approvals, typed phrases and the run records belong to the shared driver. They apply unchanged once the authorization lane admits `GCP_API`. This module duplicates none of them.
-
-## Ownership, verification and cleanup
-
-**Ownership.** A topic belongs to the run only when both of these hold:
-
-- the ledger records this plan as `APPLIED` or `UNCERTAIN`;
-- the topic carries exactly the sealed labels, including the run's `alz-unit`.
-
-A label alone never makes a topic deletable.
-
-**Verification (observe).** Under DISCOVERY, `GET` the sealed URL. The run is `verified` only when the topic exists, its `name` is the sealed name, and its labels equal the sealed labels exactly. A missing topic reads as `ABSENT`. A topic with changed labels reads as `PRESENT` but not owned.
-
-**Cleanup.** Cleanup deletes run-created topics only, in this order:
-
-1. If the kill switch is on, stop.
-2. Verify the plan.
-3. Check the ledger: it must be private (`LEDGER_NOT_PRIVATE`). If it does not record the plan as `APPLIED` or `UNCERTAIN`, the result is `NOT_RUN_CREATED`.
-4. Read the topic under DISCOVERY:
-   - if it is absent, the result is `ALREADY_ABSENT`, which makes cleanup idempotent;
-   - if its labels changed, the topic is kept and the result is `OWNERSHIP_MISMATCH`.
-5. Get the APPLY token.
-6. Check the kill switch again. If it is on, the result is `KILL_SWITCH_DURING_CLEANUP`.
-7. Send one `DELETE`.
-8. Read the topic back under DISCOVERY. It must be absent; otherwise the result is `CLEANUP_NOT_VERIFIED`.
-9. Record `CLEANED` in the ledger.
-
-Cleanup never lists, searches or deletes anything by label or prefix.
-
-**Known gap: no etag on delete.** The label check (step 4) and the `DELETE` (step 7) are separate calls, and Pub/Sub's `topics.delete` takes no etag or other precondition. A label change between them is not caught. This is accepted for one run-named `alz-` topic in DEV: the window spans only the APPLY token exchange, and the topic id itself is the run's. A kind whose delete takes an etag binds it instead.
-
-## Why no Terraform
-
-Path 5 already covers Terraform on GCP. A second Terraform path, whether Infrastructure Manager or the `google` provider driven differently, would duplicate it without testing anything new.
-
-This path proves the opposite shape: a plan that *is* the exact calls, with no state file, no backend, no provider plugin and no binary to pin. The cost is breadth. Each new kind needs its own allowlisted fields, URLs and read-back, so the engine stays one kind until the owner asks for more.
+| **GF1** STS request format | UNVERIFIED-OWNER-LIVE | The STS discovery `sts.token` describes a JSON body of camelCase fields. Google's Node.js auth library sends a form with snake_case names, and so does the shared exchange. **Live:** a rejection is HTTP 400 at STS, reported as `CREDENTIALS_STS_HTTP_400` before any resource is read. The owner treats it as GF1 and widens no grant. |
+| **GF2** Pub/Sub scopes | VERIFIED | Pub/Sub discovery, `projects.topics.create` (`PUT v1/{+name}`), `.get` and `.delete`: `"scopes": ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/pubsub"]`. `cloud-platform.read-only` is not listed. The engine requests `pubsub`. |
+| **GF3** Cloud Asset scope | VERIFIED | Cloud Asset discovery, `searchAllResources` (`GET v1/{+scope}:searchAllResources`): `"scopes": ["https://www.googleapis.com/auth/cloud-platform"]`. The reader requests exactly that. |
+| **GF3** label query syntax | UNVERIFIED-OWNER-LIVE | The `query` description documents labels as `labels.env:prod` ("have a label `env` and its value is `prod`") and `labels.env:*`. The `=` form is shown only for `name=Important`. The reader (G1's `src/observe/gcp-rest.ts`, not changed here) sends `labels.alz-unit=<unit>`. **Live:** if Google refuses the form (400) or matches differently, the listing fails. The seal is refused `UNIT_LISTING_INCOMPLETE`, and observations read `INCONCLUSIVE`. Nothing is created. The fix is the reader's query string, a reviewed change; no grant is widened. |
+| **GF4** `messageStoragePolicy` on create | VERIFIED for the shape | Pub/Sub discovery: `create` request and response `{"$ref": "Topic"}`. `Topic.messageStoragePolicy`: "Optional. Policy constraining the set of Google Cloud Platform regions where messages published to the topic may be stored. If not present, then no constraints are in effect." `MessageStoragePolicy.allowedPersistenceRegions`: "A list of IDs of Google Cloud regions where messages that are published to the topic may be persisted in storage." `get` returns `Topic`. |
+| **GF4** read back as sent | UNVERIFIED-OWNER-LIVE | No source says the service returns the list exactly as sent; an organization policy could change it. **Live:** any other value is never `SUCCEEDED`. It is `PARTIAL_REQUIRES_REVIEW`, with no product cleanup, and the person resolves it by hand. |
+| **GF5** Cloud Asset indexing delay | UNVERIFIED-OWNER-LIVE | No source gives it. **Live:** shown only by timing; the residual above is stated, and no product claim depends on it. |
+| **GF6** delete of an absent topic | VERIFIED | `pubsub.proto` `DeleteTopic` and Pub/Sub discovery `delete`: "Deletes the topic with the given name. Returns `NOT_FOUND` if the topic does not exist." `code.proto`: `NOT_FOUND = 5`, "HTTP Mapping: 404 Not Found". |
+| **GF6** duplicate create | UNVERIFIED-OWNER-LIVE | The Pub/Sub reference does not state the code. Google's Go client: "If the topic already exists an error will be returned." Google's own fake (`pstest`) returns `codes.AlreadyExists`, and `code.proto` maps `ALREADY_EXISTS = 6` to "HTTP Mapping: 409 Conflict". **Live:** a 409 is `PARTIAL_REQUIRES_REVIEW`. Any other definite 4xx with the topic present is also `PARTIAL_REQUIRES_REVIEW`. The run-unique name makes a duplicate unexpected. |
+| **GF7** quota project or `serviceusage.services.use` | UNVERIFIED-OWNER-LIVE | No source read states it for an impersonated service account. **Live:** if Cloud Asset needs it, the search answers 403. The seal is `UNIT_LISTING_INCOMPLETE`, and nothing is created. The conflict with D12 item 5 goes to the owner before bootstrap; no grant is widened silently. |
+| **GF8** the exchange's scope | VERIFIED | STS discovery, `scope`: "The OAuth 2.0 scopes to include on the resulting access token ... Required when exchanging an external credential for a Google access token." IAM Credentials discovery, `generateAccessToken`: `"scopes": ["https://www.googleapis.com/auth/cloud-platform"]`. The federated token is used only there, so the exchange asks for `cloud-platform`. |
+| **GF9** `pubsub.topics.create` covers a create with `messageStoragePolicy` | UNVERIFIED-OWNER-LIVE | The IAM permission reference was unreachable. **Live:** a missing permission is a 403 on the `PUT`. With the topic absent on every read, the result is `FAILED_NO_CHANGE`. |
+| **GF10** `cloudasset.assets.searchAllResources` | VERIFIED that it is the permission; UNVERIFIED-OWNER-LIVE for custom roles | Cloud Asset discovery: "The caller must be granted the `cloudasset.assets.searchAllResources` permission on the desired scope, otherwise the request will be rejected." Whether a project-level custom role supports it is in the unreachable custom-roles reference. **Live:** shown at bootstrap, when the owner creates the role, before any run. |
+| **GF11** `roles/iam.workloadIdentityUser` suffices for access tokens | VERIFIED (functional) | `google-github-actions/auth` README: "To generate OAuth 2.0 access tokens or ID tokens, you _must_ provide a service account email, and the Workload Identity Pool must have `roles/iam.workloadIdentityUser` permissions on the target Google Cloud Service Account." Token Creator is named only for Domain-Wide Delegation: "you must grant the external identity ("principalSet") `roles/iam.serviceAccountTokenCreator` in addition to `roles/iam.workloadIdentityUser`. The default Workload Identity setup will only grant the latter role." The role's exact permission list was not read. **Live:** a refusal is `CREDENTIALS_IAM_CREDENTIALS_HTTP_403`, before any resource call. |
 
 ## Evidence
 
 | Evidence | Mode | Where |
 |---|---|---|
-| seal, apply, a second apply refused, stale plan (exists at seal, at apply, created during the call; changed after), kill switch before and during, uncertain create without retry, observe, idempotent cleanup | SYNTHETIC | `test/apply-gcp-api.test.ts`, with a fake for STS, IAM Credentials and Pub/Sub |
-| recovery after a stop by a new seal (kill switch during apply, APPLY token failure, 429 and 403 on create), with the stopped plan still `ALREADY_APPLIED`; two seals of one request create one topic | SYNTHETIC | same file |
-| both identities request the `pubsub` scope; the fake refuses a bearer whose scope Pub/Sub does not accept, `cloud-platform.read-only` included | SYNTHETIC | same file |
-| forged plan, disallowed kind or field, wrong project, foreign labels, a key file or foreign service account, an impersonation URL or unknown key in the credential configuration, collapsed identities (same service account, configuration, symlink or token file), a ledger that is not private, a lookalike host | SYNTHETIC | same file |
-| live STS exchange, impersonation, which principal Google sees, real Pub/Sub responses | **not run** | G2, owner-run and owner-authorized |
+| The spec's facts, D1 (closure list, preimage, a changed or missing file), D7 (request, artifact, every tampering), D4, D8, D9, D10 (both sweeps, back-to-back plans, the indexing-window residual), every D14 row with one `PUT`, the kill switch twice, `APPROVALS_SPENT`, the process killed after the `PUT`, D16 (every refusal and every row with one `DELETE`), D12 (identities, collapse, scopes, custom roles), D15 (`GCP_REST`: `VERIFIED`, and `FAILED` for another policy), D19, D20, the network gate, no file written, no token leaked | SYNTHETIC | `test/apply-gcp-api.test.ts`, with the in-memory emulator |
+| Seal through the driver's `sealPlan` (vault, requester signature, review bundle with the full name), approvals and the nonce store, apply, observation through `GCP_REST`, the cleanup classifier and checks, cleanup with `deletedByRun: true`, independent verified absence, approval reuse refused, the kill switch file, the run that did not succeed (`OWNERSHIP_AMBIGUOUS`, `UNIT_NOT_EMPTY`, the hand deletion, observe again `FAILED`), and admission still `NOT_IMPLEMENTED` | EMULATED | `test/apply-emulated-gcp-api.test.ts`, over loopback HTTP |
+| Live STS exchange, impersonation, which principal Google sees, real Pub/Sub and Cloud Asset answers, GF1 and GF3 to GF11 where UNVERIFIED-OWNER-LIVE | **not run** | the owner's supervised DEV run (`docs/act-pilot-gcp-evidence.md`) |
 
-**The Pub/Sub emulator is not used.** It has no IAM and no token exchange, so it would prove only the REST shape the fake already scripts, and the engine's fixed `https://pubsub.googleapis.com` gate would need an override that production must not have.
+In the EMULATED test, `runApply`, `runCleanup` and `observeRun` cannot load a GCP_API contract until INT-2. So it calls the spec's steps in their order, and builds in memory the evidence and records they would write. Those are marked TEST FIXTURE where they happen.
 
-## What the authorization lane must add (not in this lane)
+## What INT-2 must add (not in this lane)
 
-The authorization lane owns `src/apply/contract.ts`. This lane needs it to add:
+**Registration:**
 
-- `GCP` to `ProviderId` and `PROVIDER_IDS`;
-- `GCP_API` to `EngineId` and `ENGINE_IDS`, valid only with `GCP`;
-- the DEV-only scope for this path;
-- a contract target shape of `projectId` only, with no backend or workspace, because the engine keeps no state;
-- the driver's call into `sealGcpApiPlan`, `applyGcpApiPlan`, `observeGcpApiPlan` and `cleanupGcpApiPlan`.
+- `GCP_API` in `EngineId`, `ENGINE_IDS` and `SPECS`, valid with GCP only;
+- out of `PLANNED_PATHS`; it is already in `DEV_ONLY_PATHS`;
+- the GCP/GCP_API admission combination;
+- `act:gcp-gcp_api`, its scope and status rows, and its journey;
+- flip the "no engine spec exists for GCP_API" assertion in `test/apply-gcp-api.test.ts`.
 
-Until then, admission refuses `GCP_API`. The release gate `act:gcp-api` is added to `config/release/scope.json` and `status.json` once `ACT_RELEASE_PATHS` can name `{ provider: "GCP", engine: "GCP_API" }`, which also depends on those types.
+**Evidence enums:**
+
+- `ApplyEvidence.authority.mutation` gains `GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST`;
+- `CleanupEvidence.authority.mutation` gains `GCP_PUBSUB_TOPIC_DELETE_OF_RUN_TOPIC`;
+- `CleanupEvidence` records `deletedByRun` from the cleanup run's `deletedByRun()`;
+- the evidence names the verified property `messageStoragePolicy.allowedPersistenceRegions` and its sealed value.
+
+**Blueprint:** `StateDocument.source` gains `GCP_API_TOPIC`, and `keepBlueprint` gains its branch to `blueprintFromGcpApiTopic`, with the place `{ project }`.
+
+**The run's unit:** the driver passes the sealed plan's `unit` into `openApply` and `openCleanup`.
+
+- The spec refuses `UNIT_NOT_GIVEN` without it.
+- The second sweep and the exact label check need it.
+- `runApply` and `runCleanup` both hold the sealed plan.
+- The seal's `pilotUnitOf` call must name the engine, so the GCP_API unit is used.
+
+**Through `engineOf`:**
+
+- `buildCleanupProposal` (`targetMoved`), `record-recovery` and `record-live` reach the spec through `engineOf`.
+- `gcpBackendBuckets` must return no bucket for the `GCP_API_NO_STATE` sentinel (D9).
+
+**Optional:**
+
+- a `ToolName` for the engine's result (it uses `gcp_pubsub_topic` by cast);
+- the three cleanup codes as their own `ApplyRefusalCode` entries;
+- showing the sealed calls verbatim in the CLI's seal and approve screens.

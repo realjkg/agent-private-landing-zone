@@ -599,6 +599,9 @@ At most one of them is what Google documents for `sts.googleapis.com/v1/token` (
 4. **G1**: the `gcp-rest` scope fix and storage-policy comparison (D15), and the `bootstrap/gcp` identity review with D12's checklist and contract-target template.
 5. **INT, the D5 interface change**, in its own PR. No engine behavior changes.
 6. **G2**, engine-local (`gcp-api.ts`, its tests and docs): the spec, not yet in `SPECS`. The blueprint mapper, the shared exchange and the unit change are INT's.
+   - **Status: implemented (lane G2).** The spec is `gcpApiEngine()` / `GCP_API` in `src/apply/engines/gcp-api.ts`, not registered. `docs/act-pilot-gcp-api.md` describes it, lists what INT-2 must add, and records the GF1 to GF11 results.
+   - Two placements follow from the interface. `EngineApplyRun.prepare` and `EngineCleanupRun.prepare` receive no artifact and no address. So the sealed topic's own `GET` runs in `rederive` (D14), and cleanup's label and policy read runs in `planDestroy` (D16). Both are awaited and come before consumption, with the same refusals.
+   - The runs take the sealed plan's `unit`, which INT-2 passes from the driver. Without it, they refuse `UNIT_NOT_GIVEN`.
 7. **INT-2**: `SPECS`, the ids and enums, the contract scope, `pilotUnitOf`, the evidence fields, the release path `act:gcp-gcp_api`; L7 adds its rows.
 8. The evidence checklist, then the owner's inputs and the owner's DEV run.
 
@@ -695,6 +698,11 @@ Each one is checked against Google's published API reference or discovery docume
 - **GF9:** that `pubsub.topics.create` alone covers a create carrying `messageStoragePolicy` (D12 item 2; with GF4).
 - **GF10:** that `cloudasset.assets.searchAllResources` is supported in custom roles at project level (D12 item 4).
 - **GF11:** that `roles/iam.workloadIdentityUser` carries `iam.serviceAccounts.getAccessToken` for federated principals, so no Token Creator role is needed (D12 items 5 and 7).
+
+**G2's result (2026-10-29, offline, no Google endpoint called):** the table is in `docs/act-pilot-gcp-api.md`, "Google API facts (GF1 to GF11)".
+- **VERIFIED** against Google's published discovery documents, protos and actions: GF2, the GF3 scope, the GF4 request shape, the GF6 delete of an absent topic, GF8, the GF10 permission name, and GF11 (functionally).
+- **UNVERIFIED-OWNER-LIVE**, each with how the product reports it and fails closed: GF1, the GF3 label query syntax, the GF4 read-back as sent, GF5, the GF6 duplicate create, GF7, GF9, and GF10 custom-role support.
+- **One finding for the reader's owner:** Cloud Asset documents label queries as `labels.<key>:<value>`, and the reader sends `labels.<key>=<value>`. If Google refuses that, every seal is `UNIT_LISTING_INCOMPLETE`, which fails closed.
 
 GF7 to GF11 are checked before bootstrap, and all of GF1 to GF11 before lane G2 merges. **G1's result (2026-10-29):** with no live call, GF7, GF9, GF10 and GF11 could not be verified from the repository or a pinned document. They stay **UNVERIFIED, MUST CHECK**, and the owner checks them against Google's IAM references before bootstrap (`docs/act-pilot-bootstrap-gcp.md`).
 

@@ -177,6 +177,7 @@ test("each committed ACT-DEV-1 canary folder selects only its own focused test, 
     ["qualification/azure/act-dev1-bicep-canary/main.bicep", "test/act-dev1-bicep-canary.test.ts"],
     ["qualification/gcp/act-dev1-canary/main.tf", "test/act-dev1-gcp-canary.test.ts"],
     ["qualification/gcp/act-dev1-canary/.terraform.lock.hcl", "test/act-dev1-gcp-canary.test.ts"],
+    ["qualification/gcp/act-dev1-canary-api/request.json", "test/apply-gcp-api.test.ts"],
   ];
   for (const [path, owner] of cases) {
     const files = fixture();
@@ -191,6 +192,9 @@ test("each committed ACT-DEV-1 canary folder selects only its own focused test, 
   }
   // The Terraform AWS canary keeps its own Python owner; the CDK folder is not mistaken for it.
   assert.ok(!CANARY_OWNERS.some(([folder]) => "qualification/aws/act-dev1-canary/main.tf".startsWith(folder)));
+  // The GCP API-native request is not mistaken for the GCP Terraform canary, nor the other way round.
+  assert.deepEqual(CANARY_OWNERS.filter(([folder]) => "qualification/gcp/act-dev1-canary-api/request.json".startsWith(folder)).map(([, owner]) => owner), ["test/apply-gcp-api.test.ts"]);
+  assert.deepEqual(CANARY_OWNERS.filter(([folder]) => "qualification/gcp/act-dev1-canary/main.tf".startsWith(folder)).map(([, owner]) => owner), ["test/act-dev1-gcp-canary.test.ts"]);
 });
 
 test("either Terraform canary also selects the seal-time unit-tag test beside its own owner", () => {
