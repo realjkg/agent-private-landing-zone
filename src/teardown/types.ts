@@ -24,7 +24,13 @@ export type DeletionUnitStateRef =
   | { engine: "CLOUDFORMATION" | "AWS_CDK"; region: string; stackName: string }
   /** Azure Deployment Stack: the stack itself tracks every resource it manages. */
   | { engine: "BICEP"; scope: string; deploymentStackName: string }
-  | { engine: "CROSSPLANE"; apiVersion: string; kind: string; name: string; namespace?: string };
+  | { engine: "CROSSPLANE"; apiVersion: string; kind: string; name: string; namespace?: string }
+  /**
+   * GCP API-native (path 6, docs/act-pilot-gcp-api-driver.md D10): no state file. The unit is the contract target's topic namespace,
+   * one per target, so every run under one target carries the same `alz-unit` and a later run's sweep sees an earlier run's topic.
+   * `location` is the target's backend sentinel (`GCP_API_NO_STATE`); it names no state location and is never read as one.
+   */
+  | { engine: "GCP_API"; backend: "pubsub"; location: string; workspace: string };
 
 export type ProvenanceTags = {
   "alz-managed-by": "alz";

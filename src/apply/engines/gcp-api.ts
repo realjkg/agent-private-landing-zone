@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { canonicalJson } from "../../teardown/manifest.js";
 import { ALZ_TAG_KEYS } from "../../teardown/unit.js";
-import { checkCredentialConfiguration, readTokenFile } from "../../tools/gcp-credentials.js";
+import { checkCredentialConfiguration, exchangeSubjectToken, impersonateServiceAccount, readTokenFile, type GcpTokenFailure } from "../../tools/gcp-credentials.js";
 import { identityVariables, type ExecutionIdentity } from "../../tools/identity.js";
 import { sha256 } from "../../util/sha256.js";
 import { GCP } from "../providers/gcp.js";
@@ -247,27 +247,18 @@ async function bearerFor(identity: "APPLY" | "DISCOVERY", deps: Pick<GcpApiDeps,
   // A regular file of one word, read without blocking (a FIFO in its place cannot hang the run; review N1 of #305).
   const subjectToken = readTokenFile(id.id.tokenFile);
   if (subjectToken === undefined) return refuse("CREDENTIALS");
-  const exchanged = await send({
-    method: "POST", url: STS_TOKEN_URL, headers: { "content-type": "application/json" },
-    body: JSON.stringify({ grantType: "urn:ietf:params:oauth:grant-type:token-exchange", audience: id.id.audience, scope: SCOPE_EXCHANGE, requestedTokenType: "urn:ietf:params:oauth:token-type:access_token", subjectTokenType: id.id.subjectTokenType, subjectToken }),
-  });
-  const federated = tokenField(exchanged, "access_token");
-  if (!federated.ok) return federated;
-  const impersonated = await send({
-    method: "POST", url: "https://" + IAM_CREDENTIALS_HOST + "/v1/projects/-/serviceAccounts/" + id.id.serviceAccount + ":generateAccessToken",
-    headers: { "content-type": "application/json", authorization: "Bearer " + federated.token },
-    body: JSON.stringify({ scope: [SCOPE_PUBSUB], lifetime: TOKEN_LIFETIME }),
-  });
-  return tokenField(impersonated, "accessToken");
+  // The one exchange and impersonation (src/tools/gcp-credentials.ts, D20), each through this run's gated sender.
+  const federated = await exchangeSubjectToken(send, { audience: id.id.audience, subjectTokenType: id.id.subjectTokenType, subjectToken, scope: SCOPE_EXCHANGE });
+  if (!federated.ok) return tokenRefusal(federated);
+  const impersonated = await impersonateServiceAccount(send, { federatedToken: federated.token, serviceAccount: id.id.serviceAccount, scopes: [SCOPE_PUBSUB], lifetime: TOKEN_LIFETIME });
+  return impersonated.ok ? { ok: true, token: impersonated.token } : tokenRefusal(impersonated);
 }
 
-function tokenField(response: GcpHttpResponse, field: string): Ok<{ token: string }> | GcpApiRefusal {
-  if (response.status === 0) return refuse(response.body === "HOST_REFUSED" ? "HOST_REFUSED" : "HTTP_ERROR");
-  if (response.status !== 200) return refuse(response.status === 400 || response.status === 401 || response.status === 403 ? "CREDENTIALS" : "HTTP_ERROR");
-  try {
-    const token = (JSON.parse(response.body) as Record<string, unknown>)[field];
-    return typeof token === "string" && token !== "" && !/\s/.test(token) ? { ok: true, token } : refuse("UNEXPECTED_RESPONSE");
-  } catch { return refuse("UNEXPECTED_RESPONSE"); }
+/** This engine's refusal for a failed token step: the same classes it always gave. */
+function tokenRefusal(failure: GcpTokenFailure): GcpApiRefusal {
+  if (failure.malformed) return refuse("UNEXPECTED_RESPONSE");
+  if (failure.status === 0) return refuse(failure.hostRefused ? "HOST_REFUSED" : "HTTP_ERROR");
+  return refuse(failure.status === 400 || failure.status === 401 || failure.status === 403 ? "CREDENTIALS" : "HTTP_ERROR");
 }
 
 /* ------------------------------------------------------------------ read-back (DISCOVERY) */

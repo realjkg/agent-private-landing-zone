@@ -1194,9 +1194,27 @@ test("D5: a cleanup whose prepare and planDestroy return promises runs through t
     const done = await cleanup(w, run);
     assert.ok(done.ok, JSON.stringify(done));
     // Had planDestroy not been awaited, the scope check would read a promise as the destroy plan and refuse the cleanup.
-    assert.deepEqual(log, ["cleanupPrepare", "planDestroy", "cleanupExecute"]);
+    assert.deepEqual(log, ["cleanupPrepare", "planDestroy", "cleanupExecute", "cleanupSettle"], "settle is awaited too (#355 N3)");
   });
   assert.equal(applyCalls().length, appliedBefore + 1, "one destroy was applied");
+});
+
+test("#355 N3: a failed cleanup's settle and recoveryFiles may return promises: its outcome and recovery files are the ones the awaited steps gave", async () => {
+  const w = world();
+  behave({ showResources: withoutSecret(CREATES), stateResources: withoutSecret(STATE as { type: string }[]) });
+  const run = await proposed(w);
+  behave({ applyExit: 1, applyStderr: "Error: something failed CANARY_ENGINE_ERROR", destroyKeeps: ["azurerm_log_analytics_workspace.pilot"],
+    applyWrites: [{ path: "errored.tfstate", content: JSON.stringify({ serial: 9, note: "CANARY_N3_CLEANUP" }) }] });
+  await withAsyncSteps(TERRAFORM, {}, async (log) => {
+    const partial = await cleanup(w, run);
+    refused(partial, "APPLY_FAILED");
+    assert.equal((partial as { outcome?: string }).outcome, "PARTIAL_REQUIRES_REVIEW", "the awaited settle's outcome");
+    assert.deepEqual(log, ["cleanupPrepare", "planDestroy", "cleanupExecute", "cleanupSettle", "cleanupRecoveryFiles"]);
+  });
+  // Had recoveryFiles not been awaited, the cleanup would keep a promise: no file count in its evidence.
+  const evidence = await readCleanupEvidence(run.proposal.proposalSha256, w.dirs.evidence);
+  assert.equal(evidence?.recovery?.files, 1);
+  assert.ok(!JSON.stringify(evidence).includes("CANARY_N3_CLEANUP"));
 });
 
 test("D5: a rejected prepare or planDestroy is the same refusal as a throw, with nothing destroyed and no approval consumed", async () => {

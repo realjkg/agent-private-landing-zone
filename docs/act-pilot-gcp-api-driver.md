@@ -150,6 +150,12 @@ canonicalJson({ kind: "IN_PROCESS_MODULE", engine: "GCP_API",
 
 **Rejected.** The engine's `cleanupGcpApiPlan`: its authority came from the engine's own ledger, which D3 removes.
 
+**Status: the mapper is in place (INT-5).**
+- `blueprintFromGcpApiTopic` (`src/observe/blueprint.ts`) maps the read-back `{ name, labels }` to one entry. Labels are never copied.
+- A name in another project, a malformed name, or an id outside the `alz-` topic rule gives no entry, so the planned topic is `missing`. Tests: `test/observe-blueprint-gcp-api.test.ts`.
+- `stateDocument`, `settle` and `recoveryFiles` may now return a promise, and the driver awaits each one (#355 N3). An engine can therefore read the topic during or after `settle`.
+- The `GCP_API_TOPIC` source and its branch in `keepBlueprint` remain INT-2's.
+
 ## 3. The rest of the design
 
 ### D7. Typed request and how the "plan" is represented [REVIEWER]
@@ -238,6 +244,19 @@ Moving any of these is a target move. Every field is preserved through apply, ob
 
 **For the cleanup classifier.** With GCP_API, the state-bucket list the classifier protects is empty (there is no state). The sentinel is never parsed as a bucket. This is INT's change to `gcpBackendBuckets` when the GCP provider lands.
 
+**Status: the shared shape is in place (INT-5); the engine is not registered yet.**
+- `src/apply/gcp-api-target.ts` holds `GCP_API_TARGET`, which G2's spec declares as its `target`:
+  - the `GCP_API_NO_STATE` sentinel;
+  - the `default` workspace;
+  - the `topicPrefix` rule, as a location field;
+  - the topic id rule;
+  - the `parent` label.
+- `targetSha256Of` in `src/apply/contract.ts` is the one target-hash implementation, and `pilotTargetSha256` now calls it.
+- GCP_API joins `DEV_ONLY_PATHS`. It stays in `PLANNED_PATHS`, which is checked first, so a GCP_API contract is still `NOT_IMPLEMENTED`. It is not in `actPilot.combinations`.
+- `test/apply-gcp-api-target.test.ts` pins two things:
+  - the target hashes of all five implemented paths, byte-identical to `main` `ae39be6`;
+  - that each GCP_API field (and `parent` when stated) moves the hash.
+
 **Why [OWNER].** The same reason as D4: these fields are what the owner's reviewed commit authorizes. The owner inputs listed in decision 6481421924 fill them: the project, the location constraint and the target identifiers (here, the prefix). **Accepted** (6483366237), with the `parent` labeling and the no-redirect rule above.
 
 ### D10. Run-unique names and per-run ownership [REVIEWER]
@@ -245,6 +264,12 @@ Moving any of these is a target move. Every field is preserved through apply, ob
 **Name.** At seal, `plan` draws 6 random bytes (12 hex characters) and the topic id is `topicPrefix + suffix`. The suffix is inside the artifact, so every approver signs the exact topic name. A new seal is a new name and a new artifact. This also replaces #303's `sealNonce`, whose only job was to make each seal a new artifact.
 
 **Unit.** The unit stays the product's: one unit per contract target, from `pilotUnitOf`. The change is **scoped to GCP_API only** (INT, `src/apply/unit.ts` and `DeletionUnitStateRef` in `src/teardown/types.ts`): for a GCP_API contract the state reference names engine `GCP_API` with backend kind `pubsub`, a new variant of that type. Every other engine keeps today's reference (`engine: "TERRAFORM"` and its provider's backend kind) byte for byte, so the unit id and the `alz-unit` tag of AWS and Azure Terraform, CDK and Bicep runs do not change; a regression test pins their unit ids. Every run under one target therefore carries the same `alz-unit` label, which is what makes the independent sweep useful: a topic from an earlier run that is still there shows up as `unexpected` in a later run's observation.
+
+**Status: the unit is in place (INT-5).**
+- `pilotUnitOf` takes an optional `engine`. For `GCP_API` (GCP only), the state reference is `{ engine: "GCP_API", backend: "pubsub", location, workspace }`, the new `DeletionUnitStateRef` variant.
+- A build can never record a deletion unit of it (`GCP_API_UNIT_IS_PILOT_ONLY`).
+- `GCP_API` is a `ManifestEngine` with no lock file, and it is never a `DriverEngine`.
+- `test/apply-unit.test.ts` pins every existing path's unit id byte for byte, with and without the engine named.
 
 **Ownership per run** comes from the run's records, as for every path: the sealed plan names the exact topic, the blueprint maps it to one id, the observation checks it, and the proposal is derived from those. A label alone never makes a topic deletable (`src/teardown/unit.ts`).
 
@@ -537,6 +562,26 @@ With the row named `NATIVE_API` and the engine `GCP_API`, the row would never fi
 
 At most one of them is what Google documents for `sts.googleapis.com/v1/token` (UNVERIFIED GF1).
 
+**Status: done (INT-5).**
+- `exchangeSubjectToken` and `impersonateServiceAccount` in `src/tools/gcp-credentials.ts` are the only implementation. The engine and the reader each call them through their own gated sender, and map a failure to the refusal classes they always gave.
+- `test/gcp-token-exchange.test.ts` pins the exact requests, and fails if any other source file builds one.
+
+**Wire format, checked offline on 2026-10-29, with no Google API endpoint called:**
+- The `sts:v1` discovery document (revision 20261014, as mirrored at `https://raw.githubusercontent.com/googleapis/google-api-go-client/main/sts/v1/sts-api.json`) describes:
+  - `POST v1/token` with a JSON body of camelCase fields;
+  - no `Authorization` header;
+  - a response of `access_token`, `issued_token_type`, `token_type` and `expires_in`.
+- Google's own Node.js auth library (`https://raw.githubusercontent.com/googleapis/google-auth-library-nodejs/main/src/auth/stscredentials.ts`) sends the same request form-encoded, with the RFC 8693 snake_case names. The EMULATED run showed Google's Go library doing the same.
+- The `iamcredentials:v1` discovery document (revision 20260630, as mirrored at `https://raw.githubusercontent.com/googleapis/google-api-go-client/main/iamcredentials/v1/iamcredentials-api.json`) describes:
+  - `POST v1/projects/-/serviceAccounts/<email>:generateAccessToken`, where the `-` is required;
+  - JSON `{ scope: [...], lifetime }`;
+  - a response of `accessToken` and `expireTime`.
+
+**The choice and what remains open.**
+- The shared exchange is form-encoded with snake_case names, as Google's libraries send it. The engine used to send JSON with camelCase names.
+- `https://docs.cloud.google.com/iam/docs/reference/sts/rest/v1/TopLevel/token` could not be read from the session: the host is outside its network allowlist.
+- GF1 is therefore narrowed but not closed: only the owner's live run shows what Google accepts.
+
 **Decision.** One exchange function, used by both, in the shared `src/tools/gcp-credentials.ts` (the serialized integrator's file) (which already holds `checkCredentialConfiguration` and `readTokenFile` for both). The scope and lifetime stay parameters. Before G2 merges, its request shape is checked against Google's published STS and IAM Credentials references. The owner's live DEV run is what proves it.
 
 ## 4. Lane order
@@ -631,6 +676,8 @@ All of these are SYNTHETIC: a fake for STS, IAM Credentials, Pub/Sub and Cloud A
 Each one is checked against Google's published API reference or discovery document, with no live call, and the result is recorded in G2's PR:
 
 - **GF1:** the request format of `sts.googleapis.com/v1/token`, JSON or form-encoded (D20).
+  - *Narrowed offline (INT-5):* the discovery document describes JSON with camelCase names, and Google's auth libraries send a form with snake_case names. The shared exchange sends the form.
+  - *Still open:* what Google accepts, until the live run.
 - **GF2:** the OAuth scopes `pubsub.projects.topics.get`, `.create` and `.delete` accept (D12, D15). *Supported offline (G1):* the Pub/Sub v1 discovery document (revision 20261006) lists only `cloud-platform` and `pubsub` on all three. Google's acceptance is unverified.
 - **GF3:** the scopes `cloudasset.searchAllResources` accepts, and its query syntax for labels (D15).
 - **GF4:** that `topics.create` takes `messageStoragePolicy` on `PUT` and `topics.get` returns it as sent (D11). *Partly supported offline (G1):* the same discovery document has `create` as `PUT v1/{+name}` and `messageStoragePolicy` on `Topic`. hashicorp/google 8.9.0 sends it on that `PUT` (EMULATED run). The read-back is unverified.

@@ -290,3 +290,34 @@ export function blueprintFromDeploymentStackResources(json: string, planned: rea
     ? { type: DEPLOYMENT_STACK_TYPE, identifier: stackId } : undefined;
   return { entries: built.entries, missing: [...leaving].filter((address) => !built.entries.some((entry) => entry.address === address)).sort(), ...(container ? { container } : {}) };
 }
+
+/** The run's topic as GCP API-native records it: one `google_pubsub_topic` per run (docs/act-pilot-gcp-api-driver.md D6). */
+export const GCP_API_TOPIC_TYPE = "google_pubsub_topic";
+const GCP_PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+/**
+ * The run's topic id rule, the same as `TOPIC_ID` in src/apply/gcp-api-target.ts. Written out here because this module must not
+ * reach the apply path (test/apply-boundary.test.ts); test/observe-blueprint-gcp-api.test.ts checks the two are identical.
+ */
+export const GCP_API_TOPIC_ID = /^alz-[a-z0-9-]{1,59}[a-z0-9]$/;
+
+/**
+ * The blueprint of a GCP API-native run (path 6; docs/act-pilot-gcp-api-driver.md D6): the engine's DISCOVERY read-back of the run's
+ * one topic, as `{ "name": "projects/<project>/topics/<topicId>", "labels": {...} }`. It maps to one entry, address
+ * `google_pubsub_topic.<topicId>`, type `google_pubsub_topic`, the resource name as its id, and origin IN_PLAN only when the sealed
+ * change list names that address. A name in another project, a malformed name or an id outside the `alz-` topic rule yields no
+ * entry, so it is never something a cleanup could name; the planned topic is then `missing`. Labels are not copied: ownership comes
+ * from the run's records, never from a label (src/teardown/unit.ts).
+ */
+export function blueprintFromGcpApiTopic(json: string, planned: readonly PlannedChange[], place: { project: string }): Blueprint {
+  const body = parseState(json);
+  if (!text(body.name)) throw new Error("STATE_JSON_INVALID: not a topic read-back");
+  if (body.labels !== undefined && !isRecord(body.labels)) throw new Error("STATE_JSON_INVALID: labels are not an object");
+  function* instances(): Generator<Instance> {
+    const segments = (body.name as string).split("/");
+    if (segments.length !== 4 || segments[0] !== "projects" || segments[2] !== "topics") return;
+    const [, project, , topicId] = segments as [string, string, string, string];
+    if (!GCP_PROJECT_ID.test(project) || project !== place.project || !GCP_API_TOPIC_ID.test(topicId)) return;
+    yield { address: GCP_API_TOPIC_TYPE + "." + topicId, type: GCP_API_TOPIC_TYPE, values: { id: body.name } };
+  }
+  return blueprintOf(instances(), planned);
+}

@@ -1,5 +1,5 @@
 
-import { checkCredentialConfiguration, projectOfServiceAccount, readTokenFile } from "../tools/gcp-credentials.js";
+import { checkCredentialConfiguration, exchangeSubjectToken, generateAccessTokenUrl, impersonateServiceAccount, projectOfServiceAccount, readTokenFile, STS_TOKEN_URL, type GcpTokenFailure } from "../tools/gcp-credentials.js";
 import { identityVariables } from "../tools/identity.js";
 import { ALZ_TAG_KEYS } from "../teardown/unit.js";
 import type { BlueprintEntry } from "./blueprint.js";
@@ -44,8 +44,9 @@ import type { ResourceCheck, ResourceReader, VerifierId } from "./verify.js";
  * so a token never travels in cleartext, to the wrong service, or about a different resource. Only existence and identifiers are
  * kept from an answer.
  *
- * UNVERIFIED (from memory, as the PLAN marks them): the token-exchange and generateAccessToken request shapes against Google's
- * reference (GF1; the exchange is form-encoded, as Google's Go auth library sends it in the EMULATED run); the scopes Cloud Asset
+ * The token exchange and the impersonation are the shared ones (src/tools/gcp-credentials.ts, D20), whose request shapes were
+ * checked offline against Google's discovery documents and auth library (GF1 stays open until the owner's live run).
+ * UNVERIFIED (from memory, as the PLAN marks them): the scopes Cloud Asset
  * accepts (GF3); and Cloud Asset Inventory's `searchAllResources` query syntax `labels.<key>=<value>` and its eventual consistency
  * (minutes, GF5). A resource the
  * state names that the sweep does not yet list is no failure; a listed resource the state does not name is one, as on AWS and Azure.
@@ -59,8 +60,6 @@ export type GcpHttp = (request: GcpRequest) => Promise<GcpResponse>;
 export const GCP_VERIFIER = "GCP_REST" satisfies VerifierId;
 export type GcpResourceReader = Omit<ResourceReader, "verifier"> & { verifier: typeof GCP_VERIFIER };
 
-const STS_TOKEN_URL = "https://sts.googleapis.com/v1/token";
-const IAM_CREDENTIALS_HOST = "iamcredentials.googleapis.com";
 const PUBSUB_HOST = "pubsub.googleapis.com";
 const ASSET_HOST = "cloudasset.googleapis.com";
 /** Where a GET with DISCOVERY's access token may go. Each host is one the reader has a use for, and nothing else. */
@@ -137,6 +136,10 @@ export type DiscoveryGcpOptions = {
   http?: GcpHttp;
 };
 
+/** The reader's class for a failed impersonation: the same classes it always gave. */
+const readerFailure = (failure: GcpTokenFailure): { failed: GcpErrorClass } =>
+  ({ failed: failure.malformed ? "UNEXPECTED_RESPONSE" : failure.status === 0 ? "HOST_REFUSED" : classOf(failure.status) });
+
 /** The GCP reader bound to DISCOVERY. `close` drops the tokens; call it when the observation is done. */
 export function createDiscoveryGcpReader(options: DiscoveryGcpOptions): { reader: GcpResourceReader; close(): void } {
   const http = options.http ?? fetchGcpHttp;
@@ -160,12 +163,6 @@ export function createDiscoveryGcpReader(options: DiscoveryGcpOptions): { reader
     return http(request);
   };
 
-  const tokenFrom = (body: string, field: string): string | undefined => {
-    try {
-      const value = (JSON.parse(body) as Record<string, unknown>)[field];
-      return typeof value === "string" && value !== "" && !/\s/.test(value) ? value : undefined;
-    } catch { return undefined; }
-  };
 
   /** The federated token: DISCOVERY's OIDC token exchanged once at the security token service. It never leaves this closure. */
   const federated = async (): Promise<Access> => {
@@ -174,16 +171,12 @@ export function createDiscoveryGcpReader(options: DiscoveryGcpOptions): { reader
     if (!identity.ok) return (federation = { failed: "CREDENTIALS" });
     const subjectToken = readTokenFile(identity.tokenFile);
     if (subjectToken === undefined) return (federation = { failed: "CREDENTIALS" });
-    const exchange = await send({
-      method: "POST", url: STS_TOKEN_URL, headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:token-exchange", audience: identity.audience, scope: EXCHANGE_SCOPE,
-        requested_token_type: "urn:ietf:params:oauth:token-type:access_token", subject_token: subjectToken, subject_token_type: identity.subjectTokenType,
-      }).toString(),
-    }, STS_TOKEN_URL);
-    if (exchange.status !== 200) return (federation = { failed: exchange.status === 400 || exchange.status === 401 ? "CREDENTIALS" : exchange.status === 0 ? "HOST_REFUSED" : classOf(exchange.status) });
-    const token = tokenFrom(exchange.body, "access_token");
-    return (federation = token === undefined ? { failed: "UNEXPECTED_RESPONSE" } : { token });
+    // The one exchange (src/tools/gcp-credentials.ts, D20), through this reader's gate: a POST to the one STS URL only.
+    const exchange = await exchangeSubjectToken((request) => send(request, STS_TOKEN_URL), { audience: identity.audience, subjectTokenType: identity.subjectTokenType, subjectToken, scope: EXCHANGE_SCOPE });
+    if (!exchange.ok) {
+      return (federation = { failed: exchange.malformed ? "UNEXPECTED_RESPONSE" : exchange.status === 400 || exchange.status === 401 ? "CREDENTIALS" : exchange.status === 0 ? "HOST_REFUSED" : classOf(exchange.status) });
+    }
+    return (federation = { token: exchange.token });
   };
 
   /** DISCOVERY's access token for one read host, with that host's scope only: OIDC token, federated token, then the service account's token. */
@@ -197,14 +190,10 @@ export function createDiscoveryGcpReader(options: DiscoveryGcpOptions): { reader
     if (!identity.ok) return { failed: "CREDENTIALS" };
     const exchanged = await federated();
     if ("failed" in exchanged) { access.set(host, exchanged); return exchanged; }
-    const impersonate = "https://" + IAM_CREDENTIALS_HOST + "/v1/projects/-/serviceAccounts/" + identity.serviceAccount + ":generateAccessToken";
-    const generated = await send({
-      method: "POST", url: impersonate, headers: { authorization: "Bearer " + exchanged.token, "content-type": "application/json" },
-      body: JSON.stringify({ scope: [scope], lifetime: "900s" }),
-    }, impersonate);
-    const token = generated.status === 200 ? tokenFrom(generated.body, "accessToken") : undefined;
-    const result: Access = generated.status !== 200 ? { failed: generated.status === 0 ? "HOST_REFUSED" : classOf(generated.status) }
-      : token === undefined ? { failed: "UNEXPECTED_RESPONSE" } : { token };
+    const impersonate = generateAccessTokenUrl(identity.serviceAccount);
+    // The one impersonation (D20), through this reader's gate: a POST to this service account's generateAccessToken URL only.
+    const generated = await impersonateServiceAccount((request) => send(request, impersonate), { federatedToken: exchanged.token, serviceAccount: identity.serviceAccount, scopes: [scope], lifetime: "900s" });
+    const result: Access = generated.ok ? { token: generated.token } : readerFailure(generated);
     access.set(host, result);
     return result;
   };

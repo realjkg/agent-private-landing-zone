@@ -846,9 +846,30 @@ test("D5: an engine whose plan, prepare and rederive return promises seals and a
     const result = await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps);
     assert.ok(result.ok, JSON.stringify(result));
     // Had rederive not been awaited, the driver would compare a promise with the sealed change list and refuse ARTIFACT_TAMPERED.
-    assert.deepEqual(log, ["plan", "prepare", "rederive", "execute"], "each step ran after the one before it had settled");
+    // settle and stateDocument may be awaited too (#355 N3); a successful run keeps no recovery files, so it never asks for them.
+    assert.deepEqual(log, ["plan", "prepare", "rederive", "execute", "settle", "stateDocument"], "each step ran after the one before it had settled");
+    // Had stateDocument not been awaited, the driver would map a promise and keep no blueprint.
+    assert.ok(existsSync(join(w.dirs.evidence, s.sealed.artifactSha256 + ".blueprint.evidence")), "the blueprint came from the awaited state document");
     assert.equal(applyCalls().length, 1);
   });
+});
+
+test("#355 N3: settle and recoveryFiles may return promises: a failed apply's outcome and recovery files are the ones the engine's awaited steps gave", async () => {
+  const w = world();
+  const SECRET = "CANARY_ERRORED_STATE_n3";
+  behave({ applyExit: 1, applyStderr: "Error: " + VALUE_CANARY, planSalt: "n3-recovery-files", applyWrites: [{ path: "errored.tfstate", content: JSON.stringify({ serial: 8, secret: SECRET }) }] });
+  const s = await seal(w, "DEV");
+  await withAsyncSteps(TERRAFORM, {}, async (log) => {
+    const result = await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps);
+    refused(result, "APPLY_FAILED");
+    assert.equal((result as { outcome?: string }).outcome, "PARTIAL_REQUIRES_REVIEW", "the awaited settle's outcome");
+    assert.deepEqual(log.slice(0, 6), ["prepare", "rederive", "execute", "settle", "recoveryFiles", "stateDocument"]);
+  });
+  // Had recoveryFiles not been awaited, the driver would keep a promise: no file count and no recovery record.
+  const stored = await readEncryptedEvidence<ApplyEvidence>(ledgerOf(w, s));
+  assert.equal(stored.recovery?.files, 1);
+  assert.ok(existsSync(join(recoveryDir(), s.sealed.artifactSha256 + ".evidence")));
+  assert.ok(!JSON.stringify(stored).includes(SECRET));
 });
 
 test("D5: a promise rejected by an awaited step is the same refusal as a throw: PLAN_STALE from rederive, a failed plan at seal, with nothing consumed", async () => {

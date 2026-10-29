@@ -81,8 +81,9 @@ export type EngineApplyRun = {
    */
   execute(artifact: Buffer, control: StopControl): Promise<StoppableResult>;
   /** How the run ended, from the result and the state read after it. */
-  settle(applied: StoppableResult): ApplyEnd | Promise<ApplyEnd>;
-  recoveryFiles(): RecoveryFile[];
+  settle(applied: StoppableResult): MaybePromise<ApplyEnd>;
+  /** What the run left to recover from. May be awaited (#355 N3): an engine that reads them over the network does so here. */
+  recoveryFiles(): MaybePromise<RecoveryFile[]>;
   /** Removes every plaintext secret the run wrote (the artifact, backend configuration). Idempotent. */
   removeSecrets(): void;
   /**
@@ -90,7 +91,7 @@ export type EngineApplyRun = {
    * as STATE; CDK: the stack's resources as DISCOVERY), for the driver to map addresses to cloud identifiers
    * (src/observe/blueprint.ts) and drop. Undefined when it cannot be read; never thrown, never logged.
    */
-  stateDocument?(): StateDocument | undefined;
+  stateDocument?(): MaybePromise<StateDocument | undefined>;
 };
 
 /**
@@ -105,8 +106,8 @@ export type EngineCleanupRun = {
   planDestroy(addresses: readonly string[]): MaybePromise<PlanChange[]>;
   /** Runs the destroy plan `planDestroy` made. Resolves once the engine existed; a throw means it never did. */
   execute(control: StopControl): Promise<StoppableResult>;
-  settle(applied: StoppableResult): ApplyEnd | Promise<ApplyEnd>;
-  recoveryFiles(): RecoveryFile[];
+  settle(applied: StoppableResult): MaybePromise<ApplyEnd>;
+  recoveryFiles(): MaybePromise<RecoveryFile[]>;
   removeSecrets(): void;
 };
 
@@ -193,14 +194,17 @@ export type EngineSpec = {
 };
 
 /** An apply run whose reads finish before each step returns (the Terraform, CDK and Bicep engines spawn processes synchronously). */
-export type SyncEngineApplyRun = Omit<EngineApplyRun, "prepare" | "rederive"> & {
+export type SyncEngineApplyRun = Omit<EngineApplyRun, "prepare" | "rederive" | "recoveryFiles" | "stateDocument"> & {
   prepare(snapshotPath: string): void;
   rederive(artifact: Buffer): PlanChange[];
+  recoveryFiles(): RecoveryFile[];
+  stateDocument?(): StateDocument | undefined;
 };
 /** A cleanup run whose reads finish before each step returns. */
-export type SyncEngineCleanupRun = Omit<EngineCleanupRun, "prepare" | "planDestroy"> & {
+export type SyncEngineCleanupRun = Omit<EngineCleanupRun, "prepare" | "planDestroy" | "recoveryFiles"> & {
   prepare(snapshotPath: string): void;
   planDestroy(addresses: readonly string[]): PlanChange[];
+  recoveryFiles(): RecoveryFile[];
 };
 /**
  * An engine whose steps return plain values. It is an `EngineSpec` (the driver awaits each step, and awaiting a value is the

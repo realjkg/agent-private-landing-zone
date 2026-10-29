@@ -194,7 +194,13 @@ const PLANNED_PATHS: readonly { provider: string; engine: string; path: string }
 const DEV_ONLY_PATHS: readonly { provider: string; engine: string; path: string }[] = [
   { provider: "AZURE", engine: "BICEP", path: "path 4" },
   { provider: "GCP", engine: "TERRAFORM", path: "path 5" },
+  // GCP API-native is DEV only too (docs/act-pilot-gcp-api-driver.md D9). It stays in PLANNED_PATHS, which is checked first, until
+  // its engine spec lands; then a contract for it must state enabledEnvironments ["DEV"]. Release admission does not list it.
+  { provider: "GCP", engine: "GCP_API", path: "path 6" },
 ];
+
+/** Whether a provider and engine pair is admitted for DEV only (the contract must then state `enabledEnvironments: ["DEV"]`). */
+export const isDevOnlyPath = (provider: string, engine: string): boolean => DEV_ONLY_PATHS.some((p) => p.provider === provider && p.engine === engine);
 /**
  * Explicit STATE_WRITE backend binding (owner decision 6486426552 on #39, item 1; #345 review N1): every engine with a state backend
  * (Terraform, on AWS, Azure and GCP) must set `embedStateWrite: true`. Without it the plan would leave the state backend's identity to
@@ -359,15 +365,24 @@ export type Authorization = { operation: ActOperation; contractSha256: string; a
 export function pilotTargetSha256(contract: PilotContract, env: ApplyEnvironment): string | undefined {
   const target = Object.hasOwn(contract.targets, env) ? contract.targets[env] : undefined;
   if (!target) return undefined;
-  const account = Object.fromEntries(Object.entries(accountFieldsOf(specOf(contract), target)).map(([key, value]) => [key, canonicalGuid(value)]));
+  return targetSha256Of(specOf(contract), engineOf(contract).target, target);
+}
+
+/**
+ * The target hash from its parts: the provider spec, the engine's target shape (its `locationFields`) and the target. One
+ * implementation for every path, so an engine whose spec is not registered yet (GCP API-native, `GCP_API_TARGET`) is hashed by the
+ * same rule its registered spec will use (docs/act-pilot-gcp-api-driver.md D9).
+ */
+export function targetSha256Of(spec: ProviderSpec, engineTarget: EngineSpec["target"], target: PilotTarget): string {
+  const account = Object.fromEntries(Object.entries(accountFieldsOf(spec, target)).map(([key, value]) => [key, canonicalGuid(value)]));
   // An engine with no location fields (Terraform, CDK) and a provider with no optional fields (AWS, Azure) add nothing, so their
   // targets hash as they always did. A provider's optional field joins only when the target states it.
   const fields = target as unknown as Record<string, unknown>;
   const located = [
-    ...(engineOf(contract).target?.locationFields ?? []), ...Object.keys(specOf(contract).optionalTargetFields ?? {}).filter((name) => fields[name] !== undefined),
+    ...(engineTarget?.locationFields ?? []), ...Object.keys(spec.optionalTargetFields ?? {}).filter((name) => fields[name] !== undefined),
   ].map((name) => [name, fields[name]]);
   return sha256(canonicalJson({
-    provider: contract.provider, ...account, ...Object.fromEntries(located), backend: target.backend, workspace: target.workspace,
+    provider: spec.id, ...account, ...Object.fromEntries(located), backend: target.backend, workspace: target.workspace,
     ...(target.canary !== undefined ? { canary: target.canary } : {}),
   } as never));
 }

@@ -108,7 +108,10 @@ export function recordDeletionUnit(input: {
   // Ansible configures existing hosts; it creates no state container to undo.
   requireUnit(planEngine !== "ANSIBLE", "ANSIBLE_HAS_NO_DELETION_UNIT");
   // The state reference names the unit's engine; the plan must be a plan for it.
-  const engine = input.stateRef.engine;
+  const stateEngine = input.stateRef.engine;
+  // GCP API-native's reference names a pilot unit only (src/apply/unit.ts); a build records no deletion unit of it.
+  requireUnit(stateEngine !== "GCP_API", "GCP_API_UNIT_IS_PILOT_ONLY");
+  const engine = stateEngine as Exclude<typeof stateEngine, "GCP_API">;
   requireUnit(enginesCompatible(engine, planEngine), "STATE_REF_ENGINE_MISMATCH");
   validateStateRef(engine, input.stateRef);
   requireUnit(HASH.test(input.designHash), "DESIGN_HASH");
