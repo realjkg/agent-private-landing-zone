@@ -19,7 +19,8 @@
     "act:aws-terraform",
     "act:azure-terraform",
     "act:aws-cdk",
-    "act:azure-bicep"
+    "act:azure-bicep",
+    "act:gcp-terraform"
   ],
   "journey": "FULL_LIFECYCLE",
   "outOfScope": [
@@ -73,7 +74,7 @@
     },
     {
       "gate": "preview:terraform-gcp-brownfield",
-      "reason": "The GCP brownfield preview is dropped from this release (owner decision of 2026-10-28, #39 6480066863): no GCP contract can seal a plan, so no producer can run this gate. GCP Terraform ACT and GCP API-native ACT are in scope for this DEV release (#39, 6481421924). The ./alz apply preview-evidence producer is unchanged."
+      "reason": "The GCP brownfield preview is dropped from this release (owner decision of 2026-10-28, #39 6480066863): owner decision E1 makes APPLY seals create-only, so a brownfield plan, one that updates or adopts a pre-existing resource, is refused at seal (RESOURCE_NOT_IN_CANARY) and ./alz apply preview-evidence cannot produce this gate's evidence. GCP Terraform ACT and GCP API-native ACT are in scope for this DEV release (#39, 6481421924). The producer is unchanged."
     },
     {
       "gate": "pillar:operational-excellence",

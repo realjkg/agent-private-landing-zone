@@ -49,6 +49,19 @@ const PROVIDER_KEYS:
         "azure.backup.recovery_point",
       ],
     },
+    GCP: {
+      configurationExport: [
+        "gcp.configuration_export",
+      ],
+      encryption: [
+        "gcp.backup.encryption",
+        "gcp.recovery_encryption",
+      ],
+      storage: [
+        "gcp.backup.vault",
+        "gcp.backup.recovery_point",
+      ],
+    },
   };
 
 function evidenceRefsFor(

@@ -1450,84 +1450,235 @@
       "path": "TERRAFORM",
       "steps": {
         "prepare": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "GCP is not a pilot provider: src/apply/providers has AWS and Azure only, and GCP has read-only discovery and an offline demo."
+          "status": "BLOCKED",
+          "blockedBy": "No console (ui) test drives the GCP Terraform journey through the real pilot router yet, so no step can be SYNTHETIC_PASS (src/release/acceptance.ts). The driver-level journey passes SYNTHETIC with a fake terraform and a fake Google REST API (test/apply-gcp-admission.test.ts; GCP Terraform is admitted for DEV only by #339).",
+          "code": [
+            "src/apply/prepare.ts",
+            "src/apply/providers/gcp.ts"
+          ],
+          "tests": {
+            "positive": [
+              {
+                "file": "test/apply-gcp-admission.test.ts",
+                "title": "GCP is admitted with Terraform for DEV only: the provider is registered, the DEV-only contract loads and authorizes, the three-stage contract and GCP_API stay refused"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-gcp-admission.test.ts",
+                "title": "DEV only: QA and PROD are refused in every form, and an AWS- or Azure-shaped target, or another target's fields, is not a GCP target"
+              }
+            ]
+          }
         },
         "preview": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "GCP is not a pilot provider: src/apply/providers has AWS and Azure only, and GCP has read-only discovery and an offline demo."
+          "status": "BLOCKED",
+          "blockedBy": "No console (ui) test drives the GCP Terraform journey through the real pilot router yet, so no step can be SYNTHETIC_PASS (src/release/acceptance.ts). The driver-level journey passes SYNTHETIC with a fake terraform and a fake Google REST API (test/apply-gcp-admission.test.ts; GCP Terraform is admitted for DEV only by #339).",
+          "code": [
+            "src/apply/engines/terraform.ts",
+            "src/apply/seal.ts",
+            "src/apply/providers/gcp.ts"
+          ],
+          "tests": {
+            "positive": [
+              {
+                "file": "test/apply-gcp-admission.test.ts",
+                "title": "GCP Terraform journey (SYNTHETIC): seal, apply, observe through Google's REST APIs as DISCOVERY, propose (only the reviewed leaf), clean up, and verify leftovers; nothing but identifiers is ever recorded"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-gcp-admission.test.ts",
+                "title": "canary (GCP Terraform, owner decision E1): one google_pubsub_topic seals; a subscription, a topic or project IAM binding, or a second topic is RESOURCE_NOT_IN_CANARY at seal, and an apply re-derives the same judgment"
+              },
+              {
+                "file": "test/apply-gcp-admission.test.ts",
+                "title": "review N1 of #339 through the seal: a topic planned in another project, unknown until apply, or configured by an expression, and a provider block without the contract's constant project, seal nothing"
+              },
+              {
+                "file": "test/apply-gcp-admission.test.ts",
+                "title": "hashicorp/google is pinned to the reviewed 8.9.0 with HashiCorp's official hashes: another version, an unofficial hash, or another google source refuses the seal; init's own selection is checked again"
+              }
+            ]
+          }
         },
         "approve": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "GCP is not a pilot provider: src/apply/providers has AWS and Azure only, and GCP has read-only discovery and an offline demo."
+          "status": "BLOCKED",
+          "blockedBy": "No console (ui) test drives the GCP Terraform journey through the real pilot router yet, so no step can be SYNTHETIC_PASS (src/release/acceptance.ts). The driver-level journey passes SYNTHETIC with a fake terraform and a fake Google REST API (test/apply-gcp-admission.test.ts; GCP Terraform is admitted for DEV only by #339).",
+          "code": [
+            "src/apply/approval.ts"
+          ],
+          "tests": {
+            "positive": [
+              {
+                "file": "test/apply-gcp-admission.test.ts",
+                "title": "GCP Terraform journey (SYNTHETIC): seal, apply, observe through Google's REST APIs as DISCOVERY, propose (only the reviewed leaf), clean up, and verify leftovers; nothing but identifiers is ever recorded"
+              }
+            ]
+          }
         },
         "execute": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "GCP is not a pilot provider: src/apply/providers has AWS and Azure only, and GCP has read-only discovery and an offline demo."
+          "status": "BLOCKED",
+          "blockedBy": "No console (ui) test drives the GCP Terraform journey through the real pilot router yet, so no step can be SYNTHETIC_PASS (src/release/acceptance.ts). The driver-level journey passes SYNTHETIC with a fake terraform and a fake Google REST API (test/apply-gcp-admission.test.ts; GCP Terraform is admitted for DEV only by #339).",
+          "code": [
+            "src/apply/engines/terraform.ts",
+            "src/apply/driver.ts"
+          ],
+          "tests": {
+            "positive": [
+              {
+                "file": "test/apply-gcp-admission.test.ts",
+                "title": "GCP Terraform journey (SYNTHETIC): seal, apply, observe through Google's REST APIs as DISCOVERY, propose (only the reviewed leaf), clean up, and verify leftovers; nothing but identifiers is ever recorded"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-gcp-admission.test.ts",
+                "title": "hashicorp/google is pinned to the reviewed 8.9.0 with HashiCorp's official hashes: another version, an unofficial hash, or another google source refuses the seal; init's own selection is checked again"
+              }
+            ]
+          }
         },
         "observe": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "GCP is not a pilot provider: src/apply/providers has AWS and Azure only, and GCP has read-only discovery and an offline demo."
+          "status": "BLOCKED",
+          "blockedBy": "No console (ui) test drives the GCP Terraform journey through the real pilot router yet, so no step can be SYNTHETIC_PASS (src/release/acceptance.ts). The driver-level journey passes SYNTHETIC with a fake terraform and a fake Google REST API (test/apply-gcp-admission.test.ts; GCP Terraform is admitted for DEV only by #339).",
+          "code": [
+            "src/apply/observe.ts",
+            "src/observe/gcp-rest.ts"
+          ],
+          "tests": {
+            "positive": [
+              {
+                "file": "test/apply-gcp-admission.test.ts",
+                "title": "GCP Terraform journey (SYNTHETIC): seal, apply, observe through Google's REST APIs as DISCOVERY, propose (only the reviewed leaf), clean up, and verify leftovers; nothing but identifiers is ever recorded"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-gcp-admission.test.ts",
+                "title": "GCP journey refusals (SYNTHETIC): a three-stage GCP contract seals nothing; a stray labeled resource fails the observation and no proposal is made; an unread run-created leaf is refused, never proposed"
+              }
+            ]
+          }
         },
         "cleanup": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "GCP is not a pilot provider: src/apply/providers has AWS and Azure only, and GCP has read-only discovery and an offline demo."
+          "status": "BLOCKED",
+          "blockedBy": "No console (ui) test drives the GCP Terraform journey through the real pilot router yet, so no step can be SYNTHETIC_PASS (src/release/acceptance.ts). The driver-level journey passes SYNTHETIC with a fake terraform and a fake Google REST API (test/apply-gcp-admission.test.ts; GCP Terraform is admitted for DEV only by #339).",
+          "code": [
+            "src/apply/cleanup-proposal.ts",
+            "src/apply/cleanup-gcp.ts"
+          ],
+          "tests": {
+            "positive": [
+              {
+                "file": "test/apply-gcp-admission.test.ts",
+                "title": "GCP Terraform journey (SYNTHETIC): seal, apply, observe through Google's REST APIs as DISCOVERY, propose (only the reviewed leaf), clean up, and verify leftovers; nothing but identifiers is ever recorded"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-gcp-admission.test.ts",
+                "title": "GCP journey refusals (SYNTHETIC): a three-stage GCP contract seals nothing; a stray labeled resource fails the observation and no proposal is made; an unread run-created leaf is refused, never proposed"
+              }
+            ]
+          }
         }
       },
       "proofs": {
         "blueprint": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No record maps each desired resource (engine address) to the cloud resource ID that was created."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/observe/blueprint.ts",
+            "src/apply/run-records.ts",
+            "src/apply/driver.ts"
+          ],
+          "tests": [
+            {
+              "file": "test/apply-gcp-admission.test.ts",
+              "title": "GCP Terraform journey (SYNTHETIC): seal, apply, observe through Google's REST APIs as DISCOVERY, propose (only the reviewed leaf), clean up, and verify leftovers; nothing but identifiers is ever recorded"
+            }
+          ]
         },
         "independentVerification": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No read-only check, separate from the engine, confirms after an apply that the resources exist as planned."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/observe/verify.ts",
+            "src/observe/gcp-rest.ts",
+            "src/apply/observe.ts"
+          ],
+          "tests": [
+            {
+              "file": "test/apply-gcp-admission.test.ts",
+              "title": "GCP Terraform journey (SYNTHETIC): seal, apply, observe through Google's REST APIs as DISCOVERY, propose (only the reviewed leaf), clean up, and verify leftovers; nothing but identifiers is ever recorded"
+            }
+          ]
         },
         "cleanupDisposition": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No per-resource disposition (deleted, or retained with an owner and reason) is recorded after a journey."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/observe/disposition.ts",
+            "src/apply/leftovers.ts",
+            "src/apply/run-records.ts"
+          ],
+          "tests": [
+            {
+              "file": "test/apply-gcp-admission.test.ts",
+              "title": "GCP Terraform journey (SYNTHETIC): seal, apply, observe through Google's REST APIs as DISCOVERY, propose (only the reviewed leaf), clean up, and verify leftovers; nothing but identifiers is ever recorded"
+            }
+          ]
         },
         "sourceBoundEvidence": {
-          "status": "NOT_IMPLEMENTED",
+          "status": "SYNTHETIC_PASS",
           "code": [
-            "src/apply/types.ts",
+            "src/util/source-commit.ts",
+            "src/apply/seal.ts",
+            "src/apply/driver.ts",
             "src/apply/evidence.ts"
           ],
-          "missing": "This path has no apply whose evidence is shown to name the product commit that sealed and ran it."
+          "tests": [
+            {
+              "file": "test/apply-gcp-admission.test.ts",
+              "title": "GCP Terraform journey (SYNTHETIC): seal, apply, observe through Google's REST APIs as DISCOVERY, propose (only the reviewed leaf), clean up, and verify leftovers; nothing but identifiers is ever recorded"
+            },
+            {
+              "file": "test/source-commit.test.ts",
+              "title": "a clean checkout names its HEAD commit, and the image stamp cannot override it"
+            }
+          ]
         }
       },
       "live": {
-        "status": "NOT_IMPLEMENTED",
-        "missing": "Nothing to qualify until a GCP provider exists in the pilot path."
+        "status": "BLOCKED",
+        "blockedBy": "The owner-authorized DEV run for GCP Terraform (act:gcp-terraform): bootstrap/gcp with workload identity federation and the per-identity service accounts, a reviewed DEV-only GCP Terraform contract with its authorize entry, project, region, gcs state backend and the one google_pubsub_topic canary, a person qualifying the real Terraform with hashicorp/google 8.9.0, and one supervised DEV apply recorded with ./alz apply record-live."
       }
     },
     {
       "cloud": "GCP",
-      "path": "NATIVE_API",
+      "path": "GCP_API",
       "steps": {
         "prepare": {
           "status": "NOT_IMPLEMENTED",
-          "missing": "No service-native GCP provisioning path exists; GCP has read-only Cloud Asset Inventory discovery only."
+          "missing": "The GCP_API engine (src/apply/engines/gcp-api.ts, #303) is not on the pilot driver and is not admitted: G2 moves it onto the driver (docs/act-pilot-gcp-api-driver.md), then its own integration step admits it."
         },
         "preview": {
           "status": "NOT_IMPLEMENTED",
-          "missing": "No service-native GCP provisioning path exists; GCP has read-only Cloud Asset Inventory discovery only."
+          "missing": "The GCP_API engine (src/apply/engines/gcp-api.ts, #303) is not on the pilot driver and is not admitted: G2 moves it onto the driver (docs/act-pilot-gcp-api-driver.md), then its own integration step admits it."
         },
         "approve": {
           "status": "NOT_IMPLEMENTED",
-          "missing": "No service-native GCP provisioning path exists; GCP has read-only Cloud Asset Inventory discovery only."
+          "missing": "The GCP_API engine (src/apply/engines/gcp-api.ts, #303) is not on the pilot driver and is not admitted: G2 moves it onto the driver (docs/act-pilot-gcp-api-driver.md), then its own integration step admits it."
         },
         "execute": {
           "status": "NOT_IMPLEMENTED",
-          "missing": "No service-native GCP provisioning path exists; GCP has read-only Cloud Asset Inventory discovery only."
+          "missing": "The GCP_API engine (src/apply/engines/gcp-api.ts, #303) is not on the pilot driver and is not admitted: G2 moves it onto the driver (docs/act-pilot-gcp-api-driver.md), then its own integration step admits it."
         },
         "observe": {
           "status": "NOT_IMPLEMENTED",
-          "missing": "No service-native GCP provisioning path exists; GCP has read-only Cloud Asset Inventory discovery only."
+          "missing": "The GCP_API engine (src/apply/engines/gcp-api.ts, #303) is not on the pilot driver and is not admitted: G2 moves it onto the driver (docs/act-pilot-gcp-api-driver.md), then its own integration step admits it."
         },
         "cleanup": {
           "status": "NOT_IMPLEMENTED",
-          "missing": "No service-native GCP provisioning path exists; GCP has read-only Cloud Asset Inventory discovery only."
+          "missing": "The GCP_API engine (src/apply/engines/gcp-api.ts, #303) is not on the pilot driver and is not admitted: G2 moves it onto the driver (docs/act-pilot-gcp-api-driver.md), then its own integration step admits it."
         }
       },
       "proofs": {
@@ -1554,7 +1705,7 @@
       },
       "live": {
         "status": "NOT_IMPLEMENTED",
-        "missing": "Nothing to qualify until a native GCP path exists in the product."
+        "missing": "Nothing to qualify until GCP_API is admitted and its release path (act:gcp-gcp_api) exists."
       }
     }
   ]

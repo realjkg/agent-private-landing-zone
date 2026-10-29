@@ -10,7 +10,7 @@ import { ACT_RELEASE_PATHS, PRODUCTION_RELEASE_GATES } from "../src/qualificatio
 test("Phase E covers each engine and provider pair at most once, every implemented adapter at least once, and every release path the owner selected", () => {
   assert.equal(
     PHASE_E_SCENARIOS.length,
-    9,
+    10,
   );
   const pairs =
     PHASE_E_SCENARIOS.map(
@@ -38,6 +38,14 @@ test("Phase E covers each engine and provider pair at most once, every implement
     assert.equal(scenario.mock, "brownfield", scenario.id);
     assert.ok(PRODUCTION_RELEASE_GATES.some((gate) => gate.id === "preview:" + scenario.id), "preview:" + scenario.id + " is a release gate");
   }
+  // GCP Terraform (act:gcp-terraform; owner decision 6481421924 on #39) runs on the offline GCP discovery mock (SYNTHETIC).
+  assert.deepEqual(
+    PHASE_E_SCENARIOS.find((item) => item.id === "terraform-gcp-brownfield"),
+    {
+      id: "terraform-gcp-brownfield", provider: "GCP", mock: "brownfield", engine: "TERRAFORM",
+      request: "Build a governed GCP brownfield landing zone using Terraform.", requiredCapabilities: ["EVIDENCE_READ", "BUILD_PREVIEW", "CLOUD_READ"],
+    },
+  );
   assert.deepEqual(
     PHASE_E_SCENARIOS.find((item) => item.id === "terraform-azure-brownfield"),
     {
@@ -66,7 +74,7 @@ test("parallel simulated builds converge across direct and LangGraph paths witho
   );
   assert.equal(
     result.lanes.length,
-    9,
+    10,
   );
   assert.equal(
     result.converged,

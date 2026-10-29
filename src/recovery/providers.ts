@@ -16,6 +16,10 @@ const EXPECTED_EVIDENCE:
       "azure.management_groups",
       "azure.policy",
     ],
+    GCP: [
+      "gcp.organization",
+      "gcp.org_policy",
+    ],
   };
 
 const PLATFORM_EVIDENCE_PREFIXES:
@@ -30,6 +34,10 @@ const PLATFORM_EVIDENCE_PREFIXES:
     AZURE: [
       "azure.management_groups",
       "azure.policy",
+    ],
+    GCP: [
+      "gcp.organization",
+      "gcp.org_policy",
     ],
   };
 

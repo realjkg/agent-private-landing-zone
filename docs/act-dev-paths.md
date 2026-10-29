@@ -91,19 +91,19 @@ The apply path already separates generic modules from per-provider and per-engin
 | Missing execution code | Slices S1 to S7 of the PLAN: `ProviderId` `GCP` (`types.ts`), `src/apply/providers/gcp.ts`, `provider.ts` registration, `src/tools/identity.ts` (`PRINCIPAL_NAME`), `src/tools/profiles.ts` (GOOGLE variables, `*.googleapis.com`), `engines/terraform.ts` (`providers`, STATE_WRITE settings), a `gcs` rule in #297's `backend-pin.ts`, `src/observe/gcp-rest.ts` and the `openReader` branch, `verify.ts` `VerifierId`, `run-records.ts`, the GCP branch of `protectionOf`, console parity |
 | DEV prerequisites | `bootstrap/gcp` (none exists): WIF pool and provider, four service accounts, versioned state bucket, budget, `iam.disableServiceAccountKeyCreation`. Pins: Terraform 1.16.4; `gcloud` only if the read-only evidence runner uses it. DEV-only exception: O1 is answered (6443352284: GCP Terraform DEV is in the DEV pilot scope, full gates), but `contract.ts` still refuses it; P1, P2 and P4 are adopted as fail-closed defaults. Owner items for the bootstrap: P3 (lock-version retention) and P5 (Data Access audit logs, may incur cost) |
 | Authorization | Contract names `provider: GCP`, `engine: TERRAFORM`, `projectId`, `region`, `backend "<bucket>/<prefix>"`, environment, operations. Identities: four WIF principals, each impersonating its own service account (the SA email is the attested principal); no key files; `google-beta` refused |
-| Failing tests | None (no tests in the repository). Matrix row `GCP TERRAFORM`: all NOT_IMPLEMENTED |
-| Authentic acceptance evidence | **Missing gates:** `act:gcp-terraform`, `gcp-provider` (LIVE_PROVIDER). `preview:terraform-gcp-brownfield` was dropped by the owner on 2026-10-28 (#39, 6480066863): OUT_OF_SCOPE, because no GCP contract can seal a plan for it. The GCP brownfield preview is dropped; GCP Terraform ACT and GCP API-native ACT are in scope for this DEV release (#39, 6481421924) |
+| Failing tests | None. SYNTHETIC: `test/apply-gcp-admission.test.ts` (#339 admits GCP Terraform for DEV only). Matrix row `GCP TERRAFORM`: steps BLOCKED on a console journey test, live BLOCKED on the owner's DEV run |
+| Authentic acceptance evidence | `act:gcp-terraform` (LIVE_ACT, in `ACT_RELEASE_PATHS` and `scope.json`, BLOCKED) and `gcp-provider` (LIVE_PROVIDER, BLOCKED). None has evidence. `preview:terraform-gcp-brownfield` was dropped by the owner on 2026-10-28 (#39, 6480066863): OUT_OF_SCOPE, because E1 makes APPLY seals create-only. The GCP brownfield preview is dropped; GCP Terraform ACT and GCP API-native ACT are in scope for this DEV release (#39, 6481421924) |
 
 ## Path 6: GCP API-native provisioning
 
 | Field | Baseline |
 |---|---|
 | Minimal workload | **PROPOSAL:** the same labeled Pub/Sub topic as path 5, created by one typed API request (`topics.create`) and removed by `topics.delete` |
-| What exists | Nothing for apply. `journeys.json` row `GCP NATIVE_API`; the GCP PLAN names Infrastructure Manager as the candidate, not decided |
+| What exists | Nothing for apply. `journeys.json` row `GCP GCP_API` (named `NATIVE_API` before decision D18, `docs/act-pilot-gcp-api-driver.md`); the GCP PLAN names Infrastructure Manager as the candidate, not decided |
 | Missing execution code | An engine decision first (OWNER): Infrastructure Manager (managed Terraform; adds a Cloud Build service account the pilot cannot bind as APPLY, and a server-side plan the seal cannot hash byte for byte) or a typed request engine (proposal: a closed table of create/delete request bodies, sealed verbatim, executed in process as APPLY). Then: `EngineId`, `src/apply/engines/gcp-native.ts`, ownership by labels, a `stateDocument` from the API responses; reuses path 5's provider spec, reader and classifier |
 | DEV prerequisites | Path 5's `bootstrap/gcp` minus the state bucket (no state backend); identities DISCOVERY and APPLY (plus a preview identity if Infrastructure Manager is chosen). DEV-only exception: owner decision |
 | Authorization | Contract names `provider: GCP`, `engine: <native id>`, `projectId`, `region`, environment, operations; the closed operation table is part of the reviewed contract or engine spec. SA impersonation as path 5 |
-| Failing tests | None (no tests). Matrix row `GCP NATIVE_API`: all NOT_IMPLEMENTED |
+| Failing tests | None (no tests). Matrix row `GCP GCP_API`: all NOT_IMPLEMENTED |
 | Authentic acceptance evidence | **Missing gates:** `act:gcp-<native>`, a native preview gate, and `gcp-provider` (shared with path 5) |
 
 ## Ordered work per path

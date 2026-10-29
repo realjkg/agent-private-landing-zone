@@ -175,6 +175,22 @@ export const PHASE_E_SCENARIOS:
         "CLOUD_READ",
       ],
     },
+    // The GCP Terraform release path (config/release/scope.json, act:gcp-terraform; owner decision 6481421924 on #39) has
+    // its own preview scenario on the offline GCP discovery mock (src/providers/gcp/discover.ts). SYNTHETIC: no GCP API is read.
+    {
+      id:
+        "terraform-gcp-brownfield",
+      provider: "GCP",
+      mock: "brownfield",
+      engine: "TERRAFORM",
+      request:
+        "Build a governed GCP brownfield landing zone using Terraform.",
+      requiredCapabilities: [
+        "EVIDENCE_READ",
+        "BUILD_PREVIEW",
+        "CLOUD_READ",
+      ],
+    },
   ];
 
 export type PhaseELaneSummary = {

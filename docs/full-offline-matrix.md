@@ -15,7 +15,7 @@ The supported application scope is AWS and Azure, eight implemented adapters, th
 | Crossplane | Fixture preview | Fixture preview | Fixture preview | Fixture preview |
 | Ansible | Fixture preview | Fixture preview | Fixture preview | Fixture preview |
 
-Every compatible provider/adapter pairing adds an **UNKNOWN ownership denial**. The full provider catalog produces 78 labeled combinations: 24 positive preview scenarios, 13 unknown-ownership denials, two existing-stack-only greenfield denials, nine unsupported pairs recorded **N/A**, and 30 advertised Private/Kubernetes/Edge cases marked **PLAN_REQUIRED**, never invoked.
+Every compatible provider/adapter pairing adds an **UNKNOWN ownership denial**. The full provider catalog produces 81 labeled combinations: 24 positive preview scenarios, 13 unknown-ownership denials, two existing-stack-only greenfield denials, nine unsupported pairs recorded **N/A**, and 33 advertised Private/Kubernetes/Edge/GCP cases marked **PLAN_REQUIRED**, never invoked. The three GCP cases are Terraform's; GCP Terraform has its own Phase E scenario (`terraform-gcp-brownfield`) on an offline mock, outside this AWS/Azure matrix.
 
 Every positive scenario is run through direct kernel and conversational LangGraph, all eleven applicable synthetic chaos conditions and seven Well-Architected policy postures. The source-bound report records individual expected/observed verdicts, evidence hashes, runner classifications and live-stage NOT_RUN markers. Operational Excellence UNKNOWN is a recorded assessment, not proof of acceptable operating practice.
 

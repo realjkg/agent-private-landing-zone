@@ -93,7 +93,7 @@ export type PathsReport = {
 };
 
 const CLOUD_WORDS: Readonly<Record<string, string>> = { AWS: "AWS", AZURE: "Azure", GCP: "GCP" };
-const ENGINE_WORDS: Readonly<Record<string, string>> = { TERRAFORM: "Terraform", CDK: "CDK", BICEP: "Bicep", NATIVE_API: "API-native" };
+const ENGINE_WORDS: Readonly<Record<string, string>> = { TERRAFORM: "Terraform", CDK: "CDK", BICEP: "Bicep", GCP_API: "API-native" };
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const words = (value: unknown): string => typeof value === "string" ? value.trim() : "";
 const PASSING = new Set(["SYNTHETIC_PASS", "LIVE_PASS"]);
