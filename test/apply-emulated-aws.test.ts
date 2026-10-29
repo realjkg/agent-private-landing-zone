@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import type http from "node:http";
 import https from "node:https";
@@ -71,6 +71,13 @@ type Emulator = {
   s3(method: string, path: string, headers?: Record<string, string>, body?: string): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>;
   /** moto's own API (`/moto-api/...`): its request recorder and its model data, read directly, never through the proxy. */
   api(method: string, path: string): Promise<string>;
+  /**
+   * The status of one HEAD request, sent from a short-lived child process. Use it while the driver runs: the driver blocks this
+   * process during its synchronous engine steps, and moto (werkzeug) completes each TLS handshake on its single accepting thread.
+   * A request this process had begun would leave moto waiting for a ClientHello that only comes once the step ends, while the
+   * step itself waits for moto: Terraform's STS call then fails with "TLS handshake timeout" after 3 attempts (about 33 seconds).
+   */
+  headOutOfProcess(path: string): Promise<number>;
   stop(): Promise<void>;
 };
 
@@ -145,12 +152,35 @@ async function startEmulator(dir: string): Promise<Emulator> {
     request.end();
   });
 
+  const probePath = join(dir, "probe.cjs");
+  writeFileSync(probePath, PROBE);
+  const headOutOfProcess: Emulator["headOutOfProcess"] = (path) => new Promise((resolve, reject) => {
+    execFile(process.execPath, [probePath, String(motoPort), cert, BUCKET_HOST, path, AWS_REGION], { encoding: "utf8" }, (error, stdout) => {
+      if (error) reject(error); else resolve(Number(stdout.trim()));
+    });
+  });
+
   return {
-    proxyUrl: `http://127.0.0.1:${proxyPort}`, caFile: cert, s3, api,
+    proxyUrl: `http://127.0.0.1:${proxyPort}`, caFile: cert, s3, api, headOutOfProcess,
     connects: () => (existsSync(connectsLog) ? readFileSync(connectsLog, "utf8").split("\n").filter(Boolean) : []),
     async stop() { moto.kill("SIGKILL"); helper.kill("SIGKILL"); },
   };
 }
+
+/** One HEAD request to the emulator, with the same fixture authorization as `s3`; prints the status. See `headOutOfProcess`. */
+const PROBE = `
+const https = require("node:https"), fs = require("node:fs");
+const [port, caFile, host, path, region] = process.argv.slice(2);
+const request = https.request({
+  host: "127.0.0.1", port: Number(port), servername: host, ca: fs.readFileSync(caFile), method: "HEAD", path, agent: false,
+  headers: {
+    host, "content-length": "0", "x-amz-content-sha256": "UNSIGNED-PAYLOAD",
+    authorization: "AWS4-HMAC-SHA256 Credential=AKIAFAKEEMULATORONLY/20261027/" + region + "/s3/aws4_request, SignedHeaders=host, Signature=" + "0".repeat(64),
+  },
+}, (response) => { response.resume(); response.on("end", () => process.stdout.write(String(response.statusCode))); });
+request.on("error", (error) => { process.stderr.write(String(error)); process.exitCode = 2; });
+request.end();
+`;
 
 const HELPER = `
 const http = require("node:http"), net = require("node:net"), fs = require("node:fs");
@@ -333,9 +363,10 @@ describe("AWS emulated backend simulation: real Terraform, moto S3 with use_lock
   };
   /** The native lock is the object `<key>.tflock`: present while an operation holds it, absent once released. */
   const lockHeld = async (): Promise<boolean> => {
-    const response = await emulator.s3("HEAD", "/" + LOCK_KEY);
-    assert.ok(response.status === 200 || response.status === 404, "lock object status " + response.status);
-    return response.status === 200;
+    // Out of process: the kill test polls while the driver runs (see `headOutOfProcess`).
+    const status = await emulator.headOutOfProcess("/" + LOCK_KEY);
+    assert.ok(status === 200 || status === 404, "lock object status " + status);
+    return status === 200;
   };
   const noSecrets = (value: unknown): void => {
     const text = JSON.stringify(value);
@@ -493,7 +524,9 @@ describe("AWS emulated backend simulation: real Terraform, moto S3 with use_lock
 
   it("stops a running apply when the kill switch appears: Terraform is interrupted, the lock is released, the outcome is KILLED", async () => {
     // Provisioner-free (RB1: the judge refuses every provisioner). A wide count of built-in values keeps the real apply busy for
-    // seconds; only the apply takes the native lock, so once it is held the apply is running, and the kill switch lands part-way.
+    // seconds; only the apply takes the native lock, so once it is held the apply is running. The switch usually appears before
+    // Terraform's apply walk starts, where Terraform would drop a SIGINT; the driver holds its stop until the walk runs
+    // (TERRAFORM_WALK_STARTED in src/apply/engines/terraform.ts), so the stop lands part-way.
     const s = await seal("kill-during", `resource "terraform_data" "slow" {\n  count = ${SLOW_COUNT}\n  input = count.index\n}`, 1 + SLOW_COUNT);
     assert.equal(s.sealed.changes.length, SLOW_COUNT + 1, "the pilot value and every slow one are in the sealed change list");
     const before = await stateObject();

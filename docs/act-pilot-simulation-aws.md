@@ -124,6 +124,34 @@ All with Terraform 1.16.4 and the S3 backend over moto. Exit codes are from the 
 
 EMULATED, not live provider evidence. Real Terraform 1.16.4 (sha256 `44d3683c…6b73` enforced), moto S3 with `use_lockfile`, built-in resources only. `test/apply-emulated-aws.test.ts` passed **7 of 7**, including (e). Because the judge now refuses every provisioner, the kill-mid-apply fixture plans `count = 2000` built-in `terraform_data` values instead of a `local-exec` `sleep`. The test waits until Terraform holds the native lock object, which only the apply takes, and then raises the kill switch. It still asserts `KILLED`, the lock released and the serial moved. It also asserts that the state records fewer values than were planned, which proves the interrupt landed part-way.
 
+## Kill-switch flake: root cause (EMULATED and LOCAL, 2026-10-29, FLAKE-1)
+
+EMULATED (moto) and LOCAL (Terraform's own local backend), not live provider evidence. Real Terraform 1.16.4 (sha256 `44d3683c…6b73`). The kill test (`test/apply-emulated-aws.test.ts`, "stops a running apply when the kill switch appears") failed intermittently with "a graceful interrupt releases the lock" after about 34 seconds. There were two causes. The first is a product defect; the second is in the harness.
+
+**1. Product: Terraform lost the driver's only SIGINT, and the hard kill left the lock held.**
+
+- The test raises the switch as soon as the lock object appears. That is before Terraform's apply walk starts: it is still reading the plan and the state.
+- Terraform 1.16 drops a SIGINT that lands in that window. It prints "Interrupt received" and "Stopping operation...", and its trace log shows `Stop called, initiating interrupt sequence` and then `stop complete`, with no `run context exists, stopping`. The walk then starts and applies every change.
+- After the drop, Terraform persists state after every resource, so the 2000 values take far longer than the 30-second grace period. The SIGKILL then ended the run with the lock object still present.
+- Goroutine dumps (SIGQUIT at the end of the grace period) show the walk still running in `StateHook.PostStateUpdate`.
+- Standalone, with no emulator (local backend, the same 2000 `terraform_data` values, one SIGINT 0.05 to 0.3 seconds after start): 6 of 20 runs applied all 2000 values after the SIGINT. Every lost case had `Stop called` before `apply calling Apply`.
+- A live interrupt that lands in this window has the same effect: the apply runs on, and the hard kill can leave the state locked.
+- Fix: `src/tools/process.ts` (`holdInterruptUntil`) and `src/apply/engines/terraform.ts` (`TERRAFORM_WALK_STARTED`). A stop requested before the walk is held until Terraform prints its first resource line; see `docs/act-pilot-apply.md`, "Kill switch". `test/apply-driver.test.ts` reproduces the window deterministically with the fake engine, which orders the steps by signals and not by timing. Those tests fail on every run without the fix.
+
+**2. Harness: moto stalled behind the test's own lock poll.**
+
+- moto (werkzeug 3.1.9) completes each TLS handshake on its single accepting thread.
+- The test polled the lock object from its own process while the driver ran. The driver blocks that process during its synchronous engine steps, so a poll caught at that moment left moto waiting for a ClientHello.
+- Meanwhile `terraform init` waited for moto, and failed after about 33 seconds with `AssumeRoleWithWebIdentity ... TLS handshake timeout` (3 attempts).
+- Fix: the poll now runs in a short-lived child process (`headOutOfProcess`). This changes nothing in the product and asserts the same thing.
+
+**Results.**
+
+- Before the fixes, under load (three suites at once, each in its own network namespace, loops of 25 kill iterations): the lock failure appeared in 8 of 9 loops.
+- With only the product fix: 4 of 150 iterations failed, each with the handshake stall.
+- With both fixes: 150 of 150 consecutive kill iterations passed (three parallel loops of 25, twice, the second with extra CPU burners).
+- The full suite passed 10 of 10 runs, 8 of 8 tests each, two suites at a time.
+
 ## Cleanup after a run
 
 The test removes its temporary directory and stops moto and its helper. Nothing is written to the repository. A manual run in a scratch directory should delete it; the virtual environment is only a developer convenience and is never needed by an operator.

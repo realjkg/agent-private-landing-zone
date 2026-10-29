@@ -83,6 +83,13 @@ export type Behavior = {
   applyWaitFor?: string;
   /** SIGINT is ignored, so only the final kill ends the apply. */
   ignoreSigint?: boolean;
+  /**
+   * Terraform 1.16 between taking the state lock and starting its apply walk (docs/act-pilot-apply.md, "Kill switch"): the apply
+   * creates `lockPath` (the lock), drops every SIGINT (recorded as SIGINT-LOST), and starts its walk only on SIGUSR2, a signal
+   * point the test controls. In the walk it prints its first hook line, and a SIGINT then releases the lock and ends the apply.
+   * Needs `applyWaitFor`.
+   */
+  lostStopBeforeWalk?: { lockPath: string };
   /** Plants this text in stderr of the named failing subcommand. */
   failStderr?: string;
   /** Sends this signal to the process that started the engine as soon as the named subcommand starts (a person closing the terminal mid-run). */
@@ -239,14 +246,28 @@ else if (cmd === "show") {
 else if (cmd === "apply") {
   // A held apply installs its signal handlers before it records the call: tests treat the recorded call as "the engine is
   // running", so a signal sent right after it must meet these handlers, never the default one.
+  // Real Terraform prints a hook line as its apply walk starts; the driver holds its graceful stop until it sees one.
+  const walkLine = "terraform_data.pilot: Creating...\\n";
+  let walking = !b.lostStopBeforeWalk;
   if (b.applyWaitFor) {
-    process.on("SIGINT", () => { if (b.ignoreSigint) return; fs.appendFileSync(path.join(dir, "signals.txt"), "SIGINT\\n"); process.exit(1); });
+    process.on("SIGINT", () => {
+      if (b.ignoreSigint) return;
+      fs.appendFileSync(path.join(dir, "signals.txt"), walking ? "SIGINT\\n" : "SIGINT-LOST\\n");
+      if (!walking) return;
+      if (b.lostStopBeforeWalk) fs.rmSync(b.lostStopBeforeWalk.lockPath, { force: true });
+      process.exit(1);
+    });
     process.on("SIGTERM", () => { fs.appendFileSync(path.join(dir, "signals.txt"), "SIGTERM\\n"); process.exit(1); });
+    if (b.lostStopBeforeWalk) {
+      fs.writeFileSync(b.lostStopBeforeWalk.lockPath, "held");
+      // Signals reach this process in the order they were sent, so a SIGINT sent before the SIGUSR2 is recorded first.
+      process.on("SIGUSR2", () => { if (walking) return; walking = true; process.stdout.write(walkLine); });
+    } else process.stdout.write(walkLine);
   }
   for (const w of b.applyWrites || []) fs.writeFileSync(w.path, w.content);
   const p = path.resolve(process.cwd(), args[3]);
   const bytes = fs.readFileSync(p);
-  log({ planSha: crypto.createHash("sha256").update(bytes).digest("hex"), planMode: fs.statSync(p).mode & 0o777, planText: bytes.toString("utf8"), planDir: path.dirname(p), pid: process.pid });
+  log({ planSha: crypto.createHash("sha256").update(bytes).digest("hex"), planMode: fs.statSync(p).mode & 0o777, planText: bytes.toString("utf8"), planDir: path.dirname(p), planPath: p, pid: process.pid });
   const finish = () => {
     if (b.applyAdvance) fs.writeFileSync(serialFile, String(serial() + 1));
     // A cleanup apply removes the targeted resources from the state the fake reports afterward (unless the test keeps some).
@@ -254,6 +275,7 @@ else if (cmd === "apply") {
       const gone = JSON.parse(fs.readFileSync(path.join(dir, "targets.json"), "utf8")).filter((t) => !(b.destroyKeeps || []).includes(t));
       fs.writeFileSync(path.join(dir, "destroyed.json"), JSON.stringify(gone));
     }
+    if (b.lostStopBeforeWalk) fs.rmSync(b.lostStopBeforeWalk.lockPath, { force: true });
     process.stdout.write("APPLY-OUTPUT ${OUTPUT_CANARY}");
     if (b.applyKill) process.kill(process.pid, "SIGKILL");
     if (b.applyStderr) process.stderr.write(b.applyStderr);
