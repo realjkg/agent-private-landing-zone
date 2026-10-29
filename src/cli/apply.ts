@@ -31,9 +31,10 @@ import {
 import { qualifyApply, runApply, runCleanup, sealPreview, type ApplyDeps, type SealRequest } from "../apply/driver.js";
 import { RECOVERY_FILE_NAMES, engineOf, engineSpec, type EngineNotices } from "../apply/engine-spec.js";
 import { assertApplyEvidence } from "../apply/evidence.js";
-import { attestedClientId } from "../apply/identities.js";
+import { attestedClientId, checkApplyIdentities } from "../apply/identities.js";
+import { DELIVERY_PATHS, identityDeliveryEvidence, isDeliveryPath, type DeliveryPathId } from "../apply/token-delivery.js";
 import { holdsReservation } from "../apply/ledger.js";
-import { accountFieldsOf, specOf } from "../apply/provider.js";
+import { accountFieldsOf, providerSpec, specOf } from "../apply/provider.js";
 import { engineBinaryChange, loadSealedPlan, reviewBundleOf, verifyReviewBundle, type LoadedPlan } from "../apply/seal.js";
 import type { ApplyEnvironment, ApplyIdentity, ApplyOutcome, PilotChannel, PilotContract, SealedPlan, SignedApproval } from "../apply/types.js";
 import type { AwsCli } from "../observe/verify.js";
@@ -77,6 +78,7 @@ const APPLY_USAGE = [
   "  ./alz apply report --sealed SEALED_PLAN [--proposal PROPOSAL.json]",
   "  ./alz apply propose-removal --sealed SEALED_PLAN --requester ID --key REQUESTER_KEY.pem",
   "  ./alz apply remove-workspace --proposal REMOVAL_PROPOSAL.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
+  "  ./alz apply identity-check --path aws-terraform|aws-cdk|azure-terraform|azure-bicep|gcp-terraform|gcp-api --repository OWNER/REPO --phase delivered|cleaned",
   "      A person at the terminal (or a person in the console wizard, which has its own session token). A workflow runs wholly in one of them. Identities come from the contract's engine: ALZ_DISCOVERY_*, ALZ_STATE_*, ALZ_STATE_WRITE_* and ALZ_APPLY_* (Terraform),",
   "      or ALZ_DISCOVERY_*, ALZ_CHANGESET_* and ALZ_APPLY_* (CDK). No flag names an engine; the reviewed contract does, and its authorize entry is the only switch.",
   "      Exit 0 done, 1 error (nothing spent), 2 BLOCKED (refused before any action), 3 SPENT (approvals consumed or an apply started; read the message before any retry).",
@@ -123,6 +125,8 @@ export type ApplyCliDeps = {
   reportsDir?: string;
   /** Where `preview-evidence` writes a preview gate's evidence; defaults to `.runs/release/preview` in the repository. */
   releaseEvidenceDir?: string;
+  /** Where `identity-check` writes its record; defaults to `.runs/apply/identity-delivery` in the repository. */
+  identityEvidenceDir?: string;
   /** TEST-ONLY SEAM: the verifier's AWS CLI for observe and verify-cleanup. Production builds it from the DISCOVERY identity. */
   observeAws?: AwsCli;
   /** Test seam: the Azure reader's HTTP client (src/observe/azure-rest.ts). Production uses fetch against the two Azure hosts. */
@@ -152,6 +156,7 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   "remove-workspace": { single: ["proposal", "sealed"], repeated: ["approval"] },
   report: { single: ["sealed"], optional: ["proposal"] },
   "preview-evidence": { single: ["sealed", "gate", "target-hardware-id"] },
+  "identity-check": { single: ["path", "repository", "phase"] },
 };
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
@@ -1252,11 +1257,49 @@ const previewEvidenceCommand: Command = async (flags, terminal, deps, out) => {
   return EXIT.PASS;
 };
 
+// --- identity-check ----------------------------------------------------------------------------------------
+
+/**
+ * The owner's proof on the runner host that the identity delivery works (docs/act-pilot-identity-delivery.md): after a delivery
+ * run, every identity of the path has its own private, fresh token minted for its own environment and audience (`delivered`);
+ * after the run ends, nothing is left (`cleaned`). It reads the identity variables and the files they name, decodes claims
+ * without verifying them, prints names and claims but never a token, calls nothing and writes one HOST_LOCAL record. It never
+ * proves cloud trust; the record says so. Exit 0 PASS, 2 FAIL.
+ */
+const identityCheckCommand: Command = async (flags, terminal, deps, out) => {
+  const path = flags.path[0];
+  if (!isDeliveryPath(path)) fail("APPLY_ARGUMENT_INVALID", "--path must be one of " + Object.keys(DELIVERY_PATHS).join(", "));
+  const phase = flags.phase[0];
+  if (phase !== "delivered" && phase !== "cleaned") fail("APPLY_ARGUMENT_INVALID", "--phase must be delivered or cleaned");
+  const env = deps.env ?? process.env;
+  const spec = DELIVERY_PATHS[path as DeliveryPathId];
+  const identities = checkApplyIdentities(env, providerSpec(spec.provider)!, spec.identities);
+  const record = identityDeliveryEvidence({
+    env, path: path as DeliveryPathId, repository: flags.repository[0], phase: phase as "delivered" | "cleaned", now: (deps.now ?? (() => new Date()))(),
+    repoRoot: repoPaths().root, driverIdentityConfiguration: identities.ok ? { ready: true } : { ready: false, detail: identities.message },
+  });
+  const dir = deps.identityEvidenceDir ?? join(repoPaths().root, ".runs", "apply", "identity-delivery");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = join(dir, phase + "-" + path + "-" + record.checkedAt.replace(/[:.]/g, "-") + "-" + randomBytes(4).toString("hex") + ".json");
+  writeFileSync(file, JSON.stringify(record, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+  terminal.write([
+    "IDENTITY DELIVERY CHECK (" + record.label + ", not provider evidence): " + path + ", phase " + phase + ": " + record.result,
+    ...record.identities.map((d) => "  " + d.identity + ": " + d.environment + ", sub " + d.subject + ", aud " + d.audience + ", expires in " + d.secondsRemaining + " s, file " + d.fileMode + ", dir " + d.directoryMode),
+    ...record.failures.map((failure) => "  FAIL " + printable(failure)),
+    "  Provider identity variables (without the contract's targets): " + (record.driverIdentityConfiguration.ready ? "ready" : "not ready (" + printable(record.driverIdentityConfiguration.detail ?? "") + ")"),
+    "  Not proven here: cloud trust, the GitHub settings and the runner hook. Record: " + file,
+  ].join("\n"));
+  out.say(JSON.stringify({ written: file, ...record }, null, 2) + "\n");
+  const pass = record.result === "PASS";
+  out.report({ code: pass ? "IDENTITY_DELIVERY_VERIFIED" : "IDENTITY_DELIVERY_REFUSED", message: pass ? "The " + phase + " check passed for " + path + "." : "The " + phase + " check failed for " + path + ".", data: { path: file, record } });
+  return pass ? EXIT.PASS : EXIT.BLOCKED;
+};
+
 const COMMANDS: Readonly<Record<string, Command>> = {
   qualify: qualifyCommand, seal: sealCommand, approve: approveCommand, apply: applyCommand, status: statusCommand, "contract-check": contractCheckCommand,
   preflight: preflightCommand, prepare: prepareCommand, "record-live": recordLiveCommand, "record-recovery": recordRecoveryCommand,
   observe: observeCommand, "propose-cleanup": proposeCleanupCommand, cleanup: cleanupCommand, "verify-cleanup": verifyCleanupCommand, report: reportCommand, "preview-evidence": previewEvidenceCommand,
-  "propose-removal": proposeRemovalCommand, "remove-workspace": removeWorkspaceCommand,
+  "propose-removal": proposeRemovalCommand, "remove-workspace": removeWorkspaceCommand, "identity-check": identityCheckCommand,
 };
 
 /** Where `alz-preview-*` directories live and what a crashed apply leaves in them. */
@@ -1274,7 +1317,7 @@ function scratchHoldsRecovery(parent: string): boolean {
  * them first (docs/act-pilot-apply.md).
  */
 async function sweepUnlessHeld(sub: string, deps: ApplyCliDeps, out: Out): Promise<void> {
-  if (["status", "approve", "contract-check", "preflight", "prepare", "record-live", "record-recovery", "observe", "propose-cleanup", "verify-cleanup", "report", "preview-evidence", "propose-removal", "remove-workspace"].includes(sub)) return;
+  if (["status", "approve", "contract-check", "preflight", "prepare", "record-live", "record-recovery", "observe", "propose-cleanup", "verify-cleanup", "report", "preview-evidence", "propose-removal", "remove-workspace", "identity-check"].includes(sub)) return;
   const parent = deps.scratchParent ?? tmpdir();
   const held = scratchHoldsRecovery(parent) ? "a scratch directory holds errored.tfstate or crash.log"
     : await holdsReservation(deps.evidenceDir ?? repoPaths().evidence) ? "the apply ledger holds a reservation" : undefined;

@@ -26,6 +26,8 @@ A new contract may declare exactly `"enabledEnvironments":["DEV"]` and include o
 
 ## OIDC subject delivery: unresolved engineering dependency
 
+**Option A (owner decision of 2026-10-28):** a controlled self-hosted runner on the MBP delivers the tokens. The design, threat analysis, the owner's settings checklist and the owner's proof are in [`act-pilot-identity-delivery.md`](act-pilot-identity-delivery.md). The repository side exists; D4 stays BLOCKED until the owner's proof is recorded.
+
 Choose a single trusted execution host and prove how it securely receives **four distinct, currently valid tokens** with exact subjects for DISCOVERY, STATE, STATE_WRITE and APPLY. AWS role trust must match the token's **observed** `sub` and `aud` claims; the bootstrap accepts exact `oidc_subjects` values. GitHub added immutable `owner@id/repo@id` defaults for repositories created/transferred after July 15, 2026; older repositories can opt in. Do not assume the old `repo:OWNER/REPO:environment:NAME` string. Review GitHub's current OIDC reference before bootstrap.
 
 A GitHub Actions job is bound to one environment subject. It **cannot** mint four distinct environment subjects inside one ordinary job by requesting four tokens. Four jobs alone do not solve secure delivery to a single runtime: transferring JWTs via build artifacts or logs is prohibited. A reviewed trusted broker/host with restricted ephemeral storage and independently verified subject binding is required, or an approved self-controlled identity issuer with four restricted subjects. Until evidence exists, D4 remains BLOCKED. No fallback to operator `AWS_PROFILE`, static keys, or shared token files.

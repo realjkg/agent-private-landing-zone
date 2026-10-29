@@ -23,6 +23,7 @@ import { planJudgeRefusal } from "./terraform-constructs.js";
 import { acceptsManifest, engineOf, type EngineCleanupRun, type EngineSpec, type RecoveryFile, type StateDocument } from "./engine-spec.js";
 import { APPLY_AUTHORITY } from "./evidence.js";
 import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from "./identities.js";
+import { checkDeliveredTokens, deliveryPathOf } from "./token-delivery.js";
 import { channelMismatchMessage } from "./channel.js";
 import { finalizeArtifact, finalizeCleanup, releaseReservation, reserveArtifact } from "./ledger.js";
 import { readAppliedEvidence } from "./live-record.js";
@@ -181,6 +182,12 @@ async function checkEngineAndIdentities(
   const env = deps.env ?? process.env;
   const identities = checkApplyIdentities(env, spec, engine.identities);
   if (!identities.ok) return refuse(identities.code, identities.message);
+  // Token files the identity delivery runner wrote (docs/act-pilot-identity-delivery.md) must be private, distinct and fresh.
+  const deliveryPath = deliveryPathOf(spec.id, engine.id);
+  if (deliveryPath) {
+    const delivered = checkDeliveredTokens({ env, path: deliveryPath, now: (deps.now ?? (() => new Date()))(), repoRoot: repoPaths().root });
+    if (!delivered.ok) return refuse(delivered.code, delivered.message);
+  }
   const forbidden = forbiddenIdentityVariables(env);
   if (forbidden.length > 0) {
     return refuse("IDENTITY_NOT_CONFIGURED", "Variables for an identity this system never reads are set (" + forbidden.join(", ") +
