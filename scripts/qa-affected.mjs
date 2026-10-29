@@ -59,6 +59,7 @@ export const PACKAGE_OWNERS = {
   ".dockerignore": ["test/release-package-exclusions.test.ts"],
   "alz": ["test/release-package-exclusions.test.ts"],
   ".github/workflows/supply-chain.yml": ["test/release-package-exclusions.test.ts"],
+  ".github/workflows/act-identity-macos.yml": ["test/release-package-exclusions.test.ts"],
   "scripts/release-stage.sh": ["test/release-package-exclusions.test.ts"],
   "scripts/field-package.ts": ["test/release-package-field-manifest.test.ts"],
 };
