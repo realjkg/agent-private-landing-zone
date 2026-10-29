@@ -41,6 +41,11 @@ class ACTDev1Acceptance(unittest.TestCase):
         self.assertEqual(set(document["targets"]),{"DEV"})
         self.assertEqual(set(document["requiredApprovals"]),{"DEV"})
         self.assertNotIn("pin",document)
+        # Every Terraform contract binds STATE_WRITE (owner decision 6486426552): a draft without it would not load.
+        self.assertIs(document["embedStateWrite"],True)
+        # ACT is switched on only by the owner's reviewed authorize entry; the draft never carries one.
+        self.assertNotIn("authorize",document)
+        self.assertEqual(document["targets"]["DEV"]["canary"],{"resources":[{"type":"aws_cloudwatch_log_group","count":1}]})
         self.assertEqual(document["targets"]["DEV"]["backend"],"alz-act-dev1-state/pilot/dev.tfstate")
     def test_contract_rejects_management_or_cross_account_and_missing_boundary(self):
         a,b=evidence()

@@ -208,6 +208,7 @@ These are identifiers and public keys only. No private key, token, client secret
 | The approval lifetime | `maxApprovalAgeMinutes` | 1 to 1440 |
 | Each approver: id, Ed25519 public key (PEM), environments | `approvers[]` | ids and keys unique; the private key stays with the approver |
 | The kill switch path | `killSwitchPath` | the owner creates and removes the file |
+| The STATE_WRITE binding | `embedStateWrite: true` | required, as for AWS; no identity may carry a client secret (`ARM_CLIENT_SECRET` is refused) |
 | The four app registrations and their federated credentials | `ALZ_<IDENTITY>_ARM_CLIENT_ID` on the execution host | `bootstrap/azure` output `identity_client_ids`; one subject per identity |
 | The token files on the execution host | `ALZ_<IDENTITY>_ARM_OIDC_TOKEN_FILE` | absolute paths, four distinct files |
 | The pilot resource group (the APPLY and DISCOVERY scope) | the bootstrap (`apply_resource_group_name`) | required by the workload; see "The minimal workload" and the DISCOVERY review |

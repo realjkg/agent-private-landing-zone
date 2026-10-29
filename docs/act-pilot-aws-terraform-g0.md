@@ -99,6 +99,7 @@ Identifiers and public keys only. No private key, token, password or secret valu
 | Each approver: id, Ed25519 public key (PEM), environments | `approvers[]` | ids and keys unique; the private key stays with the approver |
 | The second production approver | a second `approvers[]` entry with `PROD` | checked by the kit; the chain only. At apply, neither PROD approval may come from the requester's key or id |
 | The kill switch path | `killSwitchPath` | the owner creates and removes the file; a switch that cannot be read counts as on |
+| The STATE_WRITE binding | `embedStateWrite: true` | required (owner decision 6486426552): a Terraform contract without it does not load. The plan then names STATE_WRITE's role and token file **path** for the state, never a token (`docs/act-pilot-apply.md`, "Binding STATE_WRITE in the plan") |
 | The IAM OIDC identity provider per account | not a field | `bootstrap/aws`; its trust is what lets each identity's token assume its role |
 | The four web-identity roles per account | `ALZ_<IDENTITY>_AWS_ROLE_ARN` on the execution host | each ARN's account must be the contract's; `preflight` checks, `qualify` attests STATE_WRITE and APPLY |
 | The token files on the execution host | `ALZ_<IDENTITY>_AWS_WEB_IDENTITY_TOKEN_FILE` | absolute paths, four distinct files; never the operator's own `AWS_WEB_IDENTITY_TOKEN_FILE` |
