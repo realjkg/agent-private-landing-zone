@@ -339,7 +339,9 @@ export async function readLeftoversRecord(proposalSha256: string, evidenceDir: s
 }
 
 /** One blueprint entry's result from an independent existence check, in the journey's words. Apply success alone never yields VERIFIED. */
-export function verificationOf(existence: "PRESENT" | "ABSENT" | "UNKNOWN" | "NOT_CHECKABLE", reason: string | undefined): Pick<ObservedResource, "result" | "reason"> {
+export function verificationOf(existence: "PRESENT" | "ABSENT" | "UNKNOWN" | "NOT_CHECKABLE", reason: string | undefined, differs?: string): Pick<ObservedResource, "result" | "reason"> {
+  // Present, but a property the reader compared is not the desired one (the GCP topic's storage policy, D11): never VERIFIED.
+  if (existence === "PRESENT" && differs !== undefined) return { result: "DIFFERENT_FROM_DESIRED", reason: differs };
   switch (existence) {
     case "PRESENT": return { result: "VERIFIED" };
     case "ABSENT": return { result: "MISSING" };

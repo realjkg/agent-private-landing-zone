@@ -18,7 +18,7 @@ import { PROVIDER_IDS, providerSpec } from "../src/apply/provider.js";
 import { AWS } from "../src/apply/providers/aws.js";
 import { AZURE } from "../src/apply/providers/azure.js";
 import { GCP, GCP_DENIED_TYPES_REVIEWED_AGAINST } from "../src/apply/providers/gcp.js";
-import { basesOf } from "../src/apply/run-records.js";
+import { basesOf, readBlueprintRecord } from "../src/apply/run-records.js";
 import { loadSealedPlan } from "../src/apply/seal.js";
 import { APPLY_ADAPTER, CLEANUP_ADAPTER } from "../src/apply/terraform.js";
 import { OFFICIAL_PROVIDER_HASHES, REVIEWED_PROVIDER_VERSIONS, lockedProviders, unofficialProviderHash, unreviewedProviderVersion } from "../src/apply/lockfile.js";
@@ -30,10 +30,11 @@ import { VERIFIERS } from "../src/observe/verify.js";
 import { ADAPTER_VERSION, terraformArgvDigest } from "../src/teardown/driver/adapters/terraform.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import type { ResolvedTarget } from "../src/teardown/driver/types.js";
-import { buildManifest } from "../src/teardown/manifest.js";
+import { buildManifest, canonicalJson } from "../src/teardown/manifest.js";
 import { captureProjectFiles } from "../src/teardown/snapshot.js";
 import { buildChildEnvironment } from "../src/tools/child-env.js";
 import { PROFILES, TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
+import { sha256 } from "../src/util/sha256.js";
 import {
   CANARIES, ENGINE_VERSION, H, NOW, POLICY, REQUESTER, SOURCE_COMMIT, STATE_CANARY, approvalFor, approvers, behave as behaveIn, callsOf, human, installFakeTerraform, keys, sha,
   writeReviewedContract, type Behavior,
@@ -241,7 +242,11 @@ test("the GCP verifier is wired: GCP_REST is a verifier with its own leftover ba
 const TOPIC = "projects/" + PROJECT + "/topics/alz-unit-topic";
 const APP_SA = "projects/" + PROJECT + "/serviceAccounts/alz-app@" + PROJECT + ".iam.gserviceaccount.com";
 const DATA_BUCKET = "alz-pilot-dev-data";
-const created = (address: string, type: string) => ({ address, type, mode: "managed", provider_name: GOOGLE, change: { actions: ["create"], before: null, after: { name: "x" } } });
+/** The canary topic's storage policy as hashicorp/google 8.9.0 plans it (R2 of G1): exactly the contract's region. */
+const STORAGE_POLICY = { message_storage_policy: [{ allowed_persistence_regions: [REGION], enforce_in_transit: null }] };
+const created = (address: string, type: string) => ({
+  address, type, mode: "managed", provider_name: GOOGLE, change: { actions: ["create"], before: null, after: { name: "x", ...(type === "google_pubsub_topic" ? STORAGE_POLICY : {}) } },
+});
 /** The canary plan: exactly one Pub/Sub topic created (owner decision E1). */
 const CREATES = [created("google_pubsub_topic.unit", "google_pubsub_topic")];
 const stateOf = (type: string, name: string, id: string) => ({ mode: "managed", type, name, provider: 'provider["' + GOOGLE + '"]', instances: [{ schema_version: 0, attributes: { id, secret_value: STATE_CANARY } }] });
@@ -254,7 +259,7 @@ const PROVIDER_CONFIG = { google: { name: "google", full_name: GOOGLE, expressio
 /** What init saves for the gcs backend: the contract's bucket and prefix; the credential settings stay null (filled at apply from the APPLY env). */
 const SAVED = { type: "gcs", config: { bucket: BUCKET, prefix: "pilot/dev", credentials: null, impersonate_service_account: null, access_token: null, storage_custom_endpoint: null } };
 
-type Cloud = { topics: Set<string>; tagged: string[]; requests: GcpRequest[] };
+type Cloud = { topics: Set<string>; tagged: string[]; requests: GcpRequest[]; regions?: unknown };
 function fakeGoogle(cloud: Cloud): GcpHttp {
   return async (request) => {
     cloud.requests.push(request);
@@ -263,7 +268,9 @@ function fakeGoogle(cloud: Cloud): GcpHttp {
     if (request.method === "POST" && url.host === "iamcredentials.googleapis.com") return { status: 200, body: JSON.stringify({ accessToken: ACCESS_CANARY, expireTime: "2026-10-27T15:00:00Z" }) };
     if (request.method === "GET" && url.host === "pubsub.googleapis.com") {
       const name = url.pathname.replace(/^\/v1\//, "");
-      return cloud.topics.has(name) ? { status: 200, body: JSON.stringify({ name, labels: {} }) } : { status: 404, body: "{}" };
+      // The topic reports the storage policy it was created with (D11), unless a test says otherwise.
+      const policy = cloud.regions === undefined ? { messageStoragePolicy: { allowedPersistenceRegions: [REGION] } } : cloud.regions === null ? {} : { messageStoragePolicy: { allowedPersistenceRegions: cloud.regions } };
+      return cloud.topics.has(name) ? { status: 200, body: JSON.stringify({ name, labels: {}, ...policy }) } : { status: 404, body: "{}" };
     }
     if (request.method === "GET" && url.host === "cloudasset.googleapis.com") return { status: 200, body: JSON.stringify({ results: cloud.tagged.map((name) => ({ name })) }) };
     return { status: 500, body: "" };
@@ -347,6 +354,21 @@ test("GCP Terraform journey (SYNTHETIC): seal, apply, observe through Google's R
   assert.ok(applied.ok, JSON.stringify(applied));
   assert.equal(applied.evidence.outcome, "SUCCEEDED");
   assert.equal(applied.evidence.authority.mutation, "TERRAFORM_APPLY_OF_SEALED_PLAN");
+  // Review N2 of #341: the evidence names the product commit that sealed and ran the plan.
+  assert.equal(s.sealed.sourceCommit, SOURCE_COMMIT);
+  assert.equal(applied.evidence.sourceCommit, SOURCE_COMMIT);
+  // Review N2 of #341: the driver kept the blueprint from the state the apply left, identifiers only, bound to this apply's evidence.
+  const blueprint = await readBlueprintRecord(s.sealed.artifactSha256, sha256(canonicalJson(applied.evidence as never)), w.evidenceDir);
+  assert.ok(blueprint, "the blueprint was kept");
+  assert.equal(blueprint.source, "TERRAFORM_STATE_PULL");
+  assert.equal(blueprint.sourceCommit, SOURCE_COMMIT);
+  assert.equal(blueprint.unitId, s.sealed.unit?.unitId);
+  assert.deepEqual(blueprint.blueprint.entries.map((e) => [e.address, e.type, e.id, e.origin]), [
+    ["google_pubsub_topic.unit", "google_pubsub_topic", TOPIC, "IN_PLAN"], ["google_service_account.app", "google_service_account", APP_SA, "NOT_IN_PLAN"],
+    ["google_storage_bucket.data", "google_storage_bucket", DATA_BUCKET, "NOT_IN_PLAN"], ["google_storage_bucket.state", "google_storage_bucket", BUCKET, "NOT_IN_PLAN"],
+  ]);
+  assert.deepEqual(blueprint.blueprint.missing, []);
+  noSecretIn("blueprint", blueprint);
   // The apply-time init wrote STATE_WRITE's credential path and service account into the backend file, and nothing else of an identity.
   const applyInit = callsOf(fakeDir).filter((c) => c.args[0] === "init").at(-1)!;
   // A literal comparison, never a pattern built from a value (review 6453205218, B1: CodeQL js/incomplete-sanitization).
@@ -363,6 +385,7 @@ test("GCP Terraform journey (SYNTHETIC): seal, apply, observe through Google's R
   const observation = await observeRun(s.sealed.artifactSha256, w.observe());
   assert.ok(observation.ok, JSON.stringify(observation));
   assert.equal(observation.record.verifier, "GCP_REST");
+  assert.equal(observation.record.sourceCommit, SOURCE_COMMIT, "the observation names the same product commit");
   const results = new Map(observation.record.resources.map((r) => [r.address, [r.result, r.reason]]));
   assert.deepEqual(results.get("google_pubsub_topic.unit"), ["VERIFIED", undefined]);
   assert.deepEqual(results.get("google_service_account.app"), ["UNVERIFIABLE", "NO_GCP_READ_MAPPING"], "a type the reader has no read for is named, never assumed");
@@ -487,7 +510,7 @@ test("canary (GCP Terraform, owner decision E1): one google_pubsub_topic seals; 
     ["a project IAM member", [created("google_project_iam_member.owner", "google_project_iam_member")], /type google_project_iam_member is not in the canary allowlist/],
     ["a project IAM binding", [created("google_project_iam_binding.owners", "google_project_iam_binding")], /type google_project_iam_binding is not in the canary allowlist/],
     ["a second topic", [created("google_pubsub_topic.second", "google_pubsub_topic")], /google_pubsub_topic: the plan creates 2, the canary allowlist names exactly 1/],
-    ["an update of an existing topic", [{ ...created("google_pubsub_topic.existing", "google_pubsub_topic"), change: { actions: ["update"], before: {}, after: {} } }], /google_pubsub_topic\.existing \(google_pubsub_topic\): the plan would \["update"\] it/],
+    ["an update of an existing topic", [{ ...created("google_pubsub_topic.existing", "google_pubsub_topic"), change: { actions: ["update"], before: {}, after: { ...STORAGE_POLICY } } }], /google_pubsub_topic\.existing \(google_pubsub_topic\): the plan would \["update"\] it/],
   ] as const) {
     const w = world();
     rebehave({ showResources: [...CREATES, ...extra] });
@@ -584,9 +607,9 @@ test("review N3 of #323 through the seal: a google_project data source naming an
 
 test("review N1 of #339 through the seal: a topic planned in another project, unknown until apply, or configured by an expression, and a provider block without the contract's constant project, seal nothing", async () => {
   const topicIn = (after: Record<string, unknown>, afterUnknown: Record<string, unknown> = {}) =>
-    [{ ...created("google_pubsub_topic.unit", "google_pubsub_topic"), change: { actions: ["create"], before: null, after: { name: "x", ...after }, after_unknown: afterUnknown } }];
+    [{ ...created("google_pubsub_topic.unit", "google_pubsub_topic"), change: { actions: ["create"], before: null, after: { name: "x", ...STORAGE_POLICY, ...after }, after_unknown: afterUnknown } }];
   const configured = (project: unknown) => ({
-    showConfigurationExtra: { root_module: { resources: [{ address: "google_pubsub_topic.unit", mode: "managed", type: "google_pubsub_topic", name: "unit", provider_config_key: "google", expressions: { name: { constant_value: "alz-unit-topic" }, project } }] } },
+    showConfigurationExtra: { root_module: { resources: [{ address: "google_pubsub_topic.unit", mode: "managed", type: "google_pubsub_topic", name: "unit", provider_config_key: "google", expressions: { name: { constant_value: "alz-unit-topic" }, message_storage_policy: [{ allowed_persistence_regions: { constant_value: [REGION] } }], project } }] } },
   });
   // The control: planned in the contract's project, configured with its constant.
   const ok = world();
@@ -607,4 +630,65 @@ test("review N1 of #339 through the seal: a topic planned in another project, un
     assert.ok(refusal.message.includes("(" + code + ")"), label + ": " + JSON.stringify(refusal));
     assert.ok(!refusal.message.includes("victim-proj-123"), label + ": the refusal names the code, never the value");
   }
+});
+
+test("R1 and R2 of G1 through the seal and the apply: a topic with CMEK, a schema, retention or a tag binding, or stored outside the contract's region, seals nothing; a sealed canary whose re-derived plan changes region is refused before anything runs", async () => {
+  const topicWith = (after: Record<string, unknown>, afterUnknown: Record<string, unknown> = {}) =>
+    [{ ...created("google_pubsub_topic.unit", "google_pubsub_topic"), change: { actions: ["create"], before: null, after: { name: "x", ...STORAGE_POLICY, ...after }, after_unknown: afterUnknown } }];
+  for (const [label, after, afterUnknown, code] of [
+    ["CMEK", { kms_key_name: "projects/other-proj/locations/europe-west4/keyRings/r/cryptoKeys/k" }, {}, "CANARY_ATTRIBUTE_NOT_IN_CONTRACT"],
+    ["a schema", { schema_settings: [{ schema: "projects/other-proj/schemas/s", encoding: "JSON" }] }, {}, "CANARY_ATTRIBUTE_NOT_IN_CONTRACT"],
+    ["an ingestion source", { ingestion_data_source_settings: [{ cloud_storage: [{ bucket: "other" }] }] }, {}, "CANARY_ATTRIBUTE_NOT_IN_CONTRACT"],
+    ["a JavaScript transform", { message_transforms: [{ javascript_udf: [{ code: "x", function_name: "f" }] }] }, {}, "CANARY_ATTRIBUTE_NOT_IN_CONTRACT"],
+    ["message retention", { message_retention_duration: "86400s" }, {}, "CANARY_ATTRIBUTE_NOT_IN_CONTRACT"],
+    ["a tag binding", { tags: { "tagKeys/1": "tagValues/2" } }, {}, "CANARY_ATTRIBUTE_NOT_IN_CONTRACT"],
+    ["ABANDON on destroy", { deletion_policy: "ABANDON" }, {}, "CANARY_ATTRIBUTE_NOT_IN_CONTRACT"],
+    ["another region", { message_storage_policy: [{ allowed_persistence_regions: ["us-central1"] }] }, {}, "LOCATION_NOT_IN_CONTRACT"],
+    ["no storage policy", { message_storage_policy: [] }, {}, "LOCATION_NOT_IN_CONTRACT"],
+    ["a region unknown until apply", {}, { message_storage_policy: [{ allowed_persistence_regions: [true] }] }, "LOCATION_NOT_IN_CONTRACT"],
+  ] as const) {
+    const w = world();
+    rebehave({ showResources: topicWith(after, afterUnknown) });
+    const refusal = await sealRefusal(w);
+    assert.ok(refusal.message.includes("(" + code + ")"), label + ": " + JSON.stringify(refusal));
+    assert.ok(!refusal.message.includes("other-proj") && !refusal.message.includes("us-central1"), label + ": the refusal names the code, never the value");
+    assert.ok(callsOf(fakeDir).every((c) => c.args[0] !== "apply"), label + ": nothing applied");
+  }
+  // The re-derivation at apply runs the same judge: a plan that now stores elsewhere is the contract's target no more.
+  const w = world();
+  const s = await seal(w);
+  rebehave({ showResources: topicWith({ message_storage_policy: [{ allowed_persistence_regions: ["us-central1"] }] }) });
+  const moved = await apply(w, s);
+  assert.equal(moved.ok, false);
+  assert.equal((moved as { code: string }).code, "TARGET_NOT_IN_CONTRACT", JSON.stringify(moved));
+  assert.match((moved as { message: string }).message, /LOCATION_NOT_IN_CONTRACT/);
+  assert.ok(callsOf(fakeDir).every((c) => c.args[0] !== "apply"), "nothing applied");
+});
+
+test("D11 read-back (G1): observation compares the topic's storage policy with the contract's region; another region FAILS as DIFFERENT_FROM_DESIRED and no cleanup is proposed, a missing policy is not observable yet", async () => {
+  const w = world();
+  const s = await seal(w);
+  assert.ok((await apply(w, s)).ok);
+  const resultOf = async (regions: unknown) => {
+    w.cloud.regions = regions;
+    const observed = await observeRun(s.sealed.artifactSha256, w.observe());
+    assert.ok(observed.ok, JSON.stringify(observed));
+    const topic = observed.record.resources.find((r) => r.address === "google_pubsub_topic.unit")!;
+    return [observed.record.verdict, topic.result, topic.reason];
+  };
+  // PARTIAL overall only because this fixture's state also holds types the reader has no read for (named, never assumed).
+  assert.deepEqual(await resultOf(undefined), ["PARTIAL", "VERIFIED", undefined], "exactly the contract's region");
+  assert.deepEqual(await resultOf(["us-central1"]), ["FAILED", "DIFFERENT_FROM_DESIRED", "STORAGE_POLICY_MISMATCH"]);
+  assert.deepEqual(await resultOf([REGION, "us-central1"]), ["FAILED", "DIFFERENT_FROM_DESIRED", "STORAGE_POLICY_MISMATCH"], "a second region");
+  const records = await loadRunRecords(s.sealed.artifactSha256, w.evidenceDir);
+  assert.ok(records.ok);
+  const contract = loadPilotContract(w.contractPath) as PilotContract;
+  const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract, engineVersion: s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  assert.equal(built.ok, false, "a run whose topic is stored elsewhere gets no product cleanup (D11)");
+  assert.equal((built as { code?: string }).code, "OBSERVATION_INCONCLUSIVE");
+  assert.deepEqual(await resultOf(null), ["INCONCLUSIVE", "NOT_YET_OBSERVABLE", "STORAGE_POLICY_NOT_READ"], "no policy in the answer is unknown, never assumed");
+  // The reader asked Pub/Sub with the pubsub scope and Cloud Asset with its own token (D15).
+  const minted = w.cloud.requests.filter((r) => r.url.endsWith(":generateAccessToken")).map((r) => (JSON.parse(r.body ?? "{}") as { scope: string[] }).scope.join(" "));
+  assert.ok(minted.includes("https://www.googleapis.com/auth/pubsub") && minted.includes("https://www.googleapis.com/auth/cloud-platform"), minted.join(", "));
+  assert.ok(!minted.some((scope) => scope.includes("read-only")), "no read-only cloud-platform token, which Pub/Sub refuses (GF2)");
 });

@@ -118,7 +118,7 @@ The test proves the engine, lock, stale-plan and kill-switch behavior. It does n
 
 ## S6a: the automated, opt-in emulated test (SYNTHETIC)
 
-`test/apply-emulated-gcp.test.ts` turns the spike into a repeatable test. It is opt-in: it is skipped unless both `ALZ_SIM_TERRAFORM` and `ALZ_SIM_FAKE_GCS` are set, so default CI is unaffected.
+*Superseded by S6b below (lane G1). This section records the 2026-10-27 run.* `test/apply-emulated-gcp.test.ts` turned the spike into a repeatable test. It is opt-in: it is skipped unless both `ALZ_SIM_TERRAFORM` and `ALZ_SIM_FAKE_GCS` are set, so default CI is unaffected.
 
 It runs the real Terraform engine against fake-gcs-server on loopback, using the provider spec's own functions (`src/apply/providers/gcp.ts`):
 - the product's backend override file;
@@ -140,6 +140,34 @@ Run on 2026-10-27 with Terraform 1.16.4 (the binary above) and the fake-gcs-serv
 | Lock and stale plan | While one apply holds `<prefix>/default.tflock`, another apply is refused, and `classifyApply` reads it as `FAILED_NO_CHANGE`. Once the lock is released, that plan is stale, and `classifyApply` reads `{ stale: true }`. No `errored.tfstate` |
 
 What it does not prove is unchanged: the emulator skips authentication, so workload identity federation, impersonation, IAM and which principal writes state remain G2 questions.
+
+## S6b: through the driver, with the real provider (EMULATED; lane G1, 2026-10-29)
+
+S6b replaced S6a in `test/apply-emulated-gcp.test.ts`. The test now drives the **real driver and judge**: seal, approve, apply, evidence, ledger, observe, cleanup proposal, cleanup and the leftovers check. It runs the real Terraform 1.16.4 and the real, signature-verified `hashicorp/google` 8.9.0 on the **committed canary** (`qualification/gcp/act-dev1-canary`), exactly as committed. It uses no provisioner, no `local-exec` and no judge bypass. It is opt-in through `ALZ_SIM_TERRAFORM`, `ALZ_SIM_FAKE_GCS` and `ALZ_SIM_GOOGLE_PROVIDER`, a folder holding HashiCorp's signed release files.
+
+**How Google is emulated.** One loopback helper process answers as:
+- the Terraform registry and `releases.hashicorp.com`, serving HashiCorp's own files, so `init` checks the real signature and the committed lock's `h1:` hashes;
+- Google's security token service and IAM Credentials API, where each identity's subject may impersonate only its own service account, as the bootstrap's bindings do;
+- Pub/Sub topics and Cloud Asset search;
+- Cloud Storage, through fake-gcs-server.
+
+The driver reaches all of it only through the operator's network settings, `ALZ_NETWORK_HTTPS_PROXY` and `ALZ_NETWORK_SSL_CERT_FILE`. `STORAGE_EMULATOR_HOST` is no longer set anywhere, and the proxy refuses every other host. The independent observation reads the same emulator through the reader's own HTTP seam. Run it inside a network namespace with loopback only, as the lane did.
+
+**Result, 2026-10-29: 9 of 9 passed.**
+
+| Test | What the real engine and provider showed |
+| --- | --- |
+| Seal | `init` fetched and checked HashiCorp's signature. The real plan passed the judge with exactly one `google_pubsub_topic` create, carrying the unit labels through `default_labels`. Every state access was STATE_WRITE's. |
+| Apply | APPLY sent the one Pub/Sub `PUT`, with `messageStoragePolicy.allowedPersistenceRegions = [<contract region>]`. Only STATE_WRITE wrote state, the lock was released, and the evidence and blueprint named the source commit. The observation was `VERIFIED`: DISCOVERY used a `pubsub` token for Pub/Sub and a `cloud-platform` token for Cloud Asset, and only read. |
+| Replay | A second apply of the same artifact was refused (`ARTIFACT_ALREADY_APPLIED`). |
+| Judge on the real plan | Each of these sealed nothing: another region, CMEK, message retention, a tag binding, `deletion_policy = "ABANDON"`, no storage policy, and another project. |
+| Read-back | A topic whose storage policy was changed afterward observed `FAILED` (`DIFFERENT_FROM_DESIRED`, `STORAGE_POLICY_MISMATCH`), and no cleanup could be proposed. A hand-deleted topic observed `FAILED` (`MISSING`). |
+| Cleanup | The proposal named exactly the topic. APPLY deleted it, and the leftovers check confirmed `CONFIRMED_DELETED` (`GCP_REST_ABSENT`). |
+| Held lock | Another holder's lock gave `FAILED_NO_CHANGE` and was left unchanged. |
+| Kill switch | `KILL_SWITCH_ACTIVE` before the engine ran, with nothing reserved. |
+| **Finding: `embedStateWrite`** | Without the contract's `embedStateWrite: true`, the apply process's own identity, APPLY, held the lock and wrote the state, because the gcs backend fills its credentials from the apply environment. The bootstrap's deny policy forbids that live. The GCP contract therefore sets `embedStateWrite: true` (`docs/act-pilot-gcp-evidence.md`). |
+
+**What it does not prove:** IAM and custom roles; which permission each call needs (GF7 to GF11); whether Google accepts the scopes and request shapes (GF1 to GF3, GF8); organization policy on storage locations; Cloud Asset's indexing delay; real latency and errors. The emulator is not Google. Only the owner's supervised DEV run is live evidence.
 
 ## What this spike did not do
 

@@ -3,6 +3,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
+import { inspectPilotContract } from "../src/apply/contract.js";
+import { approvers } from "./helpers/apply-fixtures.js";
+
 // bootstrap/gcp (slice S2 of the GCP release-path PLAN, owner approval 6433121154 on issue #39). SYNTHETIC and static: this reads
 // the owner-run package's text and never runs Terraform. Its behavior under a mocked provider is `terraform test`
 // (bootstrap/gcp/tests/bootstrap.tftest.hcl), recorded in docs/act-pilot-bootstrap-gcp.md. Neither is evidence about Google Cloud.
@@ -20,9 +23,11 @@ test("the package is the documented files, and never creates a key, a key-bearin
   for (const banned of ["google_service_account_key", "google_service_account_access_token", "private_key", "access_token", "client_secret", "service_account_impersonation_url", "allUsers", "allAuthenticatedUsers"]) {
     assert.equal(source.includes(banned), false, banned);
   }
-  // No basic role anywhere in the code; APPLY's extra roles are an exact, reviewed allowlist (review N1), not a denylist.
-  assert.equal(/roles\/(owner|editor)\b/.test(source), false);
-  assert.match(source, /contains\(\["roles\/pubsub\.publisher", "roles\/pubsub\.subscriber", "roles\/pubsub\.viewer", "roles\/logging\.viewer", "roles\/monitoring\.viewer"\], r\)/);
+  // Owner decision D12 (6483366237): no predefined role at all. The only role the code names is the workload identity binding of each
+  // service account to its own subject; every project grant is a custom role, and the old APPLY allowlist is gone (must be empty).
+  assert.deepEqual([...new Set(source.match(/roles\/[A-Za-z.]+/g))], ["roles/iam.workloadIdentityUser"]);
+  assert.match(source, /condition\s+= length\(var\.apply_additional_roles\) == 0/);
+  assert.equal(source.includes('resource "google_project_iam_member" "apply_additional"'), false, "no path grants a predefined role");
   assert.match(source, /hashicorp\/google"/);
   assert.equal(source.includes("google-beta"), false, "the bootstrap uses hashicorp/google only");
 });
@@ -40,11 +45,26 @@ test("each service account trusts one exact subject through workload identity fe
   assert.match(hcl("variables.tf"), /\^\[A-Za-z0-9:\._\/@-\]\{1,127\}\$/);
 });
 
+test("D12 (lane G1): DISCOVERY reads topics and searches the project's assets, APPLY creates and deletes topics (TERRAFORM also reads them back), no update, publish, subscribe, IAM or service permission, and services are enabled by the bootstrap only", () => {
+  const main = hcl("main.tf");
+  const [api, terraform] = [/workload_permissions = local\.api \? \{([\s\S]*?)\} : \{/.exec(main)?.[1] ?? "", /\} : \{\n([\s\S]*?)\n {2}\}\n/.exec(main)?.[1] ?? ""];
+  assert.match(api, /DISCOVERY = \["cloudasset\.assets\.searchAllResources", "pubsub\.topics\.get"\]/);
+  assert.match(api, /APPLY\s+= \["pubsub\.topics\.create", "pubsub\.topics\.delete"\]/);
+  assert.match(terraform, /DISCOVERY = \["cloudasset\.assets\.searchAllResources", "pubsub\.topics\.get"\]/);
+  assert.match(terraform, /APPLY\s+= \["pubsub\.topics\.create", "pubsub\.topics\.delete", "pubsub\.topics\.get"\]/);
+  const source = code();
+  for (const banned of ["pubsub.topics.update", "pubsub.topics.publish", "pubsub.topics.setIamPolicy", "pubsub.subscriptions.", "serviceusage.", "iam.serviceAccounts.getAccessToken", "resourcemanager.projects.setIamPolicy\"", "cloudasset.assets.list"]) {
+    assert.equal(source.includes(banned), false, banned);
+  }
+  assert.match(main, /\["iam\.googleapis\.com", "iamcredentials\.googleapis\.com", "sts\.googleapis\.com", "pubsub\.googleapis\.com", "cloudasset\.googleapis\.com"\]/);
+  // Both paths are DEV only (#339; owner decision 6481421924), and the header says so.
+  assert.match(hcl("variables.tf"), /condition\s+= var\.environment == "DEV"/);
+  assert.match(hcl("versions.tf"), /Run once per engine in the DEV project only/);
+  assert.equal(/QA and PROD/.test(hcl("versions.tf")), false, "the header no longer says QA and PROD for TERRAFORM");
+});
+
 test("path 6 (GCP_API) gets exactly its Pub/Sub grants, in DEV only, with its own accounts and no state bucket or bucket grant", () => {
   const main = hcl("main.tf");
-  const api = /workload_permissions = local\.api \? \{([\s\S]*?)\} : \{/.exec(main)?.[1] ?? "";
-  assert.match(api, /DISCOVERY = \["pubsub\.topics\.get"\]/);
-  assert.match(api, /APPLY\s+= \["pubsub\.topics\.create", "pubsub\.topics\.delete"\]/);
   assert.match(main, /identities = toset\(local\.api \? \["DISCOVERY", "APPLY"\]/);
   assert.match(main, /engine_tag = local\.api \? "api-" : ""/);
   const variables = hcl("variables.tf");
@@ -54,7 +74,11 @@ test("path 6 (GCP_API) gets exactly its Pub/Sub grants, in DEV only, with its ow
   const state = hcl("state.tf");
   for (const block of ["state_roles = local.terraform ?", "state_bindings = local.terraform ?", "count                       = local.terraform ? 1 : 0"]) assert.ok(state.includes(block), block);
   assert.deepEqual(Object.keys(template.GCP_API.contractTargets), ["DEV"]);
-  assert.deepEqual(template.GCP_API.contractTargets.DEV, { projectId: "examplefake-dev" });
+  // D12 checklist item 8: the GCP_API target in decision D9's shape.
+  assert.deepEqual(template.GCP_API.contractTargets.DEV, {
+    projectId: "examplefake-dev", region: "europe-west4", backend: "GCP_API_NO_STATE", workspace: "default", topicPrefix: "alz-act-dev1-", canary: { resources: [{ type: "google_pubsub_topic", count: 1 }] },
+  });
+  assert.match(hcl("variables.tf"), /\^alz-\[a-z0-9-\]\{1,40\}-\$/);
   assert.deepEqual(Object.keys(template.GCP_API.serviceAccounts.DEV), ["DISCOVERY", "APPLY"]);
 });
 
@@ -108,7 +132,22 @@ test("the mocked terraform test suite covers every refusal the package promises"
     "terraform_engine_dev", "api_engine_dev", "p3_lock_versions_opt_in", "refuses_api_outside_dev", "refuses_api_with_state_bucket", "refuses_api_with_additional_roles",
     "refuses_owner_role", "refuses_editor_role", "refuses_iam_admin_role", "refuses_shared_subject", "refuses_subject_that_ends_a_cel_string", "refuses_wildcard_subject",
     "refuses_missing_identity_subject", "refuses_relative_or_shared_token_file", "refuses_budget_without_billing_account",
-    "pins_required_claims", "refuses_required_claim_that_ends_a_cel_string", "refuses_required_claim_with_an_expression_name", "accepts_an_allowlisted_role",
+    "pins_required_claims", "refuses_required_claim_that_ends_a_cel_string", "refuses_required_claim_with_an_expression_name",
+    "refuses_terraform_outside_dev", "refuses_api_without_topic_prefix", "refuses_malformed_topic_prefix", "refuses_topic_prefix_on_terraform", "parent_is_carried_owner_declared",
+    "refuses_malformed_parent", "refuses_pubsub_viewer_role", "refuses_pubsub_publisher_role", "refuses_logging_viewer_role",
     "refuses_storage_admin_role", "refuses_deployment_manager_editor_role", "refuses_cloud_build_editor_role", "refuses_any_admin_or_unreviewed_role",
   ]) assert.match(suite, new RegExp('^run "' + run + '" \\{', "m"), run);
+});
+
+test("the TERRAFORM template's DEV target and settings make a contract the GCP validator accepts, DEV only, with embedStateWrite", () => {
+  const settings = template.TERRAFORM.contractSettings as Record<string, unknown>;
+  assert.deepEqual(settings, { embedStateWrite: true, enabledEnvironments: ["DEV"] });
+  assert.deepEqual(Object.keys(template.TERRAFORM.contractTargets), ["DEV"], "no QA or PROD target: path 5 is DEV only");
+  const contract = {
+    schemaVersion: 1, enabled: false, provider: "GCP", engine: "TERRAFORM", targets: template.TERRAFORM.contractTargets, ...settings,
+    requiredApprovals: { DEV: 1 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: ".runs/apply/KILL",
+  };
+  const result = inspectPilotContract(contract);
+  assert.ok(result.ok, JSON.stringify(result));
+  assert.match(hcl("outputs.tf"), /output "contract_settings"/);
 });

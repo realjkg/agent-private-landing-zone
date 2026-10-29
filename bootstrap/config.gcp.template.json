@@ -1,5 +1,5 @@
 {
-  "NOTE": "TEMPLATE, NOT A CONTRACT. Identifiers and file paths only; no secret belongs here. Every value below is an obviously fake placeholder. Fill from `terraform output` in bootstrap/gcp, once per project and engine (docs/act-pilot-bootstrap-gcp.md, step 4). Copy the chosen engine's `contractTargets` into the contract by hand once the authorization lane admits GCP; until then a contract naming GCP is refused. Leave enabled false and add no authorize entry; enabling and authorizing are a separate reviewed change, not part of bootstrap. Write each `credentialConfigurations` entry to the path you name in ALZ_<IDENTITY>_GOOGLE_APPLICATION_CREDENTIALS: it is an external_account file source and must never gain a key, a token or a service_account_impersonation_url.",
+  "NOTE": "TEMPLATE, NOT A CONTRACT. Identifiers and file paths only; no secret belongs here. Every value below is an obviously fake placeholder. Fill from `terraform output` in bootstrap/gcp, once per engine in the DEV project only (docs/act-pilot-bootstrap-gcp.md, step 4): both GCP paths are admitted for DEV only. Copy the chosen engine's `contractTargets` and `contractSettings` into the reviewed contract by hand. The TERRAFORM engine needs embedStateWrite: true, or the APPLY process would hold the state, which the bootstrap's deny policy forbids. Leave enabled false and add no authorize entry; enabling and authorizing are a separate reviewed change, not part of bootstrap. Write each `credentialConfigurations` entry to the path you name in ALZ_<IDENTITY>_GOOGLE_APPLICATION_CREDENTIALS: it is an external_account file source and must never gain a key, a token or a service_account_impersonation_url.",
   "provider": "GCP",
   "identityVariables": {
     "perIdentity": [
@@ -12,30 +12,29 @@
   "TERRAFORM": {
     "engine": "TERRAFORM",
     "contractTargets": {
-      "DEV": { "projectId": "examplefake-dev", "region": "europe-west4", "backend": "examplefake-dev-state/pilot/dev", "workspace": "default" },
-      "QA": { "projectId": "examplefake-qa", "region": "europe-west4", "backend": "examplefake-qa-state/pilot/qa", "workspace": "default" },
-      "PROD": { "projectId": "examplefake-prod", "region": "europe-west4", "backend": "examplefake-prod-state/pilot/prod", "workspace": "default" }
+      "DEV": { "projectId": "examplefake-dev", "region": "europe-west4", "backend": "examplefake-dev-state/pilot/dev", "workspace": "default", "canary": { "resources": [{ "type": "google_pubsub_topic", "count": 1 }] } }
+    },
+    "contractSettings": {
+      "embedStateWrite": true,
+      "enabledEnvironments": ["DEV"]
     },
     "serviceAccounts": {
-      "DEV": { "DISCOVERY": "alz-pilot-dev-discovery@examplefake-dev.iam.gserviceaccount.com", "STATE": "alz-pilot-dev-state@examplefake-dev.iam.gserviceaccount.com", "STATE_WRITE": "alz-pilot-dev-state-write@examplefake-dev.iam.gserviceaccount.com", "APPLY": "alz-pilot-dev-apply@examplefake-dev.iam.gserviceaccount.com" },
-      "QA": { "DISCOVERY": "alz-pilot-qa-discovery@examplefake-qa.iam.gserviceaccount.com", "STATE": "alz-pilot-qa-state@examplefake-qa.iam.gserviceaccount.com", "STATE_WRITE": "alz-pilot-qa-state-write@examplefake-qa.iam.gserviceaccount.com", "APPLY": "alz-pilot-qa-apply@examplefake-qa.iam.gserviceaccount.com" },
-      "PROD": { "DISCOVERY": "alz-pilot-prod-discovery@examplefake-prod.iam.gserviceaccount.com", "STATE": "alz-pilot-prod-state@examplefake-prod.iam.gserviceaccount.com", "STATE_WRITE": "alz-pilot-prod-state-write@examplefake-prod.iam.gserviceaccount.com", "APPLY": "alz-pilot-prod-apply@examplefake-prod.iam.gserviceaccount.com" }
+      "DEV": { "DISCOVERY": "alz-pilot-dev-discovery@examplefake-dev.iam.gserviceaccount.com", "STATE": "alz-pilot-dev-state@examplefake-dev.iam.gserviceaccount.com", "STATE_WRITE": "alz-pilot-dev-state-write@examplefake-dev.iam.gserviceaccount.com", "APPLY": "alz-pilot-dev-apply@examplefake-dev.iam.gserviceaccount.com" }
     },
     "credentialConfigurationPaths": {
-      "DEV": { "DISCOVERY": "/etc/alz/gcp/dev/discovery.json", "STATE": "/etc/alz/gcp/dev/state.json", "STATE_WRITE": "/etc/alz/gcp/dev/state-write.json", "APPLY": "/etc/alz/gcp/dev/apply.json" },
-      "QA": { "DISCOVERY": "/etc/alz/gcp/qa/discovery.json", "STATE": "/etc/alz/gcp/qa/state.json", "STATE_WRITE": "/etc/alz/gcp/qa/state-write.json", "APPLY": "/etc/alz/gcp/qa/apply.json" },
-      "PROD": { "DISCOVERY": "/etc/alz/gcp/prod/discovery.json", "STATE": "/etc/alz/gcp/prod/state.json", "STATE_WRITE": "/etc/alz/gcp/prod/state-write.json", "APPLY": "/etc/alz/gcp/prod/apply.json" }
+      "DEV": { "DISCOVERY": "/etc/alz/gcp/dev/discovery.json", "STATE": "/etc/alz/gcp/dev/state.json", "STATE_WRITE": "/etc/alz/gcp/dev/state-write.json", "APPLY": "/etc/alz/gcp/dev/apply.json" }
     },
     "tokenFiles": {
-      "DEV": { "DISCOVERY": "/var/run/alz/dev/discovery.jwt", "STATE": "/var/run/alz/dev/state.jwt", "STATE_WRITE": "/var/run/alz/dev/state-write.jwt", "APPLY": "/var/run/alz/dev/apply.jwt" },
-      "QA": { "DISCOVERY": "/var/run/alz/qa/discovery.jwt", "STATE": "/var/run/alz/qa/state.jwt", "STATE_WRITE": "/var/run/alz/qa/state-write.jwt", "APPLY": "/var/run/alz/qa/apply.jwt" },
-      "PROD": { "DISCOVERY": "/var/run/alz/prod/discovery.jwt", "STATE": "/var/run/alz/prod/state.jwt", "STATE_WRITE": "/var/run/alz/prod/state-write.jwt", "APPLY": "/var/run/alz/prod/apply.jwt" }
+      "DEV": { "DISCOVERY": "/var/run/alz/dev/discovery.jwt", "STATE": "/var/run/alz/dev/state.jwt", "STATE_WRITE": "/var/run/alz/dev/state-write.jwt", "APPLY": "/var/run/alz/dev/apply.jwt" }
     }
   },
   "GCP_API": {
     "engine": "GCP_API",
     "contractTargets": {
-      "DEV": { "projectId": "examplefake-dev" }
+      "DEV": { "projectId": "examplefake-dev", "region": "europe-west4", "backend": "GCP_API_NO_STATE", "workspace": "default", "topicPrefix": "alz-act-dev1-", "canary": { "resources": [{ "type": "google_pubsub_topic", "count": 1 }] } }
+    },
+    "contractSettings": {
+      "enabledEnvironments": ["DEV"]
     },
     "serviceAccounts": {
       "DEV": { "DISCOVERY": "alz-pilot-dev-api-discovery@examplefake-dev.iam.gserviceaccount.com", "APPLY": "alz-pilot-dev-api-apply@examplefake-dev.iam.gserviceaccount.com" }

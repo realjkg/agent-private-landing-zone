@@ -54,8 +54,16 @@ run "terraform_engine_dev" {
     error_message = "The provider admits the engine's subjects only."
   }
   assert {
-    condition     = toset(google_project_iam_custom_role.workload["APPLY"].permissions) == toset(["pubsub.topics.create", "pubsub.topics.delete", "pubsub.topics.get", "pubsub.topics.update"]) && toset(google_project_iam_custom_role.workload["DISCOVERY"].permissions) == toset(["cloudasset.assets.searchAllResources", "pubsub.topics.get"])
-    error_message = "The minimal workload's permissions."
+    condition     = toset(google_project_iam_custom_role.workload["APPLY"].permissions) == toset(["pubsub.topics.create", "pubsub.topics.delete", "pubsub.topics.get"]) && toset(google_project_iam_custom_role.workload["DISCOVERY"].permissions) == toset(["cloudasset.assets.searchAllResources", "pubsub.topics.get"])
+    error_message = "The minimal workload's permissions (D12): no topic update, publish, subscribe, IAM or service permission."
+  }
+  assert {
+    condition     = alltrue([for m in google_project_iam_member.workload : startswith(m.role, "projects/")]) && length(google_project_iam_member.workload) == 2
+    error_message = "Every project grant is one of this package's custom roles (D12): no predefined role."
+  }
+  assert {
+    condition     = contains(keys(google_project_service.required), "cloudasset.googleapis.com") && contains(keys(google_project_service.required), "storage.googleapis.com")
+    error_message = "Cloud Asset and Storage are enabled by the bootstrap, never at run time."
   }
   assert {
     condition     = length(google_storage_bucket.state) == 1 && google_storage_bucket.state[0].uniform_bucket_level_access && google_storage_bucket.state[0].public_access_prevention == "enforced" && google_storage_bucket.state[0].versioning[0].enabled && length(google_storage_bucket.state[0].lifecycle_rule) == 1
@@ -88,8 +96,12 @@ run "terraform_engine_dev" {
     error_message = "With no required claims, the condition is the subject list alone."
   }
   assert {
-    condition     = output.contract_target.backend == "examplefake-dev-state/pilot/dev" && output.contract_target.projectId == "examplefake-dev" && output.contract_target.workspace == "default"
-    error_message = "The contract target."
+    condition     = output.contract_target.backend == "examplefake-dev-state/pilot/dev" && output.contract_target.projectId == "examplefake-dev" && output.contract_target.workspace == "default" && output.contract_target.region == "europe-west4" && output.contract_target.canary == { resources = [{ type = "google_pubsub_topic", count = 1 }] } && toset(keys(output.contract_target)) == toset(["projectId", "region", "backend", "workspace", "canary"])
+    error_message = "The contract target: D9's shape, with the one-topic canary."
+  }
+  assert {
+    condition     = output.contract_settings.embedStateWrite == true && output.contract_settings.enabledEnvironments == ["DEV"]
+    error_message = "TERRAFORM needs embedStateWrite so the state stays STATE_WRITE's."
   }
   assert {
     condition     = alltrue([for i, c in output.credential_configurations : toset(keys(jsondecode(c))) == toset(["type", "audience", "subject_token_type", "token_url", "credential_source"]) && jsondecode(c).type == "external_account" && jsondecode(c).credential_source == { file = var.token_files[i] }])
@@ -101,6 +113,7 @@ run "api_engine_dev" {
   variables {
     engine            = "GCP_API"
     state_bucket_name = null
+    topic_prefix      = "alz-act-dev1-"
     oidc_subjects = {
       DISCOVERY = "repo:OWNER/REPO:environment:dev-api-discovery"
       APPLY     = "repo:OWNER/REPO:environment:dev-api-apply"
@@ -115,16 +128,24 @@ run "api_engine_dev" {
     error_message = "GCP_API has DISCOVERY and APPLY only, in its own accounts and pool."
   }
   assert {
-    condition     = toset(google_project_iam_custom_role.workload["APPLY"].permissions) == toset(["pubsub.topics.create", "pubsub.topics.delete"]) && toset(google_project_iam_custom_role.workload["DISCOVERY"].permissions) == toset(["pubsub.topics.get"])
-    error_message = "Exactly path 6's grants: APPLY creates and deletes topics, DISCOVERY reads them."
+    condition     = toset(google_project_iam_custom_role.workload["APPLY"].permissions) == toset(["pubsub.topics.create", "pubsub.topics.delete"]) && toset(google_project_iam_custom_role.workload["DISCOVERY"].permissions) == toset(["cloudasset.assets.searchAllResources", "pubsub.topics.get"])
+    error_message = "Exactly path 6's grants (D12): APPLY creates and deletes topics, DISCOVERY reads them and searches the project's assets."
+  }
+  assert {
+    condition     = contains(keys(google_project_service.required), "cloudasset.googleapis.com") && !contains(keys(google_project_service.required), "storage.googleapis.com")
+    error_message = "GCP_API: Cloud Asset is enabled by the bootstrap (D12 item 6); no storage."
   }
   assert {
     condition     = length(google_storage_bucket.state) == 0 && length(google_storage_bucket_iam_member.state) == 0 && length(google_project_iam_custom_role.state) == 0 && length(google_project_iam_audit_config.storage_data_access) == 0
     error_message = "GCP_API gets no state bucket and no bucket grant."
   }
   assert {
-    condition     = keys(output.contract_target) == ["projectId"] && output.contract_target.projectId == "examplefake-dev"
-    error_message = "The GCP_API target is the project alone."
+    condition     = output.contract_target == { projectId = "examplefake-dev", region = "europe-west4", backend = "GCP_API_NO_STATE", workspace = "default", topicPrefix = "alz-act-dev1-", canary = { resources = [{ type = "google_pubsub_topic", count = 1 }] } }
+    error_message = "The GCP_API target in D9's shape (D12 checklist item 8): the no-state sentinel, the topic prefix and the one-topic canary."
+  }
+  assert {
+    condition     = output.contract_settings == { enabledEnvironments = ["DEV"] }
+    error_message = "GCP_API has no state to embed."
   }
   assert {
     condition     = google_iam_deny_policy.guardrails[0].name == "alz-pilot-dev-api-guardrails"
@@ -149,15 +170,74 @@ run "refuses_api_outside_dev" {
     environment       = "QA"
     engine            = "GCP_API"
     state_bucket_name = null
+    topic_prefix      = "alz-act-qa1-"
     oidc_subjects     = { DISCOVERY = "repo:O/R:environment:qa-d", APPLY = "repo:O/R:environment:qa-a" }
     token_files       = { DISCOVERY = "/run/d.jwt", APPLY = "/run/a.jwt" }
   }
-  expect_failures = [var.engine]
+  expect_failures = [var.environment]
+}
+
+run "refuses_terraform_outside_dev" {
+  command = plan
+  variables {
+    environment = "PROD"
+  }
+  expect_failures = [var.environment]
+}
+
+run "refuses_api_without_topic_prefix" {
+  command = plan
+  variables {
+    engine            = "GCP_API"
+    state_bucket_name = null
+    oidc_subjects     = { DISCOVERY = "repo:O/R:environment:d", APPLY = "repo:O/R:environment:a" }
+    token_files       = { DISCOVERY = "/run/d.jwt", APPLY = "/run/a.jwt" }
+  }
+  expect_failures = [var.topic_prefix]
+}
+
+run "refuses_malformed_topic_prefix" {
+  command = plan
+  variables {
+    engine            = "GCP_API"
+    state_bucket_name = null
+    topic_prefix      = "goog-topic-"
+    oidc_subjects     = { DISCOVERY = "repo:O/R:environment:d", APPLY = "repo:O/R:environment:a" }
+    token_files       = { DISCOVERY = "/run/d.jwt", APPLY = "/run/a.jwt" }
+  }
+  expect_failures = [var.topic_prefix]
+}
+
+run "refuses_topic_prefix_on_terraform" {
+  command = plan
+  variables {
+    topic_prefix = "alz-act-dev1-"
+  }
+  expect_failures = [var.topic_prefix]
+}
+
+run "parent_is_carried_owner_declared" {
+  variables {
+    parent = "folders/123456789012"
+  }
+  assert {
+    condition     = output.contract_target.parent == "folders/123456789012"
+    error_message = "A stated parent is carried into the target (D9); nothing reads it."
+  }
+}
+
+run "refuses_malformed_parent" {
+  command = plan
+  variables {
+    parent = "folders/*"
+  }
+  expect_failures = [var.parent]
 }
 
 run "refuses_api_with_state_bucket" {
   command = plan
   variables {
+    topic_prefix  = "alz-act-dev1-"
     engine        = "GCP_API"
     oidc_subjects = { DISCOVERY = "repo:O/R:environment:d", APPLY = "repo:O/R:environment:a" }
     token_files   = { DISCOVERY = "/run/d.jwt", APPLY = "/run/a.jwt" }
@@ -168,6 +248,7 @@ run "refuses_api_with_state_bucket" {
 run "refuses_api_with_additional_roles" {
   command = plan
   variables {
+    topic_prefix           = "alz-act-dev1-"
     engine                 = "GCP_API"
     state_bucket_name      = null
     oidc_subjects          = { DISCOVERY = "repo:O/R:environment:d", APPLY = "repo:O/R:environment:a" }
@@ -336,14 +417,28 @@ run "refuses_required_claim_with_an_expression_name" {
   expect_failures = [var.oidc_required_claims]
 }
 
-run "accepts_an_allowlisted_role" {
+run "refuses_pubsub_viewer_role" {
+  command = plan
   variables {
     apply_additional_roles = ["roles/pubsub.viewer"]
   }
-  assert {
-    condition     = length(google_project_iam_member.apply_additional) == 1 && google_project_iam_member.apply_additional["roles/pubsub.viewer"].member == "serviceAccount:alz-pilot-dev-apply@examplefake-dev.iam.gserviceaccount.com"
-    error_message = "A reviewed role is granted to APPLY only."
+  expect_failures = [var.apply_additional_roles]
+}
+
+run "refuses_pubsub_publisher_role" {
+  command = plan
+  variables {
+    apply_additional_roles = ["roles/pubsub.publisher"]
   }
+  expect_failures = [var.apply_additional_roles]
+}
+
+run "refuses_logging_viewer_role" {
+  command = plan
+  variables {
+    apply_additional_roles = ["roles/logging.viewer"]
+  }
+  expect_failures = [var.apply_additional_roles]
 }
 
 run "refuses_storage_admin_role" {

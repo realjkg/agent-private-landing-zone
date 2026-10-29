@@ -1,0 +1,10 @@
+{
+  "region": "europe-west4",
+  "canary_name": "alz-act-dev-1-canary-01",
+  "owner": "replace-with-approved-owner",
+  "unit_labels": {
+    "alz-managed-by": "REPLACE-WITH-PREPARE-OUTPUT",
+    "alz-unit": "REPLACE-WITH-PREPARE-OUTPUT",
+    "alz-build": "REPLACE-WITH-PREPARE-OUTPUT"
+  }
+}

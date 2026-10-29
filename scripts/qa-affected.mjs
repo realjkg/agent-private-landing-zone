@@ -126,6 +126,7 @@ export const CANARY_OWNERS = Object.freeze([
   ["qualification/aws/act-dev1-cdk-canary/", "test/act-dev1-cdk-canary.test.ts"],
   ["qualification/azure/act-dev1-canary/", "test/act-dev1-azure-canary.test.ts"],
   ["qualification/azure/act-dev1-bicep-canary/", "test/act-dev1-bicep-canary.test.ts"],
+  ["qualification/gcp/act-dev1-canary/", "test/act-dev1-gcp-canary.test.ts"],
 ]);
 function uniq(values) { return [...new Set(values)].sort(); }
 function hasFile(files, name) { return files.has(name); }
