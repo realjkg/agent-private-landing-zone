@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -138,6 +138,20 @@ export const CONTRACT_COMMIT = "1".repeat(40);
 /** The artifact a path's fake seal produces: distinct per path, so several paths' runs in one repository never collide. */
 export const artifactOf = (path = "aws-terraform"): string => path === "aws-terraform" ? ARTIFACT : createHash("sha256").update(path).digest("hex");
 
+const PREPARED_APPLY_REQUEST = { environment: "DEV", target: { account: "111122223333", backend: "fixture-state/pilot/dev.tfstate", workspace: "default" }, projectRoot: "/srv/canary/aws" };
+
+/**
+ * `./alz apply apply` and `cleanup` accept a request with exactly environment, target and projectRoot, and refuse anything else
+ * with exit 1 (APPLY_INPUT_INVALID, src/cli/apply.ts readRequest). The fake does the same, so the runner must pass the apply request.
+ */
+const takesApplyRequest: FakeChild = (request) => {
+  const at = request.args.indexOf("--request");
+  try {
+    const keys = Object.keys(JSON.parse(readFileSync(join(request.cwd, request.args[at + 1]), "utf8")) as object).sort();
+    return { exitCode: at >= 0 && JSON.stringify(keys) === JSON.stringify(["environment", "projectRoot", "target"]) ? 0 : 1, signal: null };
+  } catch { return { exitCode: 1, signal: null }; }
+};
+
 /** What each `./alz apply` producer writes (src/cli/apply.ts defaults), so the runner finds one new document per step. */
 export function applyScript(overrides: Record<string, FakeChild | number> = {}, options: { path?: string; live?: Record<string, unknown> } = {}): Record<string, FakeChild | number> {
   const path = options.path ?? "aws-terraform";
@@ -149,7 +163,9 @@ export function applyScript(overrides: Record<string, FakeChild | number> = {}, 
     "apply contract-check": 0,
     "apply identity-check": (request) => { write(request.cwd, ".runs/apply/identity-delivery/delivered-" + path + "-2026-10-29T00-00-00-000Z-" + randomBytes(4).toString("hex") + ".json"); return { exitCode: 0, signal: null }; },
     "apply prepare": (request) => {
-      write(request.cwd, ".runs/pilot/DEV/request-" + artifact.slice(0, 16) + ".json");
+      // The two request files `./alz apply prepare` writes (src/apply/prepare.ts, writePreparation): the seal request and the apply request.
+      write(request.cwd, ".runs/pilot/DEV/request-" + artifact.slice(0, 16) + ".json", JSON.stringify({ ...PREPARED_APPLY_REQUEST, policyVersion: "fixture", resolved: {} }));
+      write(request.cwd, ".runs/pilot/DEV/apply-request-" + artifact.slice(0, 16) + ".json", JSON.stringify(PREPARED_APPLY_REQUEST));
       write(request.cwd, ".runs/pilot/DEV/manifest-" + artifact.slice(0, 16) + ".json");
       write(request.cwd, ".runs/pilot/DEV/preparation-" + artifact.slice(0, 16) + ".json");
       return { exitCode: 0, signal: null };
@@ -157,11 +173,11 @@ export function applyScript(overrides: Record<string, FakeChild | number> = {}, 
     "apply qualify": 0,
     "apply preflight": 0,
     "apply seal": (request) => { write(request.cwd, ".runs/apply/evidence/" + artifact + ".sealed", "sealed " + path); write(request.cwd, ".runs/apply/evidence/" + artifact + ".sealed.review.json", "{\"path\":\"" + path + "\"}"); return { exitCode: 0, signal: null }; },
-    "apply apply": 0,
+    "apply apply": takesApplyRequest,
     // A VERIFIED observation's plain summary: what the runner reads to pass act:<path> (#360 review N1).
     "apply observe": (request) => { write(request.cwd, ".runs/apply/reports/" + a12 + "-observation.json", JSON.stringify({ schemaVersion: 1, kind: "OBSERVATION_SUMMARY", artifactSha256: artifact, verdict: "VERIFIED", inventory: "COMPLETE", sweepNotListing: [] })); return { exitCode: 0, signal: null }; },
     "apply propose-cleanup": (request) => { write(request.cwd, ".runs/apply/cleanup/" + p12 + ".cleanup-proposal.json"); return { exitCode: 0, signal: null }; },
-    "apply cleanup": 0,
+    "apply cleanup": takesApplyRequest,
     "apply verify-cleanup": 0,
     // A lifecycle report whose leftovers stage passed: what the runner reads for a GCP path's cleanup (#359 review N1).
     "apply report": (request) => { write(request.cwd, ".runs/apply/reports/" + a12 + "-lifecycle-" + p12 + ".json", JSON.stringify({ reportKind: "ACT_LIFECYCLE", stages: { leftovers: { status: "PASS" } } })); return { exitCode: 0, signal: null }; },

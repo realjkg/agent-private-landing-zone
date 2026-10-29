@@ -46,10 +46,11 @@ test("act:aws-terraform runs the documented ./alz apply steps in order, each at 
   const args = Object.fromEntries(spawn.calls.map((call) => [sub(call), call.args.slice(2)]));
   assert.deepEqual(args["apply identity-check"], ["--path", "aws-terraform", "--repository", "owner/repo", "--phase", "delivered"]);
   assert.deepEqual(args["apply prepare"], ["--environment", "DEV", "--project", "/srv/canary/aws"]);
-  const request = [".runs/pilot/DEV/request-aaaaaaaaaaaaaaaa.json", ".runs/pilot/DEV/manifest-aaaaaaaaaaaaaaaa.json"];
+  // qualify and seal take prepare's seal request; apply takes its apply request (environment, target and project only).
+  const request = [".runs/pilot/DEV/request-aaaaaaaaaaaaaaaa.json", ".runs/pilot/DEV/manifest-aaaaaaaaaaaaaaaa.json", ".runs/pilot/DEV/apply-request-aaaaaaaaaaaaaaaa.json"];
   assert.deepEqual(args["apply qualify"], ["--request", request[0], "--manifest", request[1]]);
   assert.deepEqual(args["apply seal"], ["--request", request[0], "--manifest", request[1], "--requester", "owner", "--key", join(root, ".runs/keys/requester.pem")]);
-  assert.deepEqual(args["apply apply"], ["--request", request[0], "--manifest", request[1], "--sealed", ".runs/apply/evidence/" + ARTIFACT + ".sealed", "--approval", ".runs/approvals/apply-1.json"]);
+  assert.deepEqual(args["apply apply"], ["--request", request[2], "--manifest", request[1], "--sealed", ".runs/apply/evidence/" + ARTIFACT + ".sealed", "--approval", ".runs/approvals/apply-1.json"]);
   // No flag pre-answers or forces anything, and no phrase appears in any argument.
   for (const call of spawn.calls) assert.ok(!call.args.some((arg) => /^--(yes|force|confirm|phrase|answer|approve|skip)/.test(arg) || /^(APPLY|APPROVE|LIVE|RUN PROJECT CODE|SEPARATED|CLEANUP) /.test(arg)), call.args.join(" "));
   // The runner asked the person only for the key file and the approval files, never a product phrase.
@@ -57,10 +58,27 @@ test("act:aws-terraform runs the documented ./alz apply steps in order, each at 
   assert.ok(answers.asked.every((question) => /key file|approval file/.test(question)));
   const seal = journalOf(root).find((line) => line.step === "seal" && line.event === "finish")!;
   assert.deepEqual(seal.documents?.map((document) => document.name), ["review-bundle", "sealed-plan"]);
+  const prepared = journalOf(root).find((line) => line.step === "prepare" && line.event === "finish")!;
+  assert.deepEqual(prepared.documents?.map((document) => document.name), ["request", "apply-request", "manifest"]);
   for (const line of journalOf(root)) assert.ok(!JSON.stringify(line).includes("requester.pem"), "a key file's path is never journaled");
   for (const file of [join(root, ".runs/evidence/synthetic", C12, "journal.jsonl"), join(root, ".runs/evidence/synthetic", C12, "act-aws-terraform/stage.json")]) {
     assert.ok(!readFileSync(file, "utf8").includes(CANARY));
   }
+});
+
+test("act:aws-terraform stops at prepare when prepare wrote no apply request, and never hands the seal request to apply", async () => {
+  const root = actRoot();
+  const sealOnly = applyScript({
+    "apply prepare": (request) => {
+      write(request.cwd, ".runs/pilot/DEV/request-" + ARTIFACT.slice(0, 16) + ".json");
+      write(request.cwd, ".runs/pilot/DEV/manifest-" + ARTIFACT.slice(0, 16) + ".json");
+      return { exitCode: 0, signal: null };
+    },
+  });
+  const { deps, spawn } = actDeps(root, sealOnly);
+  assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:aws-terraform"], deps), 2, deps.lines.join("\n"));
+  assert.match(deps.lines.join("\n"), /EVIDENCE_DOCUMENT_NOT_FOUND/);
+  assert.equal(sub(spawn.calls.at(-1)!), "apply prepare", "nothing runs after a prepare that wrote no apply request");
 });
 
 test("a refusal at any step stops the sequence and is journaled; nothing after it starts", async () => {
@@ -158,7 +176,7 @@ test("cleanup:aws-terraform needs the act stage done, then runs the cleanup sequ
   assert.deepEqual(cleanup.spawn.calls.map(sub), ["apply contract-check", "apply identity-check", "apply observe", "apply propose-cleanup", "apply cleanup", "apply verify-cleanup", "apply report", "apply record-live"],
     "the cleanup re-checks what cleanup requires (contract, delivered identities, kill switch in process), never apply readiness");
   const args = Object.fromEntries(cleanup.spawn.calls.map((call) => [sub(call), call.args.slice(2)]));
-  assert.deepEqual(args["apply cleanup"], ["--proposal", ".runs/apply/cleanup/" + PROPOSAL12 + ".cleanup-proposal.json", "--request", ".runs/pilot/DEV/request-aaaaaaaaaaaaaaaa.json",
+  assert.deepEqual(args["apply cleanup"], ["--proposal", ".runs/apply/cleanup/" + PROPOSAL12 + ".cleanup-proposal.json", "--request", ".runs/pilot/DEV/apply-request-aaaaaaaaaaaaaaaa.json",
     "--manifest", ".runs/pilot/DEV/manifest-aaaaaaaaaaaaaaaa.json", "--sealed", ".runs/apply/evidence/" + ARTIFACT + ".sealed", "--approval", ".runs/approvals/cleanup-1.json"]);
   assert.equal(existsSync(join(root, "config/acceptance/evidence/aws-terraform-execute-dev-aaaaaaaaaaaa.json")), false, "the checkout is left clean");
   const record = journalOf(root).find((line) => line.step === "record-live" && line.event === "finish")!;

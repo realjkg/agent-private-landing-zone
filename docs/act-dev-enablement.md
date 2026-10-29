@@ -129,7 +129,7 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
 12. **G2 qualification** on the execution host, DEV only. The qualifier watches CloudTrail (STS and S3 data events):
 
     ```bash
-    ./alz apply prepare --environment DEV --project <PROJECT_DIR>       # writes .runs/pilot/DEV/request-<id>.json and manifest-<id>.json
+    ./alz apply prepare --environment DEV --project <PROJECT_DIR>       # writes .runs/pilot/DEV/request-<id>.json, apply-request-<id>.json and manifest-<id>.json
     ./alz apply qualify --request <REQUEST.json> --manifest <MANIFEST.json>
     # type SEPARATED <STATE_WRITE role ARN> <APPLY role ARN> only if CloudTrail shows state access by STATE_WRITE,
     # provider access by APPLY, and no state access by APPLY
@@ -138,10 +138,12 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
 
 13. **One supervised DEV apply**, in one channel (the terminal here; the console wizard runs the same steps):
 
+    `prepare` writes two request files. `<REQUEST.json>` is `request-<id>.json`, for `qualify` and `seal`. `<APPLY_REQUEST.json>` is `apply-request-<id>.json`, for `apply` and `cleanup`: the same environment, target and project, and nothing else. `apply` and `cleanup` refuse any other key with `APPLY_INPUT_INVALID` before anything is asked or consumed, so they refuse the seal request too. The sealed plan already binds the rest.
+
     ```bash
     ./alz apply seal --request <REQUEST.json> --manifest <MANIFEST.json> --requester <ID> --key <REQUESTER_KEY.pem>
     ./alz apply approve --bundle <REVIEW_BUNDLE.json> --key <APPROVER_KEY.pem> --approver <ID>   # each approver, own machine
-    ./alz apply apply --request <REQUEST.json> --manifest <MANIFEST.json> --sealed <SEALED_PLAN> --approval <APPROVAL.json>
+    ./alz apply apply --request <APPLY_REQUEST.json> --manifest <MANIFEST.json> --sealed <SEALED_PLAN> --approval <APPROVAL.json>
     ./alz apply status --sealed <SEALED_PLAN>
     ./alz apply record-live --sealed <SEALED_PLAN>                       # type LIVE DEV <12 chars>; commit the file it writes
     ```
@@ -152,7 +154,7 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
     ./alz apply observe --sealed <SEALED_PLAN>
     ./alz apply propose-cleanup --sealed <SEALED_PLAN> --requester <ID> --key <REQUESTER_KEY.pem>
     ./alz apply approve --bundle <PROPOSAL.json> --key <APPROVER_KEY.pem> --approver <ID>          # APPROVE CLEANUP DEV ...
-    ./alz apply cleanup --proposal <PROPOSAL.json> --request <REQUEST.json> --manifest <MANIFEST.json> --sealed <SEALED_PLAN> --approval <CLEANUP_APPROVAL.json>
+    ./alz apply cleanup --proposal <PROPOSAL.json> --request <APPLY_REQUEST.json> --manifest <MANIFEST.json> --sealed <SEALED_PLAN> --approval <CLEANUP_APPROVAL.json>
     ./alz apply verify-cleanup --proposal <PROPOSAL.json>
     ./alz apply report --sealed <SEALED_PLAN> --proposal <PROPOSAL.json>
     ```

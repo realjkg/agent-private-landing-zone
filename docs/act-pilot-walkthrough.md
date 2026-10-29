@@ -180,10 +180,10 @@ The commands, in order. Operators run 1, 2, 3 and 5. Each approver runs 4 on the
 
 0. `./alz apply contract-check --file DRAFT.json` (the pilot owner, once, while filling in the contract: names every owner input the draft still lacks, reads only that file, and enables nothing; `docs/act-pilot-aws-terraform-g0.md`)
 1. `./alz apply preflight --environment DEV`
-2. `./alz apply prepare --environment DEV --project PROJECT_FOLDER` (prints the request and manifest locations to use next)
+2. `./alz apply prepare --environment DEV --project PROJECT_FOLDER` (prints the locations of the request, for step 3, the apply request, for steps 5 and 10, and the manifest)
 3. `./alz apply seal --request REQUEST.json --manifest MANIFEST.json --requester NAME --key REQUESTER_KEY.pem` (the requester's listed name and own key file: the request is signed, and every approver signs who requested)
 4. `./alz apply approve --bundle REVIEW_FILE.json --key APPROVER_KEY.pem --approver NAME`
-5. `./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json`
+5. `./alz apply apply --request APPLY_REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json`
 6. `./alz apply status --sealed LOCKED_CHANGE` (anyone, afterward)
 
 The cleanup half, after the change is applied in DEV. Operators run 7, 8 and 10; each approver runs 9 with their own key; anyone runs 11 and 12.
@@ -191,7 +191,7 @@ The cleanup half, after the change is applied in DEV. Operators run 7, 8 and 10;
 7. `./alz apply observe --sealed LOCKED_CHANGE` (reads and changes nothing; repeat as needed)
 8. `./alz apply propose-cleanup --sealed LOCKED_CHANGE --requester NAME --key REQUESTER_KEY.pem` (the cleanup requester's listed name and own key file; prints the proposal file location to send to the approvers; in production the requester cannot be one of the two approvers)
 9. `./alz apply approve --bundle PROPOSAL.json --key APPROVER_KEY.pem --approver NAME` (the phrase is `APPROVE CLEANUP DEV` and the proposal ID)
-10. `./alz apply cleanup --proposal PROPOSAL.json --request REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval CLEANUP_APPROVAL.json`
+10. `./alz apply cleanup --proposal PROPOSAL.json --request APPLY_REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval CLEANUP_APPROVAL.json`
 11. `./alz apply verify-cleanup --proposal PROPOSAL.json` (reads and changes nothing; repeat as needed)
 12. `./alz apply report --sealed LOCKED_CHANGE --proposal PROPOSAL.json` (the lifecycle report, marked synthetic until the owner records live)
 

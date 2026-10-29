@@ -36,6 +36,8 @@ const ENV = "DEV";
 const WRITES = {
   identity: (path: ActPathId): Collector => ({ name: "identity-delivery", dir: ".runs/apply/identity-delivery", pattern: new RegExp("^delivered-" + path + "-.+\\.json$") }),
   request: { name: "request", dir: ".runs/pilot/" + ENV, pattern: /^request-[0-9a-f]{16}\.json$/ } as Collector,
+  /** The request `apply` and `cleanup` take (environment, target and project only); `prepare` writes it beside the seal request. */
+  applyRequest: { name: "apply-request", dir: ".runs/pilot/" + ENV, pattern: /^apply-request-[0-9a-f]{16}\.json$/ } as Collector,
   manifest: { name: "manifest", dir: ".runs/pilot/" + ENV, pattern: /^manifest-[0-9a-f]{16}\.json$/ } as Collector,
   reviewBundle: { name: "review-bundle", dir: ".runs/apply/evidence", pattern: /\.review\.json$/ } as Collector,
   proposal: { name: "cleanup-proposal", dir: ".runs/apply/cleanup", pattern: /^[0-9a-f]{12}\.cleanup-proposal\.json$/ } as Collector,
@@ -141,25 +143,25 @@ export async function actStage(ctx: StageContext, path: ActPathId): Promise<Stag
   const steps: GuidedStep[] = [
     { name: "contract-check", fresh: true, run: () => runChild(ctx, stage, { args: ["apply", "contract-check", "--file", CONTRACT_PATH], io: "TERMINAL" }) },
     { name: "identity-check", fresh: true, run: () => runChild(ctx, stage, { args: ["apply", "identity-check", "--path", path, "--repository", ctx.config.act!.repository, "--phase", "delivered"], io: "TERMINAL", collectors: [WRITES.identity(path)] }) },
-    { name: "prepare", run: () => runChild(ctx, stage, { args: ["apply", "prepare", "--environment", ENV, "--project", target.project], io: "TERMINAL", collectors: [WRITES.request, WRITES.manifest] }) },
-    { name: "qualify", run: () => runChild(ctx, stage, { args: ["apply", "qualify", ...requestArgs(ctx, stage)], io: "TERMINAL" }) },
+    { name: "prepare", run: () => runChild(ctx, stage, { args: ["apply", "prepare", "--environment", ENV, "--project", target.project], io: "TERMINAL", collectors: [WRITES.request, WRITES.applyRequest, WRITES.manifest] }) },
+    { name: "qualify", run: () => withRequest(ctx, stage, "request", (request) => runChild(ctx, stage, { args: ["apply", "qualify", ...request], io: "TERMINAL" })) },
     { name: "preflight", fresh: true, run: () => runChild(ctx, stage, { args: ["apply", "preflight", "--environment", ENV, "--contract", CONTRACT_PATH], io: "TERMINAL" }) },
     {
-      name: "seal", once: true, ask: ["Requester key file for " + target.requesterId], run: async ([key]) => {
-        const sealed = await runChild(ctx, stage, { args: ["apply", "seal", ...requestArgs(ctx, stage), "--requester", target.requesterId, "--key", key], io: "TERMINAL", collectors: [WRITES.reviewBundle] });
+      name: "seal", once: true, ask: ["Requester key file for " + target.requesterId], run: ([key]) => withRequest(ctx, stage, "request", async (request) => {
+        const sealed = await runChild(ctx, stage, { args: ["apply", "seal", ...request, "--requester", target.requesterId, "--key", key], io: "TERMINAL", collectors: [WRITES.reviewBundle] });
         if (sealed.outcome !== "PASS") return sealed;
         const bundle = sealed.documents![0];
         const plan = bundle.path.slice(0, -".review.json".length);
         try { return { ...sealed, documents: [bundle, { name: "sealed-plan", path: plan, sha256: sha256File(join(ctx.root, plan)) }] }; } catch {
           return { outcome: "BLOCKED", code: "EVIDENCE_DOCUMENT_NOT_FOUND", exitCode: 0, documents: [bundle], detail: "The review bundle has no sealed plan beside it (" + plan + ")." };
         }
-      },
+      }),
     },
     { name: "approve", run: () => approveStep(ctx, stage, target.approverId, documentPath(ctx, stage, "seal", "review-bundle")!, "apply") },
     {
-      name: "apply", once: true, run: () => runChild(ctx, stage, {
-        args: ["apply", "apply", ...requestArgs(ctx, stage), "--sealed", documentPath(ctx, stage, "seal", "sealed-plan")!, ...approvalArgs(ctx, stage, "approve")], io: "TERMINAL",
-      }),
+      name: "apply", once: true, run: () => withRequest(ctx, stage, "apply-request", (request) => runChild(ctx, stage, {
+        args: ["apply", "apply", ...request, "--sealed", documentPath(ctx, stage, "seal", "sealed-plan")!, ...approvalArgs(ctx, stage, "approve")], io: "TERMINAL",
+      })),
     },
     // `fresh`: observing reads only, so every run of this stage observes again (after Cloud Asset indexes, say), never reusing an earlier
     // verdict, and repeats no mutating step (#360 review N1).
@@ -231,9 +233,20 @@ function notVerified(observed: ObservedSummary, path: ActPathId): StageResult {
       : observed.verdict === "NOT_THIS_ARTIFACT" ? ": the observation summary is not this stage's (it names another artifact, or it changed after the observe step collected it)" : "") + "." + rerun);
 }
 
-function requestArgs(ctx: StageContext, stage: StageId): string[] {
+/**
+ * Runs a step with the request and manifest `prepare` wrote for this path: the seal request for qualify and seal, the apply request
+ * (environment, target and project only) for apply and cleanup, which accept no other key. A prepare step that journaled no such
+ * file stops the step before anything runs; the runner never substitutes one request for the other.
+ */
+function withRequest(ctx: StageContext, stage: StageId, request: "request" | "apply-request", run: (args: string[]) => Promise<StepResult>): Promise<StepResult> {
   const source: StageId = stage.startsWith("cleanup:") ? `act:${stage.slice("cleanup:".length) as ActPathId}` : stage;
-  return ["--request", documentPath(ctx, source, "prepare", "request")!, "--manifest", documentPath(ctx, source, "prepare", "manifest")!];
+  const requestPath = documentPath(ctx, source, "prepare", request);
+  const manifestPath = documentPath(ctx, source, "prepare", "manifest");
+  if (requestPath === undefined || manifestPath === undefined) {
+    return Promise.resolve({ outcome: "BLOCKED", code: "EVIDENCE_DOCUMENT_NOT_FOUND",
+      detail: "The prepare step of " + source + " journaled no " + (requestPath === undefined ? request : "manifest") + " file, so nothing was run. Move the run folder aside and run the stage again from prepare." });
+  }
+  return run(["--request", requestPath, "--manifest", manifestPath]);
 }
 
 function approvalArgs(ctx: StageContext, stage: StageId, stepName: string): string[] {
@@ -295,9 +308,9 @@ export async function cleanupStage(ctx: StageContext, path: ActPathId): Promise<
     },
     { name: "approve-cleanup", run: () => approveStep(ctx, stage, target.approverId, proposal(), "cleanup") },
     {
-      name: "cleanup", once: true, run: () => runChild(ctx, stage, {
-        args: ["apply", "cleanup", "--proposal", proposal(), ...requestArgs(ctx, stage), "--sealed", sealed, ...approvalArgs(ctx, stage, "approve-cleanup")], io: "TERMINAL",
-      }),
+      name: "cleanup", once: true, run: () => withRequest(ctx, stage, "apply-request", (request) => runChild(ctx, stage, {
+        args: ["apply", "cleanup", "--proposal", proposal(), ...request, "--sealed", sealed, ...approvalArgs(ctx, stage, "approve-cleanup")], io: "TERMINAL",
+      })),
     },
     { name: "verify-cleanup", run: () => runChild(ctx, stage, { args: ["apply", "verify-cleanup", "--proposal", proposal()], io: "TERMINAL" }) },
     { name: "report", run: () => runChild(ctx, stage, { args: ["apply", "report", "--sealed", sealed, "--proposal", proposal()], io: "TERMINAL", collectors: [WRITES.report] }) },
