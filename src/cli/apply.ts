@@ -609,8 +609,26 @@ const observeCommand: Command = async (flags, _terminal, deps, out) => {
   const notListed = result.report.sweepNotListing ?? [];
   const control = notListed.length === 0 ? "" : " The unit sweep did not list the run's own resource (" + notListed.join(", ") +
     "), so it cannot show that nothing else carries the run's labels. Cloud Asset indexes new resources with a delay: observe again in a few minutes. If it is still not listed, the sweep query matches nothing; record that and do not count a clean sweep as evidence.";
+  // A plain summary of this observation beside the lifecycle reports (identifiers and verdicts only, as printed above), so the evidence
+  // runner can tell a VERIFIED observation from one that is not without decrypting the record (#360 review N1). Rewritten on every observe.
+  const dir = deps.reportsDir ?? join(repoPaths().root, ".runs", "apply", "reports");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const summary: ObservationSummary = {
+    schemaVersion: 1, kind: "OBSERVATION_SUMMARY", label: "SYNTHETIC_UNLESS_ATTESTED_LIVE", artifactSha256: record.artifactSha256, verifier: record.verifier, verdict: record.verdict,
+    inventory: record.inventory, sweepNotListing: [...notListed], ...(record.sweepControlPassedAt !== undefined ? { sweepControlPassedAt: record.sweepControlPassedAt } : {}), observedAt: record.observedAt,
+  };
+  writeFileSync(join(dir, record.artifactSha256.slice(0, 12) + "-observation.json"), JSON.stringify(summary, null, 2) + "\n", { mode: 0o600 });
   out.report({ code: "OBSERVED", message: "Observed " + record.resources.length + " resource(s): " + record.verdict + "." + control, data: record });
   return EXIT.PASS;
+};
+
+/**
+ * What `./alz apply observe` leaves in `.runs/apply/reports/<artifact12>-observation.json` for the evidence runner: the verdict and why,
+ * never a resource's contents. `sweepNotListing` names the run's own resources the GCP sweep did not list (the positive control).
+ */
+export type ObservationSummary = {
+  schemaVersion: 1; kind: "OBSERVATION_SUMMARY"; label: "SYNTHETIC_UNLESS_ATTESTED_LIVE"; artifactSha256: string;
+  verifier: string; verdict: string; inventory: string; sweepNotListing: string[]; sweepControlPassedAt?: string | null; observedAt: string;
 };
 
 /** Where a proposal is saved for review and approval: a plain file of identifiers, private to the account, named by its hash. */

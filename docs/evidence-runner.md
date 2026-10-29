@@ -290,9 +290,15 @@ The run folder stays `<evidenceDir>/<candidate12>` across checkouts, so one jour
 
 **Expected per path:**
 
-- `act:<path>` PASS `APPLIED_AND_OBSERVED`.
+- `act:<path>` PASS `APPLIED_AND_OBSERVED`, but only when the observation is `VERIFIED` (#360 review N1). `./alz apply observe` exits 0 whatever it finds, so the runner reads the plain summary it writes, `.runs/apply/reports/<artifact12>-observation.json` (verdict, inventory, and the GCP sweep's unlisted resources). Any other result is `BLOCKED`:
+  - `OBSERVATION_FAILED`: a planned resource is absent or misplaced, or something unexpected carries the run's tag. A person reviews before any cleanup.
+  - `OBSERVATION_INCONCLUSIVE`: a check could not decide. On GCP, when the Cloud Asset sweep did not list the run's own topic, the message names it and explains the indexing delay. If the topic is still not listed after 30 minutes, that is GF3's fail-closed signal.
+  - `OBSERVATION_NOT_VERIFIED`: the observation is `PARTIAL`, or its summary could not be read.
+
+  Rerunning `--stage act:<path>` observes again: `observe` is a fresh, read-only step. Seal and apply ran once and are never repeated. What the apply created stays until `cleanup:<path>`.
 - `cleanup:<path>` PASS `CLEANED_AND_RECORDED`, with the live record under `<run>/cleanup-<path>/`.
   - On every path, this also needs the lifecycle report's leftovers stage to be `PASS` (#359 review N1, #360 review B1). `./alz apply verify-cleanup` exits 0 for an incomplete leftover record too, so an exit code never counts. An incomplete check, an unreadable report, or a report whose leftovers stage is anything but `PASS` makes the stage `BLOCKED` with `LEFTOVERS_NOT_VERIFIED`. For AWS and Azure, an incomplete check means a resource not confirmed gone, an incomplete or non-empty unit-tag sweep, or a person's pending decision. For `gcp-terraform` and `gcp-api` it also covers an unproven "no strays": no observation of the run showed the Cloud Asset sweep listing the run's own topic. The live record is still kept, and the stage is never shown as a pass.
+  - The run's last line names what was kept: a cleanup that is `BLOCKED` after `record-live` ends with "BLOCKED: cleanup:<path> did not pass, but its live record was kept (<path>)", never "no evidence was produced" (#360 review N2).
 - The journal lists every step's exit code and every document's path and hash.
 
 The pilot's denial, replay and interruption checks are in each checklist. The runner does not run them.

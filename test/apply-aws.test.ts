@@ -442,7 +442,7 @@ test("token files the identity delivery runner wrote seal and apply when fresh; 
       const out: string[] = []; const err: string[] = [];
       const code = await runApplyCommand(args, {
         terminal: terminal([]), env, now: () => NOW, operatorId: "operator.fixture", contractPath: w.contractPath, qualificationDir: vaultDir,
-        evidenceDir: w.dirs.evidence, nonces: w.deps.nonces, scratchParent: w.dirs.scratch, toolDirs: [toolDir], sourceCommit: SOURCE_COMMIT,
+        evidenceDir: w.dirs.evidence, nonces: w.deps.nonces, scratchParent: w.dirs.scratch, toolDirs: [toolDir], sourceCommit: SOURCE_COMMIT, reportsDir: join(w.dirs.scratch, "reports"),
         stdout: (t: string) => { out.push(t); }, stderr: (t: string) => { err.push(t); },
       });
       return { code, stdout: out.join(""), stderr: err.join("") };
@@ -943,7 +943,7 @@ test("./alz apply qualify, seal, approve and apply work for an AWS contract with
     const term = terminal(answers);
     const code = await runApplyCommand(args, {
       terminal: term, env: awsIdentityEnv(environment), now: () => NOW, operatorId: "operator.fixture", contractPath,
-      qualificationDir: vault, evidenceDir, nonces, scratchParent: scratch, toolDirs: [toolDir], sourceCommit: SOURCE_COMMIT, stdout: (t: string) => { out.push(t); }, stderr: (t: string) => { err.push(t); },
+      qualificationDir: vault, evidenceDir, nonces, scratchParent: scratch, toolDirs: [toolDir], sourceCommit: SOURCE_COMMIT, reportsDir: join(scratch, "reports"), stdout: (t: string) => { out.push(t); }, stderr: (t: string) => { err.push(t); },
     });
     return { code, stdout: out.join(""), stderr: err.join(""), shown: term.out.join("") };
   };

@@ -39,6 +39,8 @@ const WRITES = {
   reviewBundle: { name: "review-bundle", dir: ".runs/apply/evidence", pattern: /\.review\.json$/ } as Collector,
   proposal: { name: "cleanup-proposal", dir: ".runs/apply/cleanup", pattern: /^[0-9a-f]{12}\.cleanup-proposal\.json$/ } as Collector,
   report: { name: "lifecycle-report", dir: ".runs/apply/reports", pattern: /^[0-9a-f]{12}-lifecycle(-[0-9a-f]{12})?\.json$/ } as Collector,
+  /** `./alz apply observe`'s plain summary (verdict, inventory, the GCP sweep's unlisted resources), rewritten on every observe. */
+  observation: { name: "observation-summary", dir: ".runs/apply/reports", pattern: /^[0-9a-f]{12}-observation\.json$/ } as Collector,
   liveRecord: { name: "live-record", dir: "config/acceptance/evidence", pattern: /-execute-dev-[0-9a-f]{12}\.json$/ } as Collector,
   recovery: { name: "recovery-record", dir: ".runs/release/preview", pattern: /^act-run-recovery-[0-9a-f]{12}\.json$/ } as Collector,
 };
@@ -158,12 +160,53 @@ export async function actStage(ctx: StageContext, path: ActPathId): Promise<Stag
         args: ["apply", "apply", ...requestArgs(ctx, stage), "--sealed", documentPath(ctx, stage, "seal", "sealed-plan")!, ...approvalArgs(ctx, stage, "approve")], io: "TERMINAL",
       }),
     },
-    { name: "observe", run: () => runChild(ctx, stage, { args: ["apply", "observe", "--sealed", documentPath(ctx, stage, "seal", "sealed-plan")!], io: "TERMINAL" }) },
+    // `fresh`: observing reads only, so every run of this stage observes again (after Cloud Asset indexes, say), never reusing an earlier
+    // verdict, and repeats no mutating step (#360 review N1).
+    { name: "observe", fresh: true, run: () => runChild(ctx, stage, { args: ["apply", "observe", "--sealed", documentPath(ctx, stage, "seal", "sealed-plan")!], io: "TERMINAL", collectors: [WRITES.observation] }) },
   ];
   const failed = await runSteps(ctx, stage, steps);
   if (failed) return stop(failed);
+  // `./alz apply observe` exits 0 whatever it found (#360 review N1): the stage passes only for a VERIFIED observation.
+  const observed = observationOf(ctx, documentPath(ctx, stage, "observe", "observation-summary"));
+  if (observed.verdict !== "VERIFIED") return notVerified(observed, path);
   return { outcome: "PASS", code: "APPLIED_AND_OBSERVED",
     detail: "The DEV apply ran and was observed. What it created stays until you run --stage cleanup:" + path + ", which also records the live acceptance (record-live) last." };
+}
+
+type ObservedSummary = { verdict: string; inventory: string; sweepNotListing: string[] };
+
+/** The observation summary the observe step kept, or UNREADABLE: a summary the runner cannot read never counts as VERIFIED. */
+function observationOf(ctx: StageContext, relative: string | undefined): ObservedSummary {
+  const unreadable = { verdict: "UNREADABLE", inventory: "UNKNOWN", sweepNotListing: [] };
+  if (relative === undefined) return unreadable;
+  try {
+    const summary = JSON.parse(readFileSync(join(ctx.root, relative), "utf8")) as { kind?: unknown; verdict?: unknown; inventory?: unknown; sweepNotListing?: unknown };
+    const word = (value: unknown): value is string => typeof value === "string" && /^[A-Z_]{1,32}$/.test(value);
+    if (summary.kind !== "OBSERVATION_SUMMARY" || !word(summary.verdict)) return unreadable;
+    const listed = Array.isArray(summary.sweepNotListing) ? summary.sweepNotListing.filter((x): x is string => typeof x === "string" && x.length <= 512) : [];
+    return { verdict: summary.verdict, inventory: word(summary.inventory) ? summary.inventory : "UNKNOWN", sweepNotListing: listed };
+  } catch { return unreadable; }
+}
+
+/**
+ * A stage whose apply ran but whose observation is not VERIFIED: BLOCKED with the verdict and what to do. Rerunning the stage repeats
+ * only the read-only gates and the observation; the seal and the apply ran once and are never repeated.
+ */
+function notVerified(observed: ObservedSummary, path: ActPathId): StageResult {
+  const rerun = " The apply ran and is not repeated; rerun --stage act:" + path + " to observe again (read-only). Whatever the apply created stays until --stage cleanup:" + path + ".";
+  if (observed.verdict === "FAILED") {
+    return blocked("OBSERVATION_FAILED", "The independent observation is FAILED: a planned resource is absent or misplaced, missing from the state, or something unexpected carries the run's tag. Read ./alz apply observe's output; a person reviews before any cleanup." + rerun);
+  }
+  if (observed.verdict === "INCONCLUSIVE" && observed.sweepNotListing.length > 0) {
+    return blocked("OBSERVATION_INCONCLUSIVE", "The independent observation is INCONCLUSIVE (inventory " + observed.inventory + "): the Cloud Asset sweep did not list the run's own resource (" +
+      observed.sweepNotListing.slice(0, 3).join(", ") + "), so it cannot show that nothing else carries the run's labels. Cloud Asset indexes new resources with a delay: wait a few minutes and observe again. " +
+      "If it is still not listed after 30 minutes, the sweep query matches nothing (GF3's fail-closed signal): record that, and do not count a clean sweep as evidence." + rerun);
+  }
+  if (observed.verdict === "INCONCLUSIVE") {
+    return blocked("OBSERVATION_INCONCLUSIVE", "The independent observation is INCONCLUSIVE (inventory " + observed.inventory + "): a check could not decide (access, throttling or an incomplete listing). Fix what ./alz apply observe names, then observe again." + rerun);
+  }
+  return blocked("OBSERVATION_NOT_VERIFIED", "The independent observation is " + observed.verdict + ", not VERIFIED" +
+    (observed.verdict === "PARTIAL" ? ": some resources cannot be checked independently, or the run carries no unit tag to sweep by" : observed.verdict === "UNREADABLE" ? ": the observation summary could not be read" : "") + "." + rerun);
 }
 
 function requestArgs(ctx: StageContext, stage: StageId): string[] {

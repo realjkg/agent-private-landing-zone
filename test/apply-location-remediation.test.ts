@@ -472,7 +472,7 @@ test("at the terminal (SYNTHETIC): propose-remediation writes the remediation an
     const stderr: string[] = [];
     const code = await runApplyCommand(args, {
       sourceCommit: SOURCE_COMMIT, terminal: term, env: w.deps.env, now: () => NOW, operatorId: "operator.fixture", contractPath: w.contractPath, qualificationDir: vaultDir, evidenceDir: w.dirs.evidence,
-      nonces: w.deps.nonces, scratchParent: w.dirs.scratch, toolDirs: [toolDir], proposalsDir, observeArm: w.arm.http, stdout: (t) => { stdout.push(t); }, stderr: (t) => { stderr.push(t); },
+      nonces: w.deps.nonces, scratchParent: w.dirs.scratch, toolDirs: [toolDir], proposalsDir, reportsDir: fresh("reports"), observeArm: w.arm.http, stdout: (t) => { stdout.push(t); }, stderr: (t) => { stderr.push(t); },
     });
     let data: unknown;
     try { data = JSON.parse(stdout.join("")); } catch { data = undefined; }

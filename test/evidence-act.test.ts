@@ -201,6 +201,67 @@ test("#359 review N1, #360 review B1: on every path a cleanup stage is PASS only
   }
 });
 
+test("#360 review N1: on every path act:<path> is PASS only for a VERIFIED observation; FAILED, INCONCLUSIVE (with the GCP sweep's reason), PARTIAL or an unreadable summary is BLOCKED, and a rerun observes again without repeating the seal or the apply", async () => {
+  const PATHS = [
+    ["aws-terraform", "AWS", "TERRAFORM"], ["aws-cdk", "AWS", "CDK"], ["azure-terraform", "AZURE", "TERRAFORM"], ["azure-bicep", "AZURE", "BICEP"],
+    ["gcp-terraform", "GCP", "TERRAFORM"], ["gcp-api", "GCP", "GCP_API"],
+  ] as const;
+  const observe = (path: string, summary: Record<string, unknown> | undefined) => (request: ChildRequest) => {
+    write(request.cwd, ".runs/apply/reports/" + artifactOf(path).slice(0, 12) + "-observation.json", summary === undefined ? "not json" : JSON.stringify({ schemaVersion: 1, kind: "OBSERVATION_SUMMARY", ...summary }));
+    return { exitCode: 0, signal: null };
+  };
+  const rootFor = (path: string, provider: string, engine: string) => {
+    const root = actRoot({ ...AWS_CONTRACT, provider, engine });
+    writeConfig(root, validConfig({ aws: undefined, azure: undefined, act: { repository: "owner/repo", paths: { [path]: { project: "/srv/canary/" + path, requesterId: "owner" } } } }));
+    return root;
+  };
+  const cases: [string, Record<string, unknown> | undefined, RegExp, RegExp][] = [
+    ["FAILED", { verdict: "FAILED", inventory: "COMPLETE", sweepNotListing: [] }, /OBSERVATION_FAILED/, /independent observation is FAILED/],
+    ["INCONCLUSIVE", { verdict: "INCONCLUSIVE", inventory: "INCOMPLETE", sweepNotListing: [] }, /OBSERVATION_INCONCLUSIVE/, /a check could not decide/],
+    ["PARTIAL", { verdict: "PARTIAL", inventory: "NOT_AVAILABLE", sweepNotListing: [] }, /OBSERVATION_NOT_VERIFIED/, /PARTIAL, not VERIFIED/],
+    ["unreadable", undefined, /OBSERVATION_NOT_VERIFIED/, /UNREADABLE, not VERIFIED/],
+  ];
+  for (const [path, provider, engine] of PATHS) {
+    const verified = rootFor(path, provider, engine);
+    const ok = actDeps(verified, applyScript({}, { path }));
+    assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:" + path], ok.deps), 0, path + ": " + ok.deps.lines.join("\n"));
+    assert.match(ok.deps.lines.join("\n"), /APPLIED_AND_OBSERVED/, path);
+    const all = provider === "GCP"
+      ? [...cases, ["INCONCLUSIVE, sweep", { verdict: "INCONCLUSIVE", inventory: "INCOMPLETE", sweepNotListing: ["projects/p/topics/alz-act-dev1-0123456789ab"] }, /OBSERVATION_INCONCLUSIVE/, /did not list the run's own resource \(projects\/p\/topics\/alz-act-dev1-0123456789ab\)[\s\S]*indexes new resources with a delay[\s\S]*GF3's fail-closed signal/] as [string, Record<string, unknown>, RegExp, RegExp]]
+      : cases;
+    for (const [label, summary, code, words] of all) {
+      const root = rootFor(path, provider, engine);
+      const first = actDeps(root, applyScript({ "apply observe": observe(path, summary) }, { path }));
+      assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:" + path], first.deps), 2, path + " " + label);
+      const out = first.deps.lines.join("\n");
+      assert.match(out, code, path + " " + label);
+      assert.match(out, words, path + " " + label);
+      assert.doesNotMatch(out, /APPLIED_AND_OBSERVED/, path + " " + label);
+      assert.match(out, /rerun --stage act:/, path + " " + label);
+      // The rerun observes again (read-only) and never seals or applies again; once the observation is VERIFIED the stage passes.
+      const again = actDeps(root, applyScript({}, { path }), scriptedTerminal([""]));
+      assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:" + path], again.deps), 0, path + " " + label + ": " + again.deps.lines.join("\n"));
+      const calls = again.spawn.calls.map(sub);
+      assert.ok(calls.includes("apply observe"), path + " " + label);
+      assert.ok(!calls.includes("apply seal") && !calls.includes("apply apply") && !calls.includes("apply prepare"), path + " " + label + ": " + calls.join(", "));
+    }
+  }
+});
+
+test("#360 review N2: a run whose cleanup is BLOCKED after the live record was kept says so on its last line, never \"no evidence was produced\"", async () => {
+  const root = actRoot();
+  assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:aws-terraform"], actDeps(root, applyScript()).deps), 0);
+  const report = (request: ChildRequest) => {
+    write(request.cwd, ".runs/apply/reports/" + ARTIFACT.slice(0, 12) + "-lifecycle-" + PROPOSAL12 + ".json", JSON.stringify({ reportKind: "ACT_LIFECYCLE", stages: { leftovers: { status: "INCONCLUSIVE" } } }));
+    return { exitCode: 0, signal: null };
+  };
+  const cleanup = actDeps(root, applyScript({ "apply report": report }), scriptedTerminal([join(root, ".runs/keys/requester.pem"), ".runs/approvals/cleanup-1.json", ""]));
+  assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "cleanup:aws-terraform"], cleanup.deps), 2);
+  const last = cleanup.deps.lines.at(-1)!;
+  assert.doesNotMatch(last, /no evidence was produced/);
+  assert.match(last, new RegExp("^BLOCKED: cleanup:aws-terraform did not pass, but its live record was kept \\(\\.runs/evidence/synthetic/" + C12 + "/cleanup-aws-terraform/aws-terraform-execute-dev-aaaaaaaaaaaa\\.json\\)"));
+});
+
 test("a child of a guided stage reads the person's own terminal: the production spawner inherits stdin, it is never a pipe from the runner", async () => {
   const report = join(fixtureRoot(), "stdin.json");
   // The child reports the device and inode of its standard input; the runner's own standard input must be the same file.
