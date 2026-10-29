@@ -431,10 +431,24 @@ test("plain-language status and recovery test preflight preserve the non-mutatin
   );
 });
 
-test("a GCP recovery intent is refused: recovery targets are AWS or Azure, and a GCP intent is never compiled as an Azure scope", () => {
-  assert.throws(
-    () => compileRecoveryTarget({ ...developmentIntent, provider: "GCP" }, context, baseline),
-    /RECOVERY_PROFILE_INVALID: GCP has no recovery scope type/,
-  );
+test("a GCP recovery intent is refused with or without an explicit scope type (an Azure or AWS one included), and a GCP target never validates against an Azure or AWS scope", () => {
+  for (const scopeType of [undefined, "AZURE_SUBSCRIPTION", "AZURE_TENANT", "AWS_ACCOUNT"] as const) {
+    assert.throws(
+      () => compileRecoveryTarget({ ...developmentIntent, provider: "GCP" }, { ...context, ...(scopeType ? { scopeType } : {}) }, baseline),
+      /RECOVERY_PROFILE_INVALID: GCP has no recovery scope type/,
+      String(scopeType),
+    );
+  }
+  // AWS and Azure keep their defaults.
   assert.equal(compileRecoveryTarget({ ...developmentIntent, provider: "AZURE" }, context, baseline).scope.type, "AZURE_SUBSCRIPTION");
+  assert.equal(compileRecoveryTarget(developmentIntent, context, baseline).scope.type, "AWS_ACCOUNT");
+  // A target built by hand for GCP with an Azure or AWS scope is refused by the target validator: no provider defaults to Azure's scopes.
+  const azure = compileRecoveryTarget({ ...developmentIntent, provider: "AZURE" }, context, baseline);
+  assert.equal(validateRecoveryTarget(azure).valid, true);
+  for (const type of ["AZURE_SUBSCRIPTION", "AWS_ACCOUNT"] as const) {
+    const forged = { ...azure, provider: "GCP" as const, scope: { ...azure.scope, type } };
+    const result = validateRecoveryTarget(forged);
+    assert.equal(result.valid, false, type);
+    assert.ok(result.blockers.includes("Provider scope is missing or incompatible with the selected provider."), type);
+  }
 });

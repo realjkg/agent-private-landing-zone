@@ -61,11 +61,17 @@ export function openReader(deps: ObserveDeps, environment: ApplyEvidence["enviro
     return { ok: true, reader: cloudControlReader(cli.aws, region), binarySha256: verifierBinarySha256({ env: deps.env, toolDirs: deps.toolDirs }), close: cli.close };
   }
   if (contract.provider === "AZURE") {
+    // Every Azure run is placed by the target's location (Terraform: owner decision of 2026-10-28; Bicep: a location field), so the
+    // reader always checks where each resource is; a target that names none is not one an Azure run could have sealed against.
+    if ((target as AzureTarget).location === undefined) {
+      return refuse("CONTRACT_INVALID", "The contract's Azure " + environment + " target names no location (targets." + environment + ".location), so where the run's resources are cannot be verified. Nothing was run.");
+    }
     try {
-      const opened = createDiscoveryArmReader({ env: deps.env, subscriptionId: (target as AzureTarget).subscriptionId, http: deps.arm });
+      // The target's authorized location, when it names one (Azure Terraform and Bicep): each resource found is checked against it.
+      const opened = createDiscoveryArmReader({ env: deps.env, subscriptionId: (target as AzureTarget).subscriptionId, location: (target as AzureTarget).location, http: deps.arm });
       return { ok: true, reader: opened.reader, binarySha256: null, close: opened.close };
     } catch {
-      return refuse("CONTRACT_INVALID", "The contract's Azure target does not name a subscription the reader can use. Nothing was run.");
+      return refuse("CONTRACT_INVALID", "The contract's Azure target does not name a subscription and location the reader can use. Nothing was run.");
     }
   }
   if (contract.provider === "GCP") {
@@ -102,7 +108,9 @@ export async function observeRun(artifactSha256: string, deps: ObserveDeps): Pro
   }
   const origins = new Map(blueprint.blueprint.entries.map((entry) => [entry.address, entry.origin]));
   const resources: ObservedResource[] = report.checks.map((check) => ({
-    address: check.address, type: check.type, identifier: check.identifier, origin: origins.get(check.address) ?? "NOT_IN_PLAN", ...verificationOf(check.existence, check.reason),
+    address: check.address, type: check.type, identifier: check.identifier, origin: origins.get(check.address) ?? "NOT_IN_PLAN",
+    // Present but not where the contract places it: different from what was planned, never VERIFIED.
+    ...(check.misplaced ? { result: "DIFFERENT_FROM_DESIRED" as const, reason: "LOCATION_NOT_IN_CONTRACT" } : verificationOf(check.existence, check.reason)),
   }));
   const record: ObservationRecord = {
     schemaVersion: 1, kind: "OBSERVATION", artifactSha256, applyEvidenceSha256, blueprintSha256: recordSha256(blueprint), environment: applied.environment, target: { ...applied.target },

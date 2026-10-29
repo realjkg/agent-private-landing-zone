@@ -102,3 +102,17 @@ export function armTypeOf(id: string): ArmType | undefined {
   const pairs = armTypePairsOf(id);
   return pairs === undefined ? undefined : pairs[pairs.length - 1];
 }
+
+/** An Azure region's programmatic name as ARM reports it (`eastus2`, `westeurope`): lowercase letters and digits only, no spaces. */
+export const AZURE_LOCATION = /^[a-z][a-z0-9]{2,39}$/;
+
+/**
+ * One Azure location, however it is written (`East US 2`, `eastUS2`, `eastus2`), as its programmatic name for comparison: every
+ * whitespace character removed and lowercased. Anything that is not text, or that does not then have the programmatic shape
+ * (`AZURE_LOCATION`), is undefined, so an empty, missing or malformed location never equals a contract's.
+ */
+export function normalizeAzureLocation(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const name = value.replace(/\s+/g, "").toLowerCase();
+  return AZURE_LOCATION.test(name) ? name : undefined;
+}

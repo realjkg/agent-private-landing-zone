@@ -90,6 +90,7 @@ export const EPHEMERAL_WORD_IN_SOURCE = "TERRAFORM_EPHEMERAL_WORD_IN_SOURCE";
 export const sourceRuleHint = (code: string): string =>
   code === PROVISIONER_WORD_IN_SOURCE || code === EPHEMERAL_WORD_IN_SOURCE
     ? " The rule is lexical: the word may be in a comment or a string, which is refused too; rename it (docs/act-pilot-apply.md, \"Provisioners, actions and ephemeral resources\")."
+    : code === "LOCATION_NOT_IN_CONTRACT" ? " The Azure target must name its location (targets.<ENV>.location, ARM's programmatic name such as eastus2), and every resource the plan places must resolve to it at plan time (docs/act-pilot-apply.md, \"Azure location\")."
     : code === CONSTRUCTS_DUPLICATE_KEY ? " A .tf.json object repeats a key, which Terraform would read as two blocks; write each block once."
     : code === PROVIDER_VERSION_NOT_REVIEWED ? " The lock file pins a provider version the denied-type lists were not reviewed against (reviewed: " +
       Object.entries(REVIEWED_PROVIDER_VERSIONS).map(([source, version]) => source + " " + version).join(", ") +
@@ -104,6 +105,9 @@ export const sourceRuleHint = (code: string): string =>
 export function planJudgeRefusal(code: string): { refusal: "TARGET_NOT_IN_CONTRACT" | "ARTIFACT_INVALID"; message: string } | undefined {
   const said = (refusal: "TARGET_NOT_IN_CONTRACT" | "ARTIFACT_INVALID", why: string) => ({ refusal, message: why + " (" + code + ")." + sourceRuleHint(code) });
   if (code === "PROVIDER_NOT_ADMITTED") return said("TARGET_NOT_IN_CONTRACT", "The plan uses a provider this release does not admit (azure/azapi or hashicorp/azuread)");
+  if (code === "LOCATION_NOT_IN_CONTRACT") {
+    return said("TARGET_NOT_IN_CONTRACT", "The contract target names no location, or the plan places a resource in another location, an empty one or one it leaves unknown until apply");
+  }
   if (code === "PROVIDER_TYPE_NOT_ALLOWED") return said("TARGET_NOT_IN_CONTRACT", "The plan uses a resource type that runs code or deploys a template instead of holding a resource, which the pilot refuses");
   if (code === "PROVIDER_HASH_NOT_OFFICIAL") return said("ARTIFACT_INVALID", "The lock file's package hashes for a reviewed provider are missing or are not HashiCorp's published ones");
   if (code === LOCAL_PLUGIN_DIR_REFUSED) return said("ARTIFACT_INVALID", "The project ships a local provider directory or Terraform CLI configuration (terraform.d, .terraform, .terraformrc or terraform.rc), which the pilot refuses");

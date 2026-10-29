@@ -18,6 +18,7 @@ import { assertProductCliConfig, SOURCE_COMMIT,
   CANARY_AZURE, DEV_TARGET, ENGINE_VERSION, ENV, identityEnv, TENANT, H, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, VALUE_CANARY, behave as behaveIn, callsOf, installFakeTerraform, sha,
   writeProject, type Behavior,
   REQUESTER,
+  AZURE_LOCATION_FIXTURE,
 } from "./helpers/apply-fixtures.js";
 import { AZURE } from "../src/apply/providers/azure.js";
 import { PRODUCT_CLI_CONFIG, TERRAFORM } from "../src/apply/engines/terraform.js";
@@ -62,7 +63,7 @@ function fixture(options: { target?: typeof DEV_TARGET; environment?: "DEV" | "Q
   const input: SealInput = {
     engine: TERRAFORM, environment: options.environment ?? "DEV", target, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
     env: options.env ?? identityEnv(options.environment ?? "DEV"), policyVersion: POLICY, engineVersion: ENGINE_VERSION, toolDirs: [toolDir],
-    pinned: { tenantId: TENANT, subscriptionId: target.account, backend: target.backend, workspace: target.workspace, canary: options.canary ?? CANARY_AZURE }, spec: AZURE, contractSha256: H("9"), authorizationSha256: H("a"), targetSha256: H("b"), sourceCommit: SOURCE_COMMIT,
+    pinned: { tenantId: TENANT, subscriptionId: target.account, backend: target.backend, workspace: target.workspace, location: AZURE_LOCATION_FIXTURE, canary: options.canary ?? CANARY_AZURE }, spec: AZURE, contractSha256: H("9"), authorizationSha256: H("a"), targetSha256: H("b"), sourceCommit: SOURCE_COMMIT,
     provenance: PROVENANCE, requester: REQUESTER, now: () => new Date("2026-10-11T10:00:00.000Z"),
     unit: pilotUnitOf({ provider: "AZURE", contractSha256: H("9"), environment: options.environment ?? "DEV", target }),
   };

@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { loadToolPins } from "../../deps/pins.js";
-import { parseArmId } from "../../observe/arm-id.js";
+import { AZURE_LOCATION, normalizeAzureLocation, parseArmId } from "../../observe/arm-id.js";
 import { copyTree, projectDifference } from "../../teardown/driver/adapters/project-copy.js";
 import { removeTree } from "../../teardown/driver/cleanup.js";
 import { argvDigest } from "../../teardown/driver/qualification.js";
@@ -70,10 +70,10 @@ const UNIT_TAG_KEYS: readonly string[] = ["alz-build", "alz-managed-by", "alz-un
  */
 export type BicepTarget = AzureTarget & { resourceGroup: string; location: string };
 
-/** An Azure region's programmatic name as ARM reports it (`eastus2`, `westeurope`): lowercase letters and digits only, no spaces. */
-export const AZURE_LOCATION = /^[a-z][a-z0-9]{2,39}$/;
-/** A location as ARM may print it (`East US 2`, `eastus2`), normalized to the programmatic name for comparison. */
-const regionOf = (value: unknown): string => (typeof value === "string" ? value.replace(/\s+/g, "").toLowerCase() : "");
+/** An Azure region's programmatic name (`eastus2`): one rule for every Azure path (src/observe/arm-id.ts). */
+export { AZURE_LOCATION };
+/** A location as ARM may print it (`East US 2`, `eastus2`), normalized to the programmatic name for comparison (shared with the Azure Terraform judge and the reader). */
+const regionOf = normalizeAzureLocation;
 
 // --- the argument lists ---------------------------------------------------------------------------------
 

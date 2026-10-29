@@ -45,9 +45,17 @@ export type ProviderSpec = {
   /**
    * Optional target fields of this provider, each judged by its validator when the contract states it (GCP: `parent`, the
    * organization or folder DISCOVERY's readiness check names; it carries no authority). When stated, part of the reviewed contract
-   * and of the run's target hash (`pilotTargetSha256`), as an engine's location fields are. Absent: none (AWS, Azure).
+   * and of the run's target hash (`pilotTargetSha256`), as an engine's location fields are. Azure: `location`, the region the
+   * run's resources are placed in (owner decision 2026-10-28; required by the Azure Terraform judge, `assertPlannedLocations`, and
+   * already a Bicep location field). Absent: none (AWS).
    */
   optionalTargetFields?: Readonly<Record<string, (value: string) => boolean>>;
+  /**
+   * The optional target fields every APPLY plan of this provider needs before it can be sealed (Azure: `location`, refused as
+   * LOCATION_NOT_IN_CONTRACT when absent): listed by `./alz apply contract-check` as owner inputs. The contract loader still accepts
+   * their absence (a draft, or a contract that only cleans up). Absent: none.
+   */
+  boundTargetFields?: readonly string[];
   /** Whether a backend string, as the contract writes it, is well formed. */
   backendOk(value: string): boolean;
   /** What `ResolvedTarget.account` carries for a target, and what to call it in a message. */
@@ -92,6 +100,13 @@ export type ProviderSpec = {
    * everything the plan names, with its provider). `env` holds the APPLY identity.
    */
   assertProviderConfig(blocks: readonly ProviderBlock[], target: PilotTarget, env: NodeJS.ProcessEnv, uses: readonly ProviderUse[]): void;
+  /**
+   * Throws a code unless every resource the plan would place is in the contract target's location, judged on an APPLY plan only
+   * (the seal, the qualification plan and the apply's re-derivation; never a cleanup's destroy plan, which places nothing): the
+   * resolved planned values (`resource_changes[].change.after`, `planned_values`), never a data source or a resource group's
+   * metadata. Absent: the provider binds no location here (AWS and GCP bind their region through the account fields and identity).
+   */
+  assertPlannedLocations?(uses: readonly ProviderUse[], target: PilotTarget): void;
   /**
    * The registry sources a project of this cloud path may select at init (review of #327, round 5): read after `init` from
    * `terraform version -json` `provider_selections`, before any plan runs provider code. Any other source (another cloud, a provider

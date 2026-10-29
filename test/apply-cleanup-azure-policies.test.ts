@@ -16,7 +16,7 @@ import type { PilotContract, SignedApproval } from "../src/apply/types.js";
 import { pilotUnitOf } from "../src/apply/unit.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
-  ARM_FEDERATED_TOKEN_CANARY, DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, approvalFor, azureStateResource, behave as behaveIn, callsOf, contractJson, fakeArmHttp, human, identityEnv,
+  ARM_FEDERATED_TOKEN_CANARY, DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, approvalFor, azureStateResource, behave as behaveIn, callsOf, contractJson, AZURE_LOCATION_FIXTURE, fakeArmHttp, human, identityEnv,
   installFakeTerraform, keys, targetOf, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, REQUESTER, reHashedProposal, type ArmBehavior, type Behavior, canaryFor, withCanary } from "./helpers/apply-fixtures.js";
 
 // Azure Terraform DEV removal, end to end with the fake engine and the fake Resource Manager (owner decision "Unpin the ACT decision",
@@ -90,7 +90,7 @@ function world(cloud: ArmBehavior = { existing: EXISTING, tagged: [RG, LAW] }): 
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
   writeReviewedContract(contractPath, RUN_CONTRACT);
-  const arm = fakeArmHttp(cloud);
+  const arm = fakeArmHttp(cloud, { defaultLocation: AZURE_LOCATION_FIXTURE });
   return {
     dirs, contractPath, arm,
     deps: {

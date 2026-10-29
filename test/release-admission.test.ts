@@ -453,10 +453,11 @@ test("each listed provider/engine pair is admitted on its own; an unlisted pair 
     const scope = { provider, engine, contractSha256: pilotContractSha256(contract) };
     return actBlockers(await review(pilotInput(scope), contract));
   };
-  for (const [provider, engine] of [["AZURE", "TERRAFORM"], ["AWS", "TERRAFORM"], ["AWS", "CDK"]]) {
+  // AZURE / BICEP and GCP / TERRAFORM are listed by owner decision 6483993252 (#39); GCP / GCP_API is not (INT-2).
+  for (const [provider, engine] of [["AZURE", "TERRAFORM"], ["AWS", "TERRAFORM"], ["AWS", "CDK"], ["AZURE", "BICEP"], ["GCP", "TERRAFORM"]]) {
     assert.deepEqual(await attempt(provider, engine), [], provider + "/" + engine);
   }
-  for (const [provider, engine] of [["AZURE", "CDK"], ["GCP", "TERRAFORM"], ["AWS", "PULUMI"], ["*", "*"]]) {
+  for (const [provider, engine] of [["AZURE", "CDK"], ["GCP", "GCP_API"], ["GCP", "BICEP"], ["AWS", "BICEP"], ["AWS", "PULUMI"], ["*", "*"], ["GCP", "*"]]) {
     assert.deepEqual(await attempt(provider, engine), ["ACT_PILOT_COMBINATION_NOT_ALLOWED"], provider + "/" + engine);
   }
 });
