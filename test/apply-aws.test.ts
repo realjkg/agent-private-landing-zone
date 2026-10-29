@@ -21,6 +21,7 @@ import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
 import { targetString } from "../src/cli/teardown-driver.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { buildChildEnvironment } from "../src/tools/child-env.js";
+import { deliverSession } from "./helpers/token-delivery-fixtures.js";
 import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
 import { SOURCE_COMMIT,
   AWS_DEV_TARGET, AWS_PROD_TARGET, AWS_QA_TARGET, AWS_REGION, ENGINE_VERSION, NOW, POLICY, awsContractJson, awsIdentityEnv, awsRoleArn, awsTargetOf,
@@ -414,6 +415,65 @@ test("a role in another account than the environment's is IDENTITY_TARGET_MISMAT
   refused(sealed, "IDENTITY_COLLAPSED");
   refused(await sealRefusal(w, "DEV", { ...w.deps, env: env("DEV", { ALZ_DISCOVERY_AWS_ACCESS_KEY_ID: "AKIAFAKEFAKEFAKE0000" }) }), "IDENTITY_NOT_CONFIGURED");
   refused(await sealRefusal(w, "DEV", { ...w.deps, env: env("DEV", { AWS_ROLE_ARN: awsRoleArn("APPLY", "DEV") }) }), "IDENTITY_COLLAPSED");
+});
+
+test("token files the identity delivery runner wrote seal and apply when fresh; a stale or expired delivery is refused before anything runs and spends nothing (SYNTHETIC)", async () => {
+  const w = world();
+  const delivered = deliverSession("aws-terraform", NOW);
+  try {
+    const env = { ...awsIdentityEnv("DEV"), ...delivered.env };
+    withPlannedCanary(w.contractPath, toolDir);
+    const target = awsTargetOf("DEV");
+    const p = writeProject(fresh("project"), target, SHARED_TF);
+    const sealed = await sealPreview({ invocation: human(target), environment: "DEV", target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, { ...w.deps, env });
+    assert.ok(sealed.ok, JSON.stringify(sealed));
+    const loadedPlan = await loadSealedPlan(sealed.path);
+    assert.ok(loadedPlan.ok);
+    const s: Sealed = { sealed: sealed.sealed, project: p, loaded: { sealed: loadedPlan.sealed, planBytes: loadedPlan.planBytes } };
+    const approvals = approvalsFor(s);
+    // The job stopped refreshing APPLY's token: refused at seal and at apply, before the approvals are consumed.
+    const meta = JSON.parse(readFileSync(delivered.metaFile("APPLY"), "utf8"));
+    writeFileSync(delivered.metaFile("APPLY"), JSON.stringify({ ...meta, refreshedAt: new Date(NOW.getTime() - 10 * 60 * 1000).toISOString() }), { mode: 0o600 });
+    refused(await sealRefusal(w, "DEV", { ...w.deps, env }), "IDENTITY_NOT_CONFIGURED");
+    refused(await run(w, s, approvals, {}, { ...w.deps, env }), "IDENTITY_NOT_CONFIGURED");
+    // The read-only steps that use a delivered identity judge it the same way (review N4): preflight reports it, observe refuses.
+    const cli = async (args: string[]) => {
+      const out: string[] = []; const err: string[] = [];
+      const code = await runApplyCommand(args, {
+        terminal: terminal([]), env, now: () => NOW, operatorId: "operator.fixture", contractPath: w.contractPath, qualificationDir: vaultDir,
+        evidenceDir: w.dirs.evidence, nonces: w.deps.nonces, scratchParent: w.dirs.scratch, toolDirs: [toolDir], sourceCommit: SOURCE_COMMIT,
+        stdout: (t: string) => { out.push(t); }, stderr: (t: string) => { err.push(t); },
+      });
+      return { code, stdout: out.join(""), stderr: err.join("") };
+    };
+    const preflight = await cli(["preflight", "--environment", "DEV"]);
+    const item = (JSON.parse(preflight.stdout) as { checks: { check: string; state: string; detail?: string }[] }).checks.find((c) => c.check.startsWith("identities configured"));
+    assert.equal(item?.state, "MISSING", preflight.stdout);
+    assert.match(item?.detail ?? "", /APPLY token is stale/);
+    const observed = await cli(["observe", "--sealed", sealed.path]);
+    assert.equal(observed.code, 2, observed.stderr);
+    assert.match(observed.stderr, /IDENTITY_NOT_CONFIGURED: .*APPLY token is stale/);
+    // An apply that starts after the tokens expired is refused the same way, however fresh the metadata says it is: every
+    // heartbeat is current at +280 s, and only the tokens' own expiry (20 s left, under the 60 s floor) refuses it (review N3).
+    const later = new Date(NOW.getTime() + 280 * 1000);
+    for (const identity of APPLY_IDENTITIES) {
+      const current = JSON.parse(readFileSync(delivered.metaFile(identity), "utf8"));
+      writeFileSync(delivered.metaFile(identity), JSON.stringify({ ...current, refreshedAt: later.toISOString() }), { mode: 0o600 });
+    }
+    const expired = await run(w, s, approvals, {}, { ...w.deps, env, now: () => later });
+    refused(expired, "IDENTITY_NOT_CONFIGURED");
+    assert.match((expired as unknown as { message: string }).message, /has expired or expires within 60 seconds \(exp\)/);
+    assert.doesNotMatch((expired as unknown as { message: string }).message, /stale/);
+    for (const identity of APPLY_IDENTITIES) {
+      const current = JSON.parse(readFileSync(delivered.metaFile(identity), "utf8"));
+      writeFileSync(delivered.metaFile(identity), JSON.stringify({ ...current, refreshedAt: meta.refreshedAt }), { mode: 0o600 });
+    }
+    assert.equal(applyCalls().length, 0);
+    assert.deepEqual(readdirSync(w.dirs.evidence), []);
+    behave({ applyAdvance: true });
+    const applied = await run(w, s, approvals, {}, { ...w.deps, env });
+    assert.ok(applied.ok, JSON.stringify(applied));
+  } finally { rmSync(delivered.root, { recursive: true, force: true }); }
 });
 
 test("the backend init saved must be the contract's bucket, key and region with native locking; anything else is refused at seal (the plan embeds it) and before the approvals are consumed at apply", async () => {

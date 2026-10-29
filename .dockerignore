@@ -8,6 +8,7 @@
 !.github/workflows/supply-chain.yml
 !.github/workflows/container-release.yml
 !.github/workflows/container-hardening.yml
+!.github/workflows/act-identity-delivery.yml
 node_modules
 dist
 coverage
