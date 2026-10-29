@@ -62,4 +62,4 @@ If a program is found but fails under the governed runner, the toolbox now shows
 
 ## Release boundary
 
-An installed binary and passing TypeScript build prove local readiness only. Real AWS execution still requires the pinned pilot contract, verified discovery and identity, sealed environment-specific artifact, approved blueprint, qualified engine and actual cloud-side verification. The hosted studio.presidio.ai MCP harness can reuse its native agents, skills and connectors; it does not require duplicate local credentials or an extra IaC engine.
+An installed binary and passing TypeScript build prove local readiness only. Real AWS execution still requires the owner-committed pilot contract with its `authorize` entry, verified discovery and identity, sealed environment-specific artifact, approved blueprint, qualified engine and actual cloud-side verification. The hosted studio.presidio.ai MCP harness can reuse its native agents, skills and connectors; it does not require duplicate local credentials or an extra IaC engine.

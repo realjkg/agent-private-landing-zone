@@ -221,9 +221,9 @@ A job can request a token for any audience, so inside one job the identities are
 
 Copy the `terraform output` values into the template that matches your provider (`bootstrap/config.azure.template.json`, `bootstrap/config.aws.template.json`) to keep your own record, and then:
 
-1. Copy the `contractTargets` block into `config/act-pilot-contract.json` by hand, starting from the matching `config/act-pilot-contract*.example.json` (for the Azure Terraform DEV-only pilot, `config/act-pilot-contract.azure-dev.example.json`; see `docs/act-pilot-azure-terraform-g0.md`). Add the approvers per `docs/act-pilot-apply.md`. Leave `enabled: false`.
+1. Copy the `contractTargets` block into `config/act-pilot-contract.json` by hand, starting from the matching `config/act-pilot-contract*.example.json` (for the Azure Terraform DEV-only pilot, `config/act-pilot-contract.azure-dev.example.json`; see `docs/act-pilot-azure-terraform-g0.md`). Add the approvers per `docs/act-pilot-apply.md`. Keep `embedStateWrite: true` (a Terraform contract without it does not load). Leave `enabled: false` and add no `authorize` entry.
 2. Set the `ALZ_<IDENTITY>_<VAR>` variables on the execution host from `identityVariables` (client ids or role ARNs, tenant and subscription or region, token file paths).
-3. Do **not** write the pin. Enabling the pilot and committing the hash is a separate reviewed change (`docs/act-pilot-apply.md`, "The contract is the authorization").
+3. Do **not** enable the pilot here. Enabling it (`enabled: true` and the owner's `authorize` entry, committed in one reviewed change by the owner) is a separate step (`docs/act-pilot-apply.md`, "The contract is the authorization"). There is no hash to compute or commit.
 
 The template files hold identifiers and paths only. Keep your filled copy out of the repository.
 
@@ -322,7 +322,7 @@ Remove your temporary role assignment afterward. The pilot never uses `-lock=fal
 ## Teardown
 
 1. Remove the pilot's own resources first, by the approved manual procedure (`docs/act-pilot-apply.md`, "Cleanup"). The state buckets and containers hold their state; destroying them first strands the resources.
-2. Disable the pilot: a reviewed commit that sets `enabled: false` and clears the pin.
+2. Disable the pilot: a reviewed commit that empties the contract's `authorize` entry (or sets `enabled: false`).
 3. Remove the runner side: delete the GitHub environments or stop the issuer, and delete the token files.
 4. AWS, per workspace: `terraform apply -var-file=dev.tfvars -var force_destroy_state=true`, then `terraform destroy -var-file=dev.tfvars`. An OIDC provider you passed as `existing_oidc_provider_arn` is not destroyed.
 5. Azure: `terraform destroy`. The pilot resource group is not deleted while it still holds resources (the provider's default protection); finish step 1 first. Deleted app registrations stay recoverable for about 30 days (check the Entra portal's deleted applications) before they are gone.

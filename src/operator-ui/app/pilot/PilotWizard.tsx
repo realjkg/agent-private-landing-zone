@@ -308,6 +308,14 @@ export default function PilotWizard(props: PilotWizardProps) {
   const dialog = run?.status === "WAITING" && run.dialog ? run.dialog : null;
   const dialogOpen = useRef(false);
   dialogOpen.current = dialog !== null;
+  // Where focus goes when the dialog closes. A question that replaces another keeps the first opener: the replaced dialog's input
+  // is gone, so the next dialog saw no element of the page focused when it opened.
+  const returnFocus = useRef<{ pending: boolean; opener: HTMLElement | null }>({ pending: false, opener: null });
+  const dialogClosed = useCallback((opener: HTMLElement | null) => {
+    const kept = returnFocus.current.pending ? returnFocus.current.opener : null;
+    const outside = opener !== null && opener.isConnected && opener !== document.body;
+    returnFocus.current = { pending: true, opener: outside ? opener : kept };
+  }, []);
 
   // Move focus to the heading of the step that opened, so a keyboard or screen reader user lands on it. Never while a dialog is
   // open: the dialog holds focus (PilotDialog), and a step or unlock change that lands in the same commit as, or after, the
@@ -321,6 +329,15 @@ export default function PilotWizard(props: PilotWizardProps) {
       if (dialog) { element.setAttribute("inert", ""); element.setAttribute("aria-hidden", "true"); }
       else { element.removeAttribute("inert"); element.removeAttribute("aria-hidden"); }
     }
+    // Focus goes back once the page is no longer inert, in the same commit that closed the dialog (the closing dialog's cleanup runs
+    // before this effect). It returns to the element that opened the dialog while that element is still on the page, enabled and
+    // outside any inert part; otherwise to the step heading, so it never falls to the page body.
+    if (dialog || !returnFocus.current.pending) return;
+    const opener = returnFocus.current.opener;
+    returnFocus.current = { pending: false, opener: null };
+    const usable = opener !== null && opener.isConnected && !opener.matches(":disabled") && opener.closest("[inert]") === null;
+    if (usable) opener.focus();
+    if (!usable || document.activeElement !== opener) headingRef.current?.focus();
   }, [dialog, unlocked]);
 
   // What each finished step leaves behind. A run is handled once.
@@ -814,6 +831,7 @@ export default function PilotWizard(props: PilotWizardProps) {
           busy={false}
           onSubmit={(typed) => void submitAnswer(typed)}
           onCancel={() => void cancelQuestion()}
+          onClosed={dialogClosed}
         />
       )}
     </section>

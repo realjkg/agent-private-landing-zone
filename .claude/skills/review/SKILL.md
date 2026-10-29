@@ -50,6 +50,6 @@ Then include:
 - **Blocking** findings (B1, B2, ...), each with path and line, the reproduction, and a suggested root-cause fix;
 - **Non-blocking** findings (N1, N2, ...);
 - what was verified as stated, and what was not run;
-- confirmation that `config/act-pilot-contract.sha256` is still empty and no authority was broadened.
+- confirmation that no agent committed `config/act-pilot-contract.json` or an `authorize` entry (the repository ships no contract, so ACT stays disabled), that every Terraform contract, example and fixture the change touches keeps `embedStateWrite: true`, and that no authority was broadened.
 
 Write in U.S. English. Do not approve, push or merge.

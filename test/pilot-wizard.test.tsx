@@ -492,10 +492,45 @@ describe("step 3 and the confirmation dialogs", () => {
     expect(posts(fake, "/answer")).toEqual([]);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(document.querySelector("[inert]")).toBeNull();
+    // Focus is back on the button that opened the dialog, in the same commit that closed it (no wait: nothing else moves it later).
+    expect(document.activeElement).toBe(start);
     // No dead end: the reason and the next step are on screen, and the same button runs it again with the boxes kept.
     expect((await screen.findByRole("alert")).textContent).toContain(CODE_COPY.HUMAN_CONFIRMATION_MISMATCH.next);
     expect((screen.getByLabelText(COPY.sealRequestLabel) as HTMLInputElement).value).toBe("/r.json");
     expect(screen.getByRole("button", { name: COPY.sealRun }).hasAttribute("disabled")).toBe(false);
+  });
+
+  test("a question that replaces another keeps the first opener, and a dialog that closes while its opener is disabled returns focus to the step heading, never to the page body", async () => {
+    const { fake } = await atSeal();
+    fake.onPost["/seal"] = () => { fake.run = waitingRun("seal", "TARGET", "acct | b | w"); };
+    typeInto(COPY.sealRequestLabel, "/r.json");
+    typeRequester();
+    typeInto(COPY.sealManifestLabel, "/m.json");
+    const start = screen.getByRole("button", { name: COPY.sealRun });
+    start.focus();
+    fireEvent.click(start);
+    const first = await screen.findByRole("dialog");
+    // The answer leads to a second question, which replaces the first dialog. Cancel ends the run: focus is back on the start button.
+    fake.onPost["/answer"] = () => { fake.run = waitingRun("seal", "RUN_PROJECT_CODE", "RUN PROJECT CODE", "d-2"); };
+    fireEvent.change(within(first).getByRole("textbox"), { target: { value: "acct | b | w" } });
+    fireEvent.click(within(first).getByRole("button", { name: dialogCopy("TARGET", "DEV").confirm }));
+    const second = (await screen.findByRole("heading", { name: dialogCopy("RUN_PROJECT_CODE", "DEV").title })).closest('[role="dialog"]') as HTMLElement;
+    expect(second).not.toBe(first);
+    fake.onPost["/cancel"] = () => { fake.run = doneRun("seal", { exit: 1, code: "HUMAN_CONFIRMATION_MISMATCH", message: "x" }, "seal-2"); };
+    fireEvent.keyDown(second, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(start);
+    // Run again. This time the answer lets the run go on: the dialog closes while the start button is disabled (the run is active).
+    fake.onPost["/seal"] = () => { fake.run = waitingRun("seal", "TARGET", "acct | b | w", "d-3"); };
+    fireEvent.click(start);
+    const third = await screen.findByRole("dialog");
+    fake.onPost["/answer"] = () => { fake.run = { ...waitingRun("seal", "TARGET", "acct | b | w", "d-3"), status: "RUNNING", dialog: undefined }; };
+    fireEvent.change(within(third).getByRole("textbox"), { target: { value: "acct | b | w" } });
+    fireEvent.click(within(third).getByRole("button", { name: dialogCopy("TARGET", "DEV").confirm }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.querySelector("[inert]")).toBeNull();
+    expect(start.hasAttribute("disabled")).toBe(true);
+    expect(document.activeElement).toBe(document.getElementById("pilot-step-title"));
   });
 
   test("Tab stays inside the dialog", async () => {

@@ -35,7 +35,7 @@ An agent never does these, never writes their inputs, and never holds their keys
 - **Bootstrap** the cloud accounts or subscriptions (`bootstrap/aws`, `bootstrap/azure`; `docs/act-pilot-bootstrap.md`).
 - **Federated identity:** create the OIDC or workload identity trusts and the per-identity roles.
 - **Live qualification:** `./alz apply qualify` on a host with the real engine, bound to the DEV target (G2).
-- **Authorization:** today, the reviewed commit of `config/act-pilot-contract.json` with its pin `config/act-pilot-contract.sha256` (the repository ships an empty pin). The owner has decided to replace the pin with authorization in the reviewed contract itself (#39, 6443124357 and 6443232624). Until that change merges, the pin is the switch. Agents never write the pin or the authorization entry.
+- **Authorization:** the owner's reviewed commit of `config/act-pilot-contract.json` with a non-empty `authorize` entry. That entry names, default deny, the operations (`APPLY`, `CLEANUP`, `REMOVE`) ACT may run per environment for the contract's provider, engine and account (owner decisions of 2026-10-27, #39; `docs/act-pilot-apply.md`, "The contract is the authorization"). The repository ships no contract, and an absent contract or an absent or empty `authorize` keeps ACT disabled. A Terraform contract must set `embedStateWrite: true` or it does not load (owner decision 6486426552). The old hash pin `config/act-pilot-contract.sha256` is removed with no fallback. Agents never write the contract or its `authorize` entry.
 - **Approvals:** the requester's and approvers' Ed25519 signatures (`src/apply/approval.ts`). Agents hold no approver key.
 - **Starting applies and cleanups:** a person at the terminal, or a person in the console's Pilot apply wizard with the one-time session token. Agents, automation and the console's job table never start one (`test/apply-boundary.test.ts`).
 - **Recording live evidence and admission:** `./alz apply record-live`, `./alz apply record-recovery`, `./alz qualify admission`.
@@ -46,7 +46,7 @@ The contract's `killSwitchPath` names a file (`.runs/apply/KILL` in the examples
 
 ## Rules that do not bend
 
-- Never enable ACT, write the pin or an authorization entry, or initiate an apply or cleanup.
+- Never enable ACT, write `config/act-pilot-contract.json` or an `authorize` entry, or initiate an apply or cleanup.
 - Never run anything against a real cloud, and never spend money.
 - Never weaken a gate: contract admission, qualification evidence, signatures, quorum, ledger, kill switch, typed phrases, channel binding.
 - `src/cli/ui-channel.ts` stays the console's only bridge to `src/apply`.
