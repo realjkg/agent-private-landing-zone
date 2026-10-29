@@ -49,6 +49,24 @@ export const TEMPLATE_OWNERS = {
   "bootstrap/config.gcp.template.json": ["test/apply-contract.test.ts"],
 };
 
+// The field package's staging and image definitions, and the generator's entry script, are read or run by the package tests,
+// never imported: a change to any of them selects those tests, in addition to any other rule that owns the path.
+export const PACKAGE_OWNERS = {
+  "Dockerfile": ["test/release-package-exclusions.test.ts"],
+  ".dockerignore": ["test/release-package-exclusions.test.ts"],
+  "alz": ["test/release-package-exclusions.test.ts"],
+  ".github/workflows/supply-chain.yml": ["test/release-package-exclusions.test.ts"],
+  "scripts/release-stage.sh": ["test/release-package-exclusions.test.ts"],
+  "scripts/field-package.ts": ["test/release-package-field-manifest.test.ts"],
+};
+
+// The shipped configuration and policy trees: the exclusion test scans them as package content (no secret, no service), and the
+// field manifest test reads the release configuration. A change anywhere under them selects those tests, beside other owners.
+export const PACKAGE_TREE_OWNERS = {
+  "config/": ["test/release-package-exclusions.test.ts", "test/release-package-field-manifest.test.ts"],
+  "policy/": ["test/release-package-exclusions.test.ts"],
+};
+
 // Fixtures a test reads from disk (not imported), so the import closure never selects their owner.
 export const FIXTURE_OWNERS = {
   "test/fixtures/backend-pin/cases.json": ["test/apply-backend-pin-real.test.ts"],
@@ -80,6 +98,8 @@ export const SOURCE_SCAN_GUARDS = {
   // No product code names the retired pin file or writes the pilot contract (the contract is the ACT authorization).
   "test/apply-contract.test.ts": ["src/"],
   "test/policy-path.test.ts": ["src/"],
+  // The field package guard scans the staged content (src stands in for dist) and checks no shipped code installs a runner service.
+  "test/release-package-exclusions.test.ts": ["src/"],
   "test/teardown-adapter-terraform.test.ts": ["src/"],
   "test/teardown-driver-denials.test.ts": ["src/"],
   "test/teardown-driver-cli.test.ts": ["src/tools/", "src/operator-ui/", "src/agent/"],
@@ -189,6 +209,8 @@ export function planChanged(changedPaths, files) {
   const cited = acceptanceCited(files);
   for (const path of changed) {
     if (Object.hasOwn(TEMPLATE_OWNERS, path)) addExisting(selected, files, TEMPLATE_OWNERS[path]);
+    if (Object.hasOwn(PACKAGE_OWNERS, path)) addExisting(selected, files, PACKAGE_OWNERS[path]);
+    for (const [root, owners] of Object.entries(PACKAGE_TREE_OWNERS)) if (path.startsWith(root)) addExisting(selected, files, owners);
     if (INVENTORY_INPUT.test(path)) addExisting(selected, files, INVENTORY_GUARDS);
     if (cited.has(path)) addExisting(selected, files, [ACCEPTANCE_TEST]);
     if (RELEASE_STATUS_INPUT.test(path)) {

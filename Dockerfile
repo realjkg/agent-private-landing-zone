@@ -25,6 +25,8 @@ ENV ALZ_SOURCE_COMMIT=$SOURCE_COMMIT
 
 COPY test/ ./test/
 COPY Dockerfile ./Dockerfile
+# test/release-package-exclusions.test.ts reads the context rules that keep the owner's contract out of the image. Test stage only.
+COPY .dockerignore ./.dockerignore
 COPY scripts/ ./scripts/
 COPY security/ ./security/
 COPY config/ ./config/
@@ -46,8 +48,9 @@ COPY .github/workflows/pr-validation.yml ./.github/workflows/pr-validation.yml
 COPY .github/workflows/supply-chain.yml ./.github/workflows/supply-chain.yml
 COPY .github/workflows/container-release.yml ./.github/workflows/container-release.yml
 COPY .github/workflows/container-hardening.yml ./.github/workflows/container-hardening.yml
-# test/act-identity-delivery-workflow.test.ts reads the identity delivery workflow and runs its scripts. Test stage only.
+# test/act-identity-delivery-workflow.test.ts reads the identity delivery and macOS test workflows and runs the delivery scripts. Test stage only.
 COPY .github/workflows/act-identity-delivery.yml ./.github/workflows/act-identity-delivery.yml
+COPY .github/workflows/act-identity-macos.yml ./.github/workflows/act-identity-macos.yml
 COPY compose.production.yaml ./compose.production.yaml
 
 RUN chmod +x ./alz
@@ -70,6 +73,8 @@ RUN apk upgrade --no-cache && apk add --no-cache libstdc++
 COPY package.json package-lock.json ./
 COPY --from=runtime-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+# .dockerignore keeps the owner's contract and runner configuration out of the context, so config/ here never holds them;
+# release-package below refuses the build if anything excluded reached the image (docs/field-package.md).
 COPY config/ ./config/
 COPY policy/ ./policy/
 

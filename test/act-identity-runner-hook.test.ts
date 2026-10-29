@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,7 +13,11 @@ import test from "node:test";
 const HOOK = "scripts/act-identity-runner-hook.sh";
 const REPO = "fixture-owner/fixture-repo";
 const WORKFLOW = ".github/workflows/act-identity-delivery.yml";
-const scratch = mkdtempSync(join(tmpdir(), "alz-runner-hook-"));
+// The real temporary directory: on macOS tmpdir() is under /var, a symbolic link to /private/var, and the hook refuses paths that
+// are not their own real path. /bin/bash, not the first bash on PATH: on macOS that is Apple's bash 3.2, which the MBP runner uses
+// (.github/workflows/act-identity-macos.yml runs these tests there), and on Linux it is the system bash.
+const scratch = mkdtempSync(join(realpathSync(tmpdir()), "alz-runner-hook-"));
+const BASH = "/bin/bash";
 test.after(() => rmSync(scratch, { recursive: true, force: true }));
 const dispatch = { ref: "refs/heads/main", workflow: WORKFLOW, repository: { full_name: REPO }, inputs: { path: "aws-terraform", hold_minutes: "30" } };
 
@@ -39,7 +43,7 @@ const jobEnv = (at: Install, over: Record<string, string> = {}): Record<string, 
   PATH: "/usr/bin:/bin", GITHUB_REPOSITORY: REPO, GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF: "refs/heads/main",
   GITHUB_WORKFLOW_REF: REPO + "/" + WORKFLOW + "@refs/heads/main", GITHUB_JOB: "deliver", GITHUB_EVENT_PATH: at.payload, ...over,
 });
-const run = (at: Install, env: Record<string, string>) => spawnSync("bash", [at.hook], { env, encoding: "utf8" });
+const run = (at: Install, env: Record<string, string>) => spawnSync(BASH, [at.hook], { env, encoding: "utf8" });
 const refused = (at: Install, env: Record<string, string>, reason: RegExp, label: string) => {
   const result = run(at, env);
   assert.equal(result.status, 1, label + ": " + result.stdout + result.stderr);
@@ -53,7 +57,7 @@ test("the delivery workflow's own jobs, dispatched on main in the owner's reposi
   for (const job of ["deliver", "cleanup"]) {
     const result = run(at, jobEnv(at, { GITHUB_JOB: job }));
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, new RegExp("admitted \\.github/workflows/act-identity-delivery\\.yml \\(job " + job + "\\)"));
+    assert.match(result.stdout, new RegExp("admitted \\.github/workflows/act-identity-delivery\\.yml \\(job " + job + "; hook ran under bash [0-9]+\\.[0-9]+"));
   }
   // GITHUB_EVENT_PATH may be absent: the hook reads the payload at its own fixed path.
   assert.equal(run(at, jobEnv(at, { GITHUB_EVENT_PATH: "" })).status, 0);
@@ -148,6 +152,7 @@ test("a job environment that reaches the hook is made visible: the owner's canar
     // bash expands BASH_ENV and sources the result before the first line: the code runs (the marker appears), then the leak is reported.
     [{ BASH_ENV: "$(touch " + marker + ")" }, "BASH_ENV"],
     [{ ALZ_HOOK_ENV_CANARY: "instance-1", "BASH_FUNC_unset%%": "() { exit 0; }", "BASH_FUNC_exit%%": "() { builtin exit 0; }" }, "canary with function overrides"],
+    [{ ALZ_HOOK_ENV_CANARY: "instance-1", "__BASH_FUNC<unset>%%": "() { builtin exit 0; }", "__BASH_FUNC<exit>%%": "() { builtin exit 0; }" }, "canary with angle-format function overrides"],
   ] as const) {
     rmSync(marker, { force: true });
     const result = run(at, jobEnv(at, over as Record<string, string>));
@@ -158,12 +163,57 @@ test("a job environment that reaches the hook is made visible: the owner's canar
   }
 });
 
-test("exported functions cannot hijack the hook: it calls no builtin by name, and Node, the last command, decides (review round 2)", () => {
+// --- exported-function formats: which one this host's bash imports (positive control, review N1 of #346) ---------------------
+
+/**
+ * Two exported-function formats are sent. `gnu` (BASH_FUNC_<name>%%) is upstream bash's since the Shellshock fixes (4.3 and later,
+ * and 3.2.54 and later). The macOS CI control (run 40809742276, macOS 15.7.9) showed that Apple's /bin/bash 3.2.57 imports this
+ * format. `angle` (__BASH_FUNC<<name>>%%) is a variant that was expected for Apple's bash; that bash does not import it. It is
+ * still sent, so that any bash that does import it is covered too, and the control names which formats are live.
+ */
+const FUNCTION_FORMATS = {
+  gnu: (name: string): string => "BASH_FUNC_" + name + "%%",
+  angle: (name: string): string => "__BASH_FUNC<" + name + ">%%",
+} as const;
+type FunctionFormat = keyof typeof FUNCTION_FORMATS;
+const BASH_VERSION = spawnSync(BASH, ["-c", "echo \"$BASH_VERSION\""], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" }).stdout.trim();
+const BASH_MAJOR = Number(BASH_VERSION.split(".")[0]);
+/** Whether BASH imports a harmless, test-only function exported in this format: the function runs only if it was imported. */
+const importsFormat = (format: FunctionFormat): boolean =>
+  spawnSync(BASH, ["-c", "alz_probe_fn"], { env: { PATH: "/usr/bin:/bin", [FUNCTION_FORMATS[format]("alz_probe_fn")]: "() { echo ALZ_PROBE_IMPORTED; }" }, encoding: "utf8" })
+    .stdout.includes("ALZ_PROBE_IMPORTED");
+const LIVE_FORMATS = (Object.keys(FUNCTION_FORMATS) as FunctionFormat[]).filter(importsFormat);
+const formatsLine = (): string => "ALZ_FUNCTION_FORMATS: " + BASH + " " + BASH_VERSION + " on " + process.platform + " imports " +
+  (LIVE_FORMATS.length > 0 ? LIVE_FORMATS.join(" and ") : "no") + " exported-function format(s); not imported: " +
+  ((Object.keys(FUNCTION_FORMATS) as FunctionFormat[]).filter((f) => !LIVE_FORMATS.includes(f)).join(", ") || "none") + ".";
+
+test("positive control: the bash the hook tests use really imports exported functions, in the format its platform uses", (t) => {
+  // Printed so the CI log records which formats were live on that host (docs/act-pilot-identity-delivery.md, section 11, step 7).
+  t.diagnostic(formatsLine());
+  process.stdout.write(formatsLine() + "\n");
+  // Apple's /bin/bash 3.2.57 imports the GNU format (observed on macOS 15.7.9 in the macOS CI run 40809742276), as GNU bash does.
+  if (process.platform === "darwin" && BASH_MAJOR === 3) assert.ok(LIVE_FORMATS.includes("gnu"), "Apple's /bin/bash 3.2 imports BASH_FUNC_name%%: " + formatsLine());
+  if (process.platform === "linux") assert.ok(LIVE_FORMATS.includes("gnu"), "GNU bash must import BASH_FUNC_name%%: " + formatsLine());
+  assert.ok(LIVE_FORMATS.length > 0, "with no live format, the override cases below would prove nothing: " + formatsLine());
+  // A live format really replaces a builtin in a plain script: the attack the hook is built to withstand is real on this host.
+  for (const format of LIVE_FORMATS) {
+    const plain = spawnSync(BASH, ["-c", "unset ALZ_X; echo after"], { env: { PATH: "/usr/bin:/bin", [FUNCTION_FORMATS[format]("unset")]: "() { echo ALZ_UNSET_HIJACKED; }" }, encoding: "utf8" });
+    assert.match(plain.stdout, /ALZ_UNSET_HIJACKED/, format + " overrides a builtin in a plain script");
+  }
+});
+
+test("exported functions cannot hijack the hook: it calls no builtin by name, and Node, the last command, decides (review round 2)", (t) => {
+  // Meaningful only for the formats the positive control shows are imported here; both are sent, and the live ones are named.
+  assert.ok(LIVE_FORMATS.length > 0, formatsLine());
+  t.diagnostic("override cases are live for: " + LIVE_FORMATS.join(", "));
   const branch = install({ ...dispatch, ref: "refs/heads/feature" });
   for (const name of ["unset", "exit", "set", "printf", "read", "refuse", "[", "test", "env", "find", "false", "command", "builtin", "true"]) {
-    const result = run(branch, jobEnv(branch, { ["BASH_FUNC_" + name + "%%"]: "() { builtin exit 0; }" }));
-    assert.equal(result.status, 1, name + ": " + result.stdout + result.stderr);
-    assert.match(result.stderr, /ALZ_IDENTITY_RUNNER_REFUSED: the event payload is not a dispatch/, name);
+    // Both formats: the GNU one, live on Linux and on Apple's /bin/bash 3.2, and the angle variant, live on neither.
+    for (const variable of [FUNCTION_FORMATS.gnu(name), FUNCTION_FORMATS.angle(name)]) {
+      const result = run(branch, jobEnv(branch, { [variable]: "() { builtin exit 0; }" }));
+      assert.equal(result.status, 1, variable + ": " + result.stdout + result.stderr);
+      assert.match(result.stderr, /ALZ_IDENTITY_RUNNER_REFUSED: the event payload is not a dispatch/, variable);
+    }
   }
   // And the admitted case still admits with them present: they change nothing either way.
   const good = install();
@@ -186,4 +236,46 @@ test("the configured Node binary must be owned by root or this user and not writ
   }
   const notExecutable = install(dispatch, "REPOSITORY=" + REPO + "\nRUNNER_WORK=/x/_work\nNODE=" + join(fakeDir, "absent") + "\n");
   refused(notExecutable, jobEnv(notExecutable, { GITHUB_EVENT_PATH: "" }), /names no absolute NODE binary/, "missing binary");
+});
+
+// --- portability to the MBP: Apple /bin/bash 3.2, the BSD regex library and BSD userland (review N1 of the D4-A follow-up) ---
+
+/** The hook's bash part: everything except the Node program inside `-e '...'`, which V8 runs. */
+function bashPart(): string {
+  const text = readFileSync(HOOK, "utf8");
+  const start = text.indexOf("-e '\n");
+  const end = text.indexOf("\n    ' \"$here\"");
+  assert.ok(start > 0 && end > start, "the Node program is delimited");
+  return text.slice(0, start) + text.slice(end);
+}
+
+test("the bash part uses only regex and tool features that BSD and Apple bash 3.2 share with GNU", () => {
+  const code = bashPart().split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
+  // BSD regcomp refuses a counted repetition over RE_DUP_MAX (255); none above that, and none at all in the =~ patterns.
+  for (const match of code.matchAll(/\{([0-9]+)(?:,([0-9]*))?\}/g)) {
+    for (const bound of [match[1], match[2]].filter((n) => n !== undefined && n !== "")) assert.ok(Number(bound) <= 255, "counted repetition " + match[0]);
+  }
+  assert.doesNotMatch(code, /\\[dwsDWSb<>]/, "no GNU regex shorthand classes or word boundaries");
+  const tests = [...code.matchAll(/=~\s*(\S+)/g)].map((m) => m[1]);
+  assert.ok(tests.length > 0);
+  for (const right of tests) assert.match(right, /^\$[A-Za-z_][A-Za-z0-9_]*$/, "the right of =~ is one unquoted variable: " + right);
+  assert.match(code, /^LC_ALL=C$/m, "bracket ranges are read in the C locale");
+  // Only POSIX find primaries, and printf and env without GNU-only flags.
+  for (const call of code.matchAll(/\/usr\/bin\/find ([^)]*)\)/g)) {
+    for (const flag of call[1].match(/(?:^|\s)-[A-Za-z]+/g) ?? []) assert.ok(["-H", "-prune", "-perm", "-o", "-user", "-print"].includes(flag.trim()), "find " + flag.trim());
+  }
+  for (const call of code.matchAll(/\/usr\/bin\/env( -[A-Za-z-]+)*/g)) assert.equal(call[0], "/usr/bin/env -i", "env takes -i only");
+  for (const call of code.matchAll(/\/usr\/bin\/printf (\S+)/g)) assert.doesNotMatch(call[1], /^-/, "printf takes no flag");
+  assert.doesNotMatch(code, /\b(?:readlink -f|realpath|stat -c|sed -r|grep -P|date -d)\b/, "no GNU-only command forms");
+});
+
+test("a NODE path is matched without a counted repetition and its length is checked separately", () => {
+  const long = "/" + "n".repeat(400);
+  const at = install(dispatch, "REPOSITORY=" + REPO + "\nRUNNER_WORK=/x/_work\nNODE=" + long + "\n");
+  refused(at, jobEnv(at, { GITHUB_EVENT_PATH: "" }), /names no absolute NODE binary/, "a 401-character NODE path");
+  // A configured path of ordinary length still works (the admitted cases above), and a refusal names the bash that ran the hook.
+  const open = install();
+  chmodSync(open.conf, 0o644);
+  const result = run(open, jobEnv(open));
+  assert.match(result.stderr, /\(bash [0-9]+\.[0-9]+/);
 });

@@ -9,6 +9,7 @@
 !.github/workflows/container-release.yml
 !.github/workflows/container-hardening.yml
 !.github/workflows/act-identity-delivery.yml
+!.github/workflows/act-identity-macos.yml
 node_modules
 dist
 coverage
@@ -33,3 +34,8 @@ qualification/**/*.tfvars*
 !qualification/**/*.example*
 qualification/**/*.tfstate*
 qualification/**/*.tfplan
+# The owner's own files never enter an image (docs/field-package.md, section 2): the pilot contract, its drafts and the
+# retired pin (the disabled *.example.json shapes stay), and the owner's evidence-runner configuration.
+config/act-pilot-contract*
+!config/act-pilot-contract*.example.json
+config/evidence-runner.json

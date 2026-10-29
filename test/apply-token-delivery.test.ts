@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { chmodSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -190,7 +190,7 @@ test("a group- or world-readable token, a symbolic link, a file outside the sess
   refused(check(rootOpen.env), "IDENTITY_NOT_CONFIGURED", /is open to group or others/);
 
   const link = deliver("aws-terraform");
-  const elsewhere = mkdtempSync(join(tmpdir(), "alz-elsewhere-"));
+  const elsewhere = mkdtempSync(join(realpathSync(tmpdir()), "alz-elsewhere-"));
   made.push(elsewhere);
   renameSync(link.tokenFile("APPLY"), join(elsewhere, "APPLY.jwt"));
   symlinkSync(join(elsewhere, "APPLY.jwt"), link.tokenFile("APPLY"));

@@ -158,16 +158,21 @@ The repository belongs to a user account and is public. **Failed assumption:** t
    - calls no builtin or outside function by name. It uses only keywords (`[[ ]]`, `if`), expansions, assignments, its own function and programs by absolute path. An exported function in the environment (`BASH_FUNC_<name>%%`, which bash looks up before builtins) therefore cannot replace anything it calls. A test overrides `unset`, `exit`, `set`, `printf`, `read`, `[`, `test`, `env`, `find`, `false`, `command`, `builtin` and `true`, and the hook still refuses a branch payload;
    - checks, in bash, that the configuration is owner-only, and that the `NODE` binary is owned by root or the runner user and not writable by group or others, **before** it runs that binary (review N8). Node checks both again;
    - judges everything with that Node binary under `env -i` as its last command, so no job-provided variable (`NODE_OPTIONS`, `NODE_PATH` and the rest) reaches the judge, and the judge's verdict is the hook's exit status;
-   - pins `PATH` and `IFS`;
+   - pins `PATH`, `IFS` and `LC_ALL=C`;
+   - is portable to Apple bash 3.2 and BSD userland: the bash part has no counted regex repetition (BSD's `RE_DUP_MAX` is 255; the `NODE` path's length is checked separately), no `\d`, `\w` or `\s`, and only an unquoted variable on the right of `=~`. `/usr/bin/find` uses only POSIX `-H`, `-prune`, `-perm -mode`, `-user`, `-o` and `-print`. `printf` and `env` take no GNU-only flag. A static test pins all of this;
    - refuses anything unexpected: a missing, open, repeated or unknown configuration line, a symbolic link, or an unreadable payload.
 
    **The class it cannot defend, and how a leak is made visible.** Bash acts on four variables before the first line of any script runs:
    - `BASH_ENV` is expanded and sourced, so `BASH_ENV='$(…)'` runs code with no file at all;
    - `ENV` does the same in POSIX mode;
    - `SHELLOPTS` and `BASHOPTS` set options. `SHELLOPTS=noexec` makes bash read the hook without running it and exit 0, which admits the job; this was checked with bash 5.2;
-   - exported functions (`BASH_FUNC_*%%`) are imported as functions. The hook calls none of them, but any program it ran through bash could.
+   - `PS4` with `xtrace`: `SHELLOPTS=xtrace` and a `PS4` holding a command substitution run that command before every traced line. Bash 4.4 and later ignore an inherited `PS4` only when running as root, and the runner user is not root;
+   - exported functions are imported as functions. Both GNU bash and Apple's `/bin/bash` 3.2.57 name them `BASH_FUNC_<name>%%`: the macOS CI control (run 40809742276, macOS 15.7.9) found that Apple's bash imports this format and not the `__BASH_FUNC<<name>>%%` variant once expected for it. The hook calls none of them, but any program it ran through bash could;
+   - `DYLD_*` (macOS) and `LD_PRELOAD` (Linux) load code into an unprotected bash. On macOS, System Integrity Protection strips `DYLD_*` when a protected binary such as `/bin/bash` or `/usr/bin/env` starts, but not for a Homebrew bash. `env -i` protects only the Node judge, not the bash that runs the hook.
 
-   **If a job's environment reaches the job-started hook, this whole class is a full bypass, and no script can prevent it.** The hook's first check makes a leak visible: if `ALZ_HOOK_ENV_CANARY`, `BASH_ENV` or `ENV` is set, it refuses with the distinct code `ALZ_IDENTITY_HOOK_ENV_LEAK`. The owner's proof (section 11, step 7) sets the canary, a `BASH_ENV` marker and function overrides on every instance, so a leak cannot pass unseen. If it ever shows a leak, option A as designed fails the owner's requirement that no untrusted PR code runs on the credential-bearing runner. Section 12 gives the smallest alternative.
+   **Which bash runs the hook.** The runner starts a `.sh` hook with the `bash` it finds on its `PATH`. As far as can be determined offline, on the MBP that is Apple's `/bin/bash` 3.2, unless a Homebrew bash (`/opt/homebrew/bin/bash`, 5.x) comes first on the runner's `PATH`. The hook prints the bash version in its admitted or refused line (`hook ran under bash …`), so the owner reads it from the job's "Set up runner" log. The hook is written for both (the portability item above), and the proof in section 11, step 7 covers both exported-function formats.
+
+   **If a job's environment reaches the job-started hook, this whole class is a full bypass, and no script can prevent it.** The hook's first check makes a leak visible: if `ALZ_HOOK_ENV_CANARY`, `BASH_ENV` or `ENV` is set, it refuses with the distinct code `ALZ_IDENTITY_HOOK_ENV_LEAK`. The owner's proof (section 11, step 7) sets the canary, a `BASH_ENV` marker and function overrides on every instance, so a leak cannot pass unseen. If it ever shows a leak, option A as designed fails the owner's requirement that no untrusted PR code runs on the credential-bearing runner. Section 14 proposes a fallback for the owner's approval; it is not enabled.
 
    **The delivery job checks the hook.** Before minting anything, the delivery job refuses unless all of these hold:
    - `ACTIONS_RUNNER_HOOK_JOB_STARTED` names an owner-only regular file whose SHA-256 equals the reviewed script's hash, which is pinned in the workflow as `ALZ_RUNNER_HOOK_SHA256` (a test keeps the two equal);
@@ -187,7 +192,7 @@ The repository belongs to a user account and is public. **Failed assumption:** t
 | Threat | Control | Residual risk |
 |---|---|---|
 | A fork or branch PR runs code on the runner by naming its label, or just `self-hosted` | The hook (8.1) refuses the job before any step, deciding from its owner-only configuration and the runner's payload. Fork approval (8.7). The runner is offline outside the window (8.6). | One instance without the hook would run anything. The delivery job refuses to deliver on such an instance, but it cannot stop another job there. The owner's negative test runs on every instance (section 11, step 7). |
-| A job's own `env:` steers the hook (`NODE_OPTIONS`, `GITHUB_*`, `BASH_FUNC_*%%`) | The hook ignores job-settable values for every decision. It calls no builtin by name, and runs Node under `env -i` with an absolute, owner-checked binary as its last command. Tests reproduce the `NODE_OPTIONS` and `BASH_FUNC_unset%%` probes and show both refuse. | If job environment reaches the hook, `BASH_ENV`, `ENV`, `SHELLOPTS` (for example `noexec`) and `BASHOPTS` act before any line runs: a **full bypass**. The hook's canary check (`ALZ_IDENTITY_HOOK_ENV_LEAK`) and section 11, step 7 make that visible on every instance. If it is seen, option A fails, and section 12 gives the fallback. |
+| A job's own `env:` steers the hook (`NODE_OPTIONS`, `GITHUB_*`, `BASH_FUNC_*%%`) | The hook ignores job-settable values for every decision. It calls no builtin by name, and runs Node under `env -i` with an absolute, owner-checked binary as its last command. Tests reproduce the `NODE_OPTIONS` and `BASH_FUNC_unset%%` probes and show both refuse. | If job environment reaches the hook, `BASH_ENV`, `ENV`, `SHELLOPTS` (for example `noexec`, or `xtrace` with `PS4`), `BASHOPTS`, exported functions in either format, and `DYLD_*`/`LD_PRELOAD` on an unprotected bash act before any line runs: a **full bypass**. The hook's canary check (`ALZ_IDENTITY_HOOK_ENV_LEAK`) and section 11, step 7 make that visible on every instance. If it is seen, option A fails; section 14 proposes a fallback, awaiting the owner's approval. |
 | A modified workflow on a branch is dispatched to mint an environment token | The environment's branch policy is `main` only. The required reviewer. The hook refuses non-main refs. The driver refuses tokens whose `ref` or `workflow_ref` is not main. | Anyone who can merge to `main` can change the workflow. Main's review and the pending `release-freeze-main` ruleset govern that. |
 | A token for identity A is used as identity B | Each cloud trusts exactly one subject per principal. The driver binds file name, metadata, `sub`, `environment` and audience per identity, and refuses the same token, subject or `jti` twice. | None known. |
 | A stale or expired token is used | The 60-second validity floor, a heartbeat within 180 seconds, and the hold window. Nothing is extended. | A step that runs longer than its cloud session (one hour) fails rather than continue on an old token. |
@@ -260,7 +265,8 @@ Labels:
    - **Overrides.** Give both jobs a job-level `env:` that sets all of these. `<N>` is the instance number.
      - `ALZ_HOOK_ENV_CANARY: instance-<N>`: the canary;
      - `BASH_ENV: '$(touch /tmp/alz-hook-env-reached-<N>)'`: an observable marker that needs no file;
-     - `BASH_FUNC_unset%%: '() { builtin exit 0; }'` and `BASH_FUNC_exit%%: '() { builtin exit 0; }'`: these would make an exposed hook exit 0 if they were honored;
+     - `BASH_FUNC_unset%%: '() { builtin exit 0; }'` and `BASH_FUNC_exit%%: '() { builtin exit 0; }'` (the format both GNU bash and Apple's `/bin/bash` 3.2.57 import), plus `'__BASH_FUNC<unset>%%': '() { builtin exit 0; }'` and `'__BASH_FUNC<exit>%%': '() { builtin exit 0; }'` (a variant neither imports, sent for completeness): these would make an exposed hook exit 0 if they were honored; on Apple's `/bin/bash` 3.2 the effective format is `BASH_FUNC_<name>%%`, the same as GNU bash. The positive control in `test/act-identity-runner-hook.test.ts` asserts this on macOS in `.github/workflows/act-identity-macos.yml`; its log line, from run 40809742276, read `ALZ_FUNCTION_FORMATS: /bin/bash 3.2.57(1)-release on darwin imports gnu exported-function format(s); not imported: apple.` (`apple` was that run's name for the angle variant). Both are set so the probe covers whichever bash the runner uses;
+     - `SHELLOPTS: xtrace` and `PS4: '$(touch /tmp/alz-hook-env-reached-<N>)'`;
      - `GITHUB_EVENT_NAME: workflow_dispatch`, `GITHUB_REF: refs/heads/main`, `GITHUB_WORKFLOW_REF: realjkg/agent-private-landing-zone/.github/workflows/act-identity-delivery.yml@refs/heads/main`, `GITHUB_EVENT_PATH: /tmp/forged.json`;
      - `NODE_OPTIONS: --require=/tmp/forged.js`.
    - **Marker.** Each job's only step writes `/tmp/alz-hook-step-ran-<N>`.
@@ -272,7 +278,7 @@ Labels:
      - no step ran.
 
    Repeat for each of the four instances, then delete the branch. Record each runner's name, the refusal line and the absence of both markers.
-   - **If `ALZ_IDENTITY_HOOK_ENV_LEAK` appears, or the `env-reached` marker exists,** job environment reaches the hook. Option A as designed then fails the "no untrusted PR code" requirement. Do not deliver tokens; use the fallback in section 12.
+   - **If `ALZ_IDENTITY_HOOK_ENV_LEAK` appears, or the `env-reached` marker exists,** job environment reaches the hook. Option A as designed then fails the "no untrusted PR code" requirement. Do not deliver tokens. The fallback in section 14 is PROPOSED and needs the owner's approval before any use.
    - **If a step ran,** that instance has no working hook and must not be used.
 
 D4 is complete when the owner records steps 3 to 7 on #39 and accepts them.
@@ -286,7 +292,7 @@ The owner's proof settles each of these. Every one fails closed if it is wrong.
 | A GitHub OIDC token lives for a few minutes, so a 60-second refresh keeps it fresh. GitHub's documented example shows five minutes. | A shorter life makes the job refuse to write the token (less than 60 seconds left), or makes the driver refuse it. Nothing runs on an expired token. |
 | The job's request token stays valid for the whole job, so re-minting keeps working. | The refresh fails, the job deletes its token and exits 1, and the driver refuses the stale delivery. |
 | The job-started hook runs before any step and fails the job on a non-zero exit, and the runner has written the event payload at `<RUNNER_WORK>/_temp/_github_workflow/event.json` by then. Step 7 of the proof tests this on every instance. | The runner must not be used for delivery. |
-| **A job's `env:` does not reach the job-started hook.** If it did, `BASH_ENV`, `ENV`, `SHELLOPTS`/`BASHOPTS` and exported `BASH_FUNC_*%%` would act before the hook's first line: a full bypass. Step 7's canary, `BASH_ENV` marker and function overrides make it observable on every instance. | **Option A as designed then fails the "no untrusted PR code" requirement.** The smallest alternative needs no new issuer and no new mechanism, just a narrower window. Run each instance as an **ephemeral** runner (`config.sh --ephemeral`, re-registered by the owner for each delivery), started only after the owner's own dispatch is queued and approved, and only once the owner has confirmed in Actions that no other job is queued for a self-hosted runner. Each instance takes exactly one job and deregisters. The owner checks in each run log that the one job it took was a `deliver` or `cleanup` job of this run. Any other job on it is an incident: its tokens are discarded, nothing is applied, and the instance is wiped. |
+| **A job's `env:` does not reach the job-started hook.** If it did, `BASH_ENV`, `ENV`, `SHELLOPTS`/`BASHOPTS` (including `xtrace` with `PS4`), exported functions (`BASH_FUNC_*%%`, which Apple's `/bin/bash` 3.2.57 also imports), and `DYLD_*`/`LD_PRELOAD` on a bash that System Integrity Protection does not cover would act before the hook's first line: a full bypass. Step 7's canary, `BASH_ENV` marker and function overrides make it observable on every instance. | **Option A as designed then fails the "no untrusted PR code" requirement.** Section 14 proposes a fallback with its exact trust assumptions. It is **PROPOSED, AWAITING OWNER APPROVAL**, and not enabled. Re-registering a runner is not a clean host; section 14 says what would be one. |
 | GitHub's environment `sub` ends with `:environment:<name>` in both the default and the immutable formats. | The job and the driver refuse the token, and nothing is delivered. |
 | Google accepts the `https:`-prefixed provider name as the token audience when `allowed_audiences` is empty. | The exchange fails at step 5 and nothing is delegated. Set `oidc_allowed_audiences` to that exact value in a reviewed bootstrap change; that is an exact value, not a broadening. |
 
@@ -300,3 +306,106 @@ The owner's proof settles each of these. Every one fails closed if it is wrong.
   - that the job-started hook runs before any step, and before any container initialization, and that a non-zero exit fails the job (section 11, step 7);
   - the OIDC token lifetime and the immutable `sub` format (section 11, steps 3 and 6);
   - that Google accepts the `https:`-prefixed provider name when `allowed_audiences` is empty (section 11, step 5).
+
+## 14. Fallback: fresh runner instances per delivery (PROPOSED, AWAITING OWNER APPROVAL; not enabled)
+
+**Status:** this section is a proposal for the owner's decision (#39, owner decision item 3: "Prepare the fresh-runner fallback procedure and its exact trust assumptions for owner approval before using it"). Nothing in the repository implements or enables it, and no workflow changes for it. It applies only if the owner's proof (section 11, step 7) shows that a job's environment reaches the hook, or if the owner prefers it for another reason. Until the owner approves it in writing on #39, it must not be used.
+
+**What it narrows.** It narrows *when* another job can reach a credential-bearing runner instance: each instance exists for one delivery job only. **It does not make the host clean.** Re-registering a runner gives it a new registration, nothing more (14.3).
+
+### 14.1 Procedure, step by step (one delivery)
+
+1. **Check that nothing else is queued.** In Actions, the owner confirms that no queued or in-progress job anywhere in the repository targets `self-hosted`, `macOS`, `ARM64`, `X64` or `alz-identity-delivery`. If one does, cancel it, or wait; do not continue.
+2. **Dispatch and approve first.** The owner dispatches the delivery workflow on `main` for one path, and approves its environments. Its jobs now wait in the queue, because no runner is online.
+3. **Check the queue again.** It must hold only this run's `deliver` jobs.
+4. **Register one fresh instance per identity.** For each identity, in a new, empty runner directory owned by the delivery user:
+   - get a registration token from Settings, then Actions, then Runners;
+   - run `./config.sh --url https://github.com/realjkg/agent-private-landing-zone --token <registration token> --ephemeral --labels alz-identity-delivery --name alz-identity-<run id>-<n> --unattended`;
+   - install the hook copy, its configuration and the `.env` exactly as in section 10, item 4, with `RUNNER_WORK` pointing at this new directory;
+   - start the instance with `./run.sh` in the foreground.
+
+   Never type the registration token into anything except `config.sh`, and never paste it anywhere else.
+5. **Each instance takes one job and ends.** An `--ephemeral` instance takes one job, then deregisters itself and exits. A path with *k* identities needs *k* instances. Register one more instance for the `cleanup` job after the deliver jobs end.
+6. **Confirm exactly one job per instance.** For each instance:
+   - in the run's job list, the job ran on `alz-identity-<run id>-<n>`, and it is one of this run's `deliver` jobs or its `cleanup` job;
+   - in the instance's `_diag/Runner_*.log`, there is exactly one job assignment, and its job id is that job's;
+   - in Settings, then Actions, then Runners, the instance is gone after the job ends.
+7. **Run the driver, then release.** The person at the terminal runs the driver as in section 3, then releases the delivery.
+8. **Tear down after cleanup.**
+   - Confirm `./alz apply identity-check --phase cleaned` passes.
+   - Run `./config.sh remove --token <removal token>` for any instance that did not deregister itself.
+   - Delete every instance directory: `_work`, `_diag`, `.env`, `.credentials` and `.runner` go with it.
+   - In Settings, confirm that no `alz-identity-*` runner remains registered.
+
+### 14.2 What counts as an incident
+
+Any one of these is an incident:
+
+- an instance took a job that is not this run's `deliver` or `cleanup` job;
+- an instance took more than one job;
+- a job other than this run's ran while any instance was online;
+- `ALZ_IDENTITY_HOOK_ENV_LEAK` or `ALZ_IDENTITY_RUNNER_REFUSED` appears for a job of this run;
+- a token file appears outside `<root>/<path>`;
+- `--phase cleaned` fails;
+- an instance stays registered after its job.
+
+**Response to an incident:**
+
+1. Stop every instance.
+2. Delete the session directory. The tokens expire within minutes, and the driver refuses them. Apply nothing from this delivery, and cancel any step in progress if that is safe; the driver's own recovery rules apply.
+3. Remove every `alz-identity-*` registration.
+4. Record the incident on #39.
+5. Treat the delivery user's account as compromised (14.2.1).
+
+#### 14.2.1 A compromised account
+
+Whatever ran as the delivery user could have changed anything that user can write (14.3). Do not run another delivery as that user until the owner has rebuilt it. Rebuilding the account means one of the clean-host options in 14.4. Re-registering a runner does not.
+
+### 14.3 Exact trust assumptions
+
+The fallback trusts all of the following. None of them is reset by registering a new runner.
+
+**State that persists between deliveries, in the delivery user's account:**
+- the home directory and everything in it;
+- `~/.alz-identity` (the delivery root): its mode, owner and contents;
+- the hook copy and its `act-identity-runner-hook.conf` under `~/.alz-runner-hook/`;
+- the Node binary that the configuration names, and whatever its directory holds;
+- the product checkout the person runs `./alz` from, with its `node_modules` and `.runs/`;
+- the engines (Terraform, the AWS CLI, `az`, `gcloud`) and their caches and plug-in directories;
+- shell startup files, read by the person's terminal: `~/.zshrc`, `~/.zprofile`, `~/.bash_profile`, `~/.bashrc`, `~/.profile`;
+- `~/Library/LaunchAgents` and its loaded jobs, along with login items and `crontab`;
+- binaries on any `PATH` the runner or the terminal uses: `/opt/homebrew/bin`, `~/bin`, `~/.local/bin`, `node_modules/.bin`;
+- the runner software itself: its directory, `config.sh`, `run.sh`, `bin/` and `externals/`;
+- the runner's own `_work`, `_diag`, `.env`, `.path`, `.credentials`, `.credentials_rsaparams` and `.runner` files.
+
+**What a previous malicious job could have left there.** It runs as the delivery user, so it can write all of that state. In particular, it could leave:
+- a LaunchAgent that runs at login or on a timer and reads `<root>` while a later delivery holds tokens;
+- an edited shell rc file that changes `PATH` or adds a function, so the person's next `./alz` runs a different binary;
+- a binary placed earlier on `PATH`, such as a fake `node`, `terraform` or `aws`;
+- an edited hook, configuration or Node binary (the delivery job's SHA-256 check catches an edited hook, but not an edited Node or engine);
+- a changed `.env` or `.path` in a runner directory that is reused, or a changed runner binary;
+- leftover files in `_work` or `_diag`.
+
+**What re-registering a runner resets:** only the registration. That is the runner's name and id on GitHub, its credentials (`.credentials`, `.runner`) when the directory is new, and the single-job limit of `--ephemeral`. A new, empty runner directory also drops that directory's `_work`, `_diag` and `.env`.
+
+**What re-registering does not reset:** everything else in the list above. The account, its home directory, its shell files, its LaunchAgents, its `PATH`, the Node and engine binaries, the delivery root, the hook copy and the product checkout all persist.
+
+**Re-registering a runner is NOT a clean host.**
+
+The fallback also trusts:
+
+- **The machine and its administrators.** macOS itself, the owner's administrator account and root.
+- **GitHub's control plane.** Its job assignment, its OIDC issuer, and the runner software release the owner installed.
+- **The delivery user.** That no software other than the runner and the person's terminal runs as it (section 10, item 2).
+
+### 14.4 If a clean host is required: options for the owner (no choice is made here)
+
+Each option gives every delivery a host that no earlier job could have changed. The owner chooses; none is implemented.
+
+| Option | What it resets | Cost and limits |
+|---|---|---|
+| **A fresh macOS user per delivery.** The owner creates a new standard user, installs Node, the engines, the product checkout, the hook and the runner for it from verified sources, runs one delivery, then deletes the user and its home directory. | The user's home directory, shell files, LaunchAgents, `PATH` additions, runner directories and the delivery root. | Machine-wide state persists: `/opt/homebrew`, `/usr/local`, system LaunchDaemons, and anything an administrator installed. The setup is manual for each delivery, and the binaries must be re-verified (checksums) each time. |
+| **A disposable VM per delivery.** A macOS VM (for example Apple Virtualization framework or UTM) is started from a reviewed, read-only base image, used for one delivery, then discarded. | Everything inside the guest. | It needs a reviewed base image and its update process. The person runs the driver inside the guest, and the host stays trusted. |
+| **A dedicated machine wiped between deliveries.** A separate Mac is restored from a known image before each delivery. | The whole machine. | It needs the most hardware and time. |
+
+Whichever option the owner chooses, the rest of this design is unchanged: the hook, the delivery job's self-check, the driver's checks, the owner's proof (section 11, run again on the new host) and the cleanup checks. ACT stays DISABLED until the owner's own reviewed contract authorizes it.
