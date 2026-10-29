@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -90,6 +91,28 @@ test("both jobs run only on the dedicated runner label, only for a dispatch on m
   for (const other of others) assert.doesNotMatch(readFileSync(join(".github/workflows", other), "utf8"), /alz-identity-delivery/, other);
 });
 
+test("no other workflow can land on a delivery runner by its default labels: every self-hosted job names its own dedicated label and an operating system the MBP is not (review N6)", () => {
+  // A delivery runner carries self-hosted, macOS, ARM64 and alz-identity-delivery. A job matches it when every label it names is
+  // one of those. The runner hook refuses such a job anyway; this keeps the repository from offering one.
+  const delivery = new Set(["self-hosted", "macos", "arm64", "x64", "alz-identity-delivery"]);
+  for (const file of readdirSync(".github/workflows").filter((name) => /\.ya?ml$/.test(name))) {
+    const text = readFileSync(join(".github/workflows", file), "utf8");
+    for (const match of text.matchAll(/^\s*runs-on:\s*(.+)$/gm)) {
+      const value = match[1].trim();
+      if (!/self-hosted/.test(value)) continue;
+      const labels = value.replace(/^\[|\]$/g, "").split(",").map((label) => label.trim().toLowerCase());
+      const landsOnDelivery = labels.every((label) => delivery.has(label));
+      assert.equal(landsOnDelivery, file === "act-identity-delivery.yml", file + ": runs-on " + value);
+    }
+  }
+});
+
+test("the delivery job pins the reviewed runner hook by its SHA-256", () => {
+  const pinned = /ALZ_RUNNER_HOOK_SHA256: "([0-9a-f]{64})"/.exec(workflow)?.[1];
+  assert.equal(pinned, createHash("sha256").update(readFileSync("scripts/act-identity-runner-hook.sh")).digest("hex"),
+    "update ALZ_RUNNER_HOOK_SHA256 in the workflow whenever the reviewed hook changes");
+});
+
 const expression = (body: string, key: string): string => {
   const line = body.split("\n").find((l) => l.trimStart().startsWith(key + ":"));
   assert.ok(line, key);
@@ -161,8 +184,25 @@ writeFileSync(cleanupFile, stepScript("Remove the session directory and report l
 let rootCounter = 0;
 const newRoot = (): string => { const root = join(scratch, "root-" + ++rootCounter); mkdirSync(root, { mode: 0o700 }); return root; };
 
+const HOOK_SHA256 = /ALZ_RUNNER_HOOK_SHA256: "([0-9a-f]{64})"/.exec(workflow)![1];
+let instanceCounter = 0;
+/** One runner instance's installed hook, its owner-only configuration and its work directory, as the owner sets them up. */
+function runnerInstance(conf?: (work: string) => string): { hook: string; eventPath: string } {
+  const base = join(scratch, "instance-" + ++instanceCounter);
+  const hookDir = join(base, "hook");
+  const work = join(base, "runner", "_work");
+  mkdirSync(hookDir, { recursive: true, mode: 0o700 });
+  const hook = join(hookDir, "act-identity-runner-hook.sh");
+  copyFileSync("scripts/act-identity-runner-hook.sh", hook);
+  chmodSync(hook, 0o700);
+  writeFileSync(join(hookDir, "act-identity-runner-hook.conf"), conf ? conf(work) : "REPOSITORY=" + REPO + "\nRUNNER_WORK=" + work + "\nNODE=" + process.execPath + "\n", { mode: 0o600 });
+  return { hook, eventPath: work + "/_temp/_github_workflow/event.json" };
+}
+
 function jobEnv(path: DeliveryPathId, identity: ExecutionIdentity, root: string, service: Service, over: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const instance = runnerInstance();
   return {
+    ACTIONS_RUNNER_HOOK_JOB_STARTED: instance.hook, GITHUB_EVENT_PATH: instance.eventPath, ALZ_RUNNER_HOOK_SHA256: HOOK_SHA256,
     PATH: dirname(process.execPath) + ":/usr/bin:/bin", HOME: scratch,
     ALZ_DELIVERY_PATH: path, ALZ_DELIVERY_IDENTITY: identity, ALZ_DELIVERY_ENVIRONMENT: deliveryEnvironment(path, identity), ALZ_DELIVERY_REPOSITORY: REPO,
     ALZ_DELIVERY_RUN_ID: RUN_ID, ALZ_DELIVERY_HOLD_MINUTES: "15", ALZ_DELIVERY_REFRESH_SECONDS: "5", ALZ_DELIVERY_GCP_AUDIENCE: GCP_CONFIG_AUDIENCE,
@@ -278,6 +318,20 @@ test("the job refuses a shared or open root, a leftover token, a leftover RELEAS
     await refusedWith(jobEnv("aws-terraform", "APPLY", newRoot(), service, { ACTIONS_ID_TOKEN_REQUEST_TOKEN: "" }), /cannot request an OIDC token/);
     await refusedWith(jobEnv("aws-terraform", "APPLY", newRoot(), service, { ALZ_DELIVERY_HOLD_MINUTES: "600" }), /hold is not/);
     await refusedWith(jobEnv("gcp-terraform", "APPLY", newRoot(), service, { ALZ_DELIVERY_GCP_AUDIENCE: "" }), /ALZ_GCP_WIF_AUDIENCE/);
+    // A runner instance without the reviewed hook, or with another instance's or repository's configuration, mints nothing.
+    await refusedWith(jobEnv("aws-terraform", "APPLY", newRoot(), service, { ACTIONS_RUNNER_HOOK_JOB_STARTED: "" }), /names no job-started hook/);
+    await refusedWith(jobEnv("aws-terraform", "APPLY", newRoot(), service, { ACTIONS_RUNNER_HOOK_JOB_STARTED: join(scratch, "absent.sh") }), /job-started hook is missing/);
+    const tampered = runnerInstance();
+    writeFileSync(tampered.hook, "#!/bin/bash\nexit 0\n", { mode: 0o700 });
+    await refusedWith(jobEnv("aws-terraform", "APPLY", newRoot(), service, { ACTIONS_RUNNER_HOOK_JOB_STARTED: tampered.hook }), /not the reviewed script/);
+    const writable = runnerInstance();
+    chmodSync(writable.hook, 0o777);
+    await refusedWith(jobEnv("aws-terraform", "APPLY", newRoot(), service, { ACTIONS_RUNNER_HOOK_JOB_STARTED: writable.hook }), /hook is not an owner-only regular file/);
+    await refusedWith(jobEnv("aws-terraform", "APPLY", newRoot(), service, { ALZ_RUNNER_HOOK_SHA256: "0".repeat(64) }), /not the reviewed script/);
+    const otherRepo = runnerInstance((work) => "REPOSITORY=someone/else\nRUNNER_WORK=" + work + "\nNODE=" + process.execPath + "\n");
+    await refusedWith(jobEnv("aws-terraform", "APPLY", newRoot(), service, { ACTIONS_RUNNER_HOOK_JOB_STARTED: otherRepo.hook, GITHUB_EVENT_PATH: otherRepo.eventPath }), /names another repository/);
+    const otherInstance = runnerInstance();
+    await refusedWith(jobEnv("aws-terraform", "APPLY", newRoot(), service, { ACTIONS_RUNNER_HOOK_JOB_STARTED: otherInstance.hook }), /not this runner instance's/);
     assert.equal(service.requests.length, 0, "no refused job asked for a token");
   } finally { await service.close(); }
 });
@@ -289,13 +343,14 @@ test("an interrupted job deletes its token; a killed one is cleaned by the alway
     const session = join(root, "aws-terraform");
     for (const signal of ["SIGTERM", "SIGINT"] as const) {
       const job = hold(jobEnv("aws-terraform", "STATE", root, service));
-      await until(() => existsSync(join(session, "STATE.jwt")), "delivered");
+      await until(() => existsSync(join(session, "STATE.json")), "delivered: the token, then its metadata");
       job.child.kill(signal);
       assert.equal(await job.exit, signal === "SIGTERM" ? 143 : 130);
       assert.deepEqual(readdirSync(session), [], signal);
     }
     const killed = hold(jobEnv("aws-terraform", "STATE_WRITE", root, service));
-    await until(() => existsSync(join(session, "STATE_WRITE.jwt")), "delivered");
+    // Wait for the whole first delivery (token, then metadata): a kill between the two leaves a partial write, covered below.
+    await until(() => existsSync(join(session, "STATE_WRITE.json")), "delivered: the token, then its metadata");
     killed.child.kill("SIGKILL");
     await killed.exit;
     assert.deepEqual(readdirSync(session).sort(), ["STATE_WRITE.json", "STATE_WRITE.jwt"], "a killed process cannot clean up");

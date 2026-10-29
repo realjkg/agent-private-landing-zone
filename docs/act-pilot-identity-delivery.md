@@ -46,7 +46,7 @@ That makes 17 environments. They are all DEV. No QA or PROD environment exists f
 1. **The owner dispatches.** In GitHub, the owner runs "ACT identity delivery (DEV pilot)" on `main`, choosing a path and a hold of 15, 30, 45 or 60 minutes. Only `workflow_dispatch` starts it.
 2. **The owner approves.** Each identity's job waits on its environment's required reviewer (the owner) and runs only after approval. A job that is rejected cancels the rest (`fail-fast`), and cleanup still runs.
 3. **The runner admits the job.** The runner's job-started hook (section 8) refuses anything except this workflow's `deliver` and `cleanup` jobs, dispatched on `main` in the owner's repository. It does this before any step runs.
-4. **The job mints a token.** With `id-token: write` and nothing else, each job asks the runner's token endpoint (`ACTIONS_ID_TOKEN_REQUEST_URL`) for one token with its cloud's audience. The request token travels in a header, never in argv or a log. Before writing anything, the job decodes the claims (without trusting them) and requires:
+4. **The job mints a token.** First, the job checks that its runner instance runs the reviewed hook, by SHA-256, configured for this repository and this instance (section 8.1). Then, with `id-token: write` and nothing else, each job asks the runner's token endpoint (`ACTIONS_ID_TOKEN_REQUEST_URL`) for one token with its cloud's audience. The request token travels in a header, never in argv or a log. Before writing anything, the job decodes the claims (without trusting them) and requires:
    - issuer GitHub Actions;
    - the exact audience;
    - a `sub` ending `:environment:<its environment>`;
@@ -54,7 +54,7 @@ That makes 17 environments. They are all DEV. No QA or PROD environment exists f
    - at least 60 seconds of validity left.
 5. **The job writes the token privately.** The token goes to `<root>/<path>/<IDENTITY>.jwt`, with a metadata file `<IDENTITY>.json` beside it (no token in it). `<root>` is the owner's `ALZ_IDENTITY_DELIVERY_ROOT`. Each write goes to a new 0600 file (`O_EXCL|O_NOFOLLOW`), is synced, then renamed into place. The job refuses to start if a token, metadata file or `RELEASE` marker from an earlier delivery is still there.
 6. **The job refreshes the token.** Every 60 seconds the job mints a new token and replaces the file atomically, so the file always holds a token with minutes of validity left. A refresh that fails deletes the token rather than leave it to go stale.
-7. **The person runs the driver.** In their own terminal on the same host, the person points the identity variables at the session files and runs `./alz apply preflight`, `seal`, `approve`, `apply`, `observe` and the rest. The driver checks the files (section 5) at every step, and every phrase, approval, signature, ledger entry and kill switch applies unchanged. The job never runs an engine, never exchanges a token for a cloud credential, and holds nothing but its GitHub OIDC tokens.
+7. **The person runs the driver.** In their own terminal on the same host, the person points the identity variables at the session files and runs `./alz apply preflight`, `seal`, `approve`, `apply`, `observe` and the rest. Every step that uses a delivered identity checks the files (section 5), and every phrase, approval, signature, ledger entry and kill switch applies unchanged. The job never runs an engine, never exchanges a token for a cloud credential, and holds nothing but its GitHub OIDC tokens.
 8. **The person releases the delivery.** The person runs `touch <root>/<path>/RELEASE`, or cancels the run, or lets the hold end. Each job then deletes its own files and exits.
 9. **Cleanup runs.** An always-run step deletes the job's own files even after a failure or cancellation. The `cleanup` job then removes the `RELEASE` marker and the session directory. If the directory holds anything the workflow did not write, the job names it, leaves it in place, and fails.
 
@@ -79,7 +79,19 @@ The owner copies the exact observed subject of each identity from `./alz apply i
 
 ## 5. What the driver checks on delivered files
 
-A token file is *delivered* when it is named `<IDENTITY>.jwt` and sits in a directory named for the path, or beside its metadata file. A delivered layout whose files are gone is refused, not passed on. Files that are not laid out this way are left to the existing provider checks, unchanged. When any identity of the path is delivered, `checkDeliveredTokens` requires all of the following at seal, qualify, apply and cleanup, and refuses with `IDENTITY_NOT_CONFIGURED` or `IDENTITY_COLLAPSED`. Messages never contain a token.
+A token file is *delivered* when it is named `<IDENTITY>.jwt` and sits in a directory named for the path, or beside its metadata file. A delivered layout whose files are gone is refused, not passed on. Files that are not laid out this way are left to the existing provider checks, unchanged. When any identity of the path is delivered, `checkDeliveredTokens` requires all of the following, and refuses with `IDENTITY_NOT_CONFIGURED` or `IDENTITY_COLLAPSED`. Messages never contain a token.
+
+**Where the checks run.** Every step that uses a delivered identity runs them:
+
+- `seal`, `qualify`, `apply` and `cleanup`, through `checkEngineAndIdentities` in the driver;
+- `preflight`, as part of its identities item;
+- `observe` and `verify-cleanup`, which read the cloud as DISCOVERY.
+
+Steps that read no token do not run them, so a released delivery does not block them:
+
+- `approve`, `status` and `report` read only signed records and evidence;
+- `propose-cleanup` builds from the run's records and reads only role ARNs, never a token file;
+- `prepare` and `contract-check` read no identity.
 
 - **One run.** Every identity of the path is delivered, by one run, into one session directory `<root>/<path>`. A partial or mixed delivery is refused.
 - **Private.**
@@ -124,18 +136,40 @@ A token file is *delivered* when it is named `<IDENTITY>.jwt` and sits in a dire
 
 The repository belongs to a user account and is public. **Failed assumption:** the coordinator's analysis suggested a repository runner group restricted to this workflow. Runner groups, and their "selected workflows" restriction, exist only for organizations and enterprises, not for a user-owned repository. Option A meets the requirement with the controls below instead. The first is structural and sits on the runner host, where pull request code cannot change it.
 
-1. **The runner's job-started hook** (`scripts/act-identity-runner-hook.sh`). The owner installs a copy outside any checkout and sets `ACTIONS_RUNNER_HOOK_JOB_STARTED` in the runner's `.env`. It runs before any step of every job the runner takes, and it fails the job unless all of these hold:
-   - the repository is the owner's;
+1. **The runner's job-started hook** (`scripts/act-identity-runner-hook.sh`). For each runner instance, the owner installs a copy outside the runner directory and every checkout, with an owner-only file `act-identity-runner-hook.conf` beside it. The instance's `.env` names the copy as `ACTIONS_RUNNER_HOOK_JOB_STARTED`. The hook runs before any step of every job the instance takes. It fails the job unless all of these hold:
+   - the job is `deliver` or `cleanup`;
    - the event is `workflow_dispatch`;
    - the ref is `refs/heads/main`;
-   - `GITHUB_WORKFLOW_REF` is this workflow on main;
-   - the job is `deliver` or `cleanup`;
-   - the event payload says the same.
+   - the workflow is this one on main;
+   - the repository is the one the configuration names.
 
-   A pull request that names the runner's label is refused before its first step, including a fork, a branch push, `pull_request_target` or `issue_comment`.
+   A pull request that names the runner's labels is refused before its first step, including a fork, a branch push, `pull_request_target` or `issue_comment`.
+
+   **Where each value comes from.** No decision rests on a value a job could set alone:
+
+   | Value | Source | Can a job set it? |
+   |---|---|---|
+   | The allowed repository, the instance's work directory, the Node binary | The owner-only `act-identity-runner-hook.conf` beside the hook (located from the hook's own path, `BASH_SOURCE`) | No |
+   | The ref, the workflow file and the repository of the run | The event payload the runner wrote at `<RUNNER_WORK>/_temp/_github_workflow/event.json`, a fixed path from the configuration. `GITHUB_EVENT_PATH` is ignored, except that it must equal that path when set. | No; the hook runs before any step |
+   | That the payload is a dispatch | The payload's shape: a string `workflow`, an object `inputs` and a `ref` | No |
+   | The job id, and agreeing copies of the event, ref, workflow ref and repository | `GITHUB_JOB`, `GITHUB_EVENT_NAME`, `GITHUB_REF`, `GITHUB_WORKFLOW_REF`, `GITHUB_REPOSITORY` | Possibly, if a job's `env:` reaches the hook. They can only add refusals: the payload must agree. The job id alone comes from here, and every admitted job is one of this reviewed workflow's two. |
+
+   **Hardening.** The hook:
+   - unsets `NODE_OPTIONS`, `NODE_PATH`, `BASH_ENV`, `ENV` and the like, and pins `PATH` and `IFS`;
+   - judges the payload with the configured absolute Node binary under `env -i`, so no job-provided variable reaches it;
+   - refuses on anything unexpected: a missing, open, repeated or unknown configuration line, a symbolic link, or an unreadable payload.
+
+   **Limit:** bash reads `BASH_ENV` before a script's first line, so if a job's environment did reach the hook, a job-chosen `BASH_ENV` file could run first. The owner's proof (section 11, step 7) shows whether job environment reaches the hook.
+
+   **The delivery job checks the hook.** Before minting anything, the delivery job refuses unless all of these hold:
+   - `ACTIONS_RUNNER_HOOK_JOB_STARTED` names an owner-only regular file whose SHA-256 equals the reviewed script's hash, which is pinned in the workflow as `ALZ_RUNNER_HOOK_SHA256` (a test keeps the two equal);
+   - the configuration beside it names this repository;
+   - the configuration names this instance's own work directory: `GITHUB_EVENT_PATH` must be under it.
+
+   A hook-less or misconfigured instance therefore never receives a token. It could still run another job, which is why section 11, step 7 runs on every instance.
 2. **The workflow's triggers.** It has only `workflow_dispatch`. Both jobs also check `github.event_name` and `github.ref`. A test asserts that no other trigger exists.
 3. **Each environment's deployment branch policy** is `main` only. A dispatch from another branch cannot enter an environment, so it gets no environment subject. The required reviewer approves each run.
-4. **A dedicated runner label** (`alz-identity-delivery`). No other workflow names it, which a test checks. It is used only by this workflow.
+4. **A dedicated runner label** (`alz-identity-delivery`). No other workflow names it, and a test checks that no workflow in the repository has a self-hosted job whose labels all match a delivery runner (`self-hosted`, `macOS`, `ARM64`, `X64` or this label). This is weaker than it sounds (review N6): a workflow on a branch can name `runs-on: self-hosted` and match these runners. The hook (8.1) is the control; the label only keeps the repository's own workflows off these runners.
 5. **No checkout and no action.** The jobs run only the reviewed scripts in the workflow file, so no third-party or repository code runs on the runner, and there is nothing to pin. A test asserts that any `uses:` line would be pinned to a commit SHA.
 6. **The runner is online only for the delivery window.** The owner starts it by hand, not as a login service, and stops it after cleanup.
 7. **Fork pull request workflows require approval** for all outside collaborators.
@@ -144,7 +178,8 @@ The repository belongs to a user account and is public. **Failed assumption:** t
 
 | Threat | Control | Residual risk |
 |---|---|---|
-| A fork or branch PR runs code on the runner by naming its label | The hook (8.1) refuses the job before any step. Fork approval (8.7). The runner is offline outside the window (8.6). | The hook is a reviewed copy on the host; its behavior is proven by the owner's negative test (section 11, step 7). |
+| A fork or branch PR runs code on the runner by naming its label, or just `self-hosted` | The hook (8.1) refuses the job before any step, deciding from its owner-only configuration and the runner's payload. Fork approval (8.7). The runner is offline outside the window (8.6). | One instance without the hook would run anything. The delivery job refuses to deliver on such an instance, but it cannot stop another job there. The owner's negative test runs on every instance (section 11, step 7). |
+| A job's own `env:` steers the hook (`NODE_OPTIONS`, `GITHUB_*`) | The hook ignores job-settable values for every decision, runs Node under `env -i` with an absolute binary, and pins `PATH`. A test reproduces the reviewer's `NODE_OPTIONS` probe and shows it now refuses. | `BASH_ENV` runs before any script line. Section 11, step 7 shows whether job environment reaches the hook at all. |
 | A modified workflow on a branch is dispatched to mint an environment token | The environment's branch policy is `main` only. The required reviewer. The hook refuses non-main refs. The driver refuses tokens whose `ref` or `workflow_ref` is not main. | Anyone who can merge to `main` can change the workflow. Main's review and the pending `release-freeze-main` ruleset govern that. |
 | A token for identity A is used as identity B | Each cloud trusts exactly one subject per principal. The driver binds file name, metadata, `sub`, `environment` and audience per identity, and refuses the same token, subject or `jti` twice. | None known. |
 | A stale or expired token is used | The 60-second validity floor, a heartbeat within 180 seconds, and the hold window. Nothing is extended. | A step that runs longer than its cloud session (one hour) fails rather than continue on an old token. |
@@ -166,10 +201,15 @@ Agents cannot apply any of these, and none has been applied. Each item is the ow
    - Use four runner instances, one directory each. Each delivery job holds a runner for the whole window, so a four-identity path needs four. Name them `alz-identity-1` to `alz-identity-4`.
    - Give each instance exactly the custom label `alz-identity-delivery`, in addition to the defaults.
    - Do **not** install them as a launch service. Start them with `./run.sh` for a delivery and stop them after cleanup.
-4. **Install the hook.** In each runner directory's `.env`, set these three variables, then restart the runner:
-   - `ACTIONS_RUNNER_HOOK_JOB_STARTED=/Users/alzpilot/.alz-runner-hook/act-identity-runner-hook.sh` (a reviewed copy of `scripts/act-identity-runner-hook.sh`, owned by that user, mode 0700, outside every checkout);
-   - `ALZ_IDENTITY_RUNNER_REPOSITORY=realjkg/agent-private-landing-zone`;
-   - `ALZ_IDENTITY_DELIVERY_ROOT=/Users/alzpilot/.alz-identity`.
+4. **Install the hook, once per instance.** For instance `N`:
+   - Copy the reviewed `scripts/act-identity-runner-hook.sh` to `/Users/alzpilot/.alz-runner-hook/N/act-identity-runner-hook.sh`. The copy is owned by that user, mode 0700, and sits outside the runner directory and every checkout. Its SHA-256 must equal `ALZ_RUNNER_HOOK_SHA256` in the workflow.
+   - Beside it, write `act-identity-runner-hook.conf`, mode 0600, with exactly three lines:
+     - `REPOSITORY=realjkg/agent-private-landing-zone`
+     - `RUNNER_WORK=<that instance's _work directory, absolute>`
+     - `NODE=<absolute path of Node 26>`
+   - In that instance's `.env`, set two variables, then restart the instance:
+     - `ACTIONS_RUNNER_HOOK_JOB_STARTED=<the copy's path>`
+     - `ALZ_IDENTITY_DELIVERY_ROOT=/Users/alzpilot/.alz-identity`
 5. **Create the environments.** Create the 17 environments of section 2, only for the paths about to be proven. For each:
    - **Required reviewers:** the owner. Leave "Prevent self-review" off, because the owner is also the person who dispatches.
    - **Deployment branches and tags:** selected branches, `main` only. No tags.
@@ -205,7 +245,16 @@ Labels:
    Exit 0 means no token, metadata or session directory remains.
 5. **Cloud trust (LIVE, after the bootstrap uses the observed subjects).** Deliver again, then run `./alz apply preflight --environment DEV` and the path's own read-only qualification (`./alz apply qualify`). That gives one independent STS assumption, or Entra or Google STS sign-in, per identity. Corroborate with CloudTrail or the sign-in logs. Record only non-secret identifiers. This is the evidence the coordinator's analysis lists (6467511299).
 6. **Expiry (LIVE).** In one delivery, record two consecutive `identity-check` runs at least two minutes apart: the fingerprints change and `secondsRemaining` stays above 60. After the release, run `./alz apply qualify` (or `seal`) again with the same variables and confirm it is refused with `IDENTITY_NOT_CONFIGURED` before anything runs, because the delivered files are gone.
-7. **Negative test of the hook (HOST_LOCAL).** From a throwaway branch that is never merged, dispatch any workflow whose job targets `runs-on: [self-hosted, alz-identity-delivery]`. The job must fail at "Set up runner" with `ALZ_IDENTITY_RUNNER_REFUSED`, before any step. Delete the branch.
+7. **Negative test of the hook, on every instance (HOST_LOCAL).** Start **one** instance at a time, so the job can only land there, and record that runner's name from the job log.
+   - **Setup.** On a throwaway branch that is never merged, add a probe workflow with two jobs:
+     - one with `runs-on: [self-hosted, alz-identity-delivery]`;
+     - one with only `runs-on: self-hosted`.
+   - **Overrides.** Give both jobs a job-level `env:` that sets `GITHUB_EVENT_NAME: workflow_dispatch`, `GITHUB_REF: refs/heads/main`, `GITHUB_WORKFLOW_REF: realjkg/agent-private-landing-zone/.github/workflows/act-identity-delivery.yml@refs/heads/main`, `GITHUB_EVENT_PATH: /tmp/forged.json`, `NODE_OPTIONS: --require=/tmp/forged.js` and `BASH_ENV: /tmp/forged.sh`.
+   - **Marker.** Each job's only step writes a marker file under `/tmp`.
+   - **Run.** Dispatch the probe from that branch.
+   - **Pass.** Both jobs must fail at "Set up runner" with `ALZ_IDENTITY_RUNNER_REFUSED`, and no marker may appear.
+
+   Repeat for each of the four instances, then delete the branch. Record each runner's name and the refusal line. If any instance runs a step, or if the forged values change the hook's verdict, stop: that runner must not be used.
 
 D4 is complete when the owner records steps 3 to 7 on #39 and accepts them.
 
@@ -217,6 +266,17 @@ The owner's proof settles each of these. Every one fails closed if it is wrong.
 |---|---|
 | A GitHub OIDC token lives for a few minutes, so a 60-second refresh keeps it fresh. GitHub's documented example shows five minutes. | A shorter life makes the job refuse to write the token (less than 60 seconds left), or makes the driver refuse it. Nothing runs on an expired token. |
 | The job's request token stays valid for the whole job, so re-minting keeps working. | The refresh fails, the job deletes its token and exits 1, and the driver refuses the stale delivery. |
-| The job-started hook runs before any step and fails the job on a non-zero exit, with GitHub's default variables and event payload. Step 7 of the proof tests this. | If it does not, the runner must not be used. The smallest fallback is to keep the runner offline except while the owner's own dispatch is queued, and to treat any other job on it as an incident. |
+| The job-started hook runs before any step and fails the job on a non-zero exit, the runner has written the event payload at `<RUNNER_WORK>/_temp/_github_workflow/event.json` by then, and a job's `env:` does not reach the hook. Step 7 of the proof tests this on every instance. | If it does not, the runner must not be used. The smallest fallback is to keep the runner offline except while the owner's own dispatch is queued, and to treat any other job on it as an incident. |
 | GitHub's environment `sub` ends with `:environment:<name>` in both the default and the immutable formats. | The job and the driver refuse the token, and nothing is delivered. |
 | Google accepts the `https:`-prefixed provider name as the token audience when `allowed_audiences` is empty. | The exchange fails at step 5 and nothing is delegated. Set `oidc_allowed_audiences` to that exact value in a reviewed bootstrap change; that is an exact value, not a broadening. |
+
+## 13. Stated limits (review 6484800474)
+
+- **N1. The driver checks are a guard against mistakes, not a security control.** They apply by file layout. A token copied out of `<root>/<path>/<IDENTITY>.jwt` without its metadata is not a delivered file, and goes to the provider checks without the freshness and claim checks. That is inside the same-user trust boundary. The cloud still enforces expiry and trust.
+- **N2. Claims are decoded without verifying the signature.** An `alg:none` token, or one with duplicate JSON keys (the last wins), passes the decoding. Every decision the driver takes on these claims can only refuse; none widens authority. The cloud's signature check is the control.
+- **N5. Check and use are not atomic.** After `lstat` judges a file, it is opened by path without `O_NOFOLLOW`, so a symbolic link swapped in between could be read. Only the same user can do that, which is inside the trust boundary.
+- **N7. Facts the owner verifies.** None could be checked offline. The behavior if each is wrong is in section 12. The owner verifies:
+  - that a deployment branch policy of `main` only stops a job from another branch from getting an environment subject (the owner sees a branch dispatch wait or fail at its environment);
+  - that the job-started hook runs before any step, and before any container initialization, and that a non-zero exit fails the job (section 11, step 7);
+  - the OIDC token lifetime and the immutable `sub` format (section 11, steps 3 and 6);
+  - that Google accepts the `https:`-prefixed provider name when `allowed_audiences` is empty (section 11, step 5).

@@ -32,7 +32,7 @@ import { qualifyApply, runApply, runCleanup, sealPreview, type ApplyDeps, type S
 import { RECOVERY_FILE_NAMES, engineOf, engineSpec, type EngineNotices } from "../apply/engine-spec.js";
 import { assertApplyEvidence } from "../apply/evidence.js";
 import { attestedClientId, checkApplyIdentities } from "../apply/identities.js";
-import { DELIVERY_PATHS, identityDeliveryEvidence, isDeliveryPath, type DeliveryPathId } from "../apply/token-delivery.js";
+import { DELIVERY_PATHS, checkDeliveredTokens, deliveryPathOf, identityDeliveryEvidence, isDeliveryPath, type DeliveryPathId } from "../apply/token-delivery.js";
 import { holdsReservation } from "../apply/ledger.js";
 import { accountFieldsOf, providerSpec, specOf } from "../apply/provider.js";
 import { engineBinaryChange, loadSealedPlan, reviewBundleOf, verifyReviewBundle, type LoadedPlan } from "../apply/seal.js";
@@ -573,10 +573,26 @@ const observeDeps = (deps: ApplyCliDeps) => ({
   toolDirs: deps.toolDirs, scratchParent: deps.scratchParent, now: deps.now, aws: deps.observeAws, arm: deps.observeArm,
 });
 
+/**
+ * Token files the identity delivery runner wrote (docs/act-pilot-identity-delivery.md), judged as seal and apply judge them, for the
+ * read-only commands that read the cloud as DISCOVERY (observe, verify-cleanup). A contract that does not load is left to the
+ * command's own refusal. `propose-cleanup` reads no token (it builds from the run's records), so it does not judge them.
+ */
+function deliveryRefusal(deps: ApplyCliDeps): { ok: false; code: "IDENTITY_NOT_CONFIGURED" | "IDENTITY_COLLAPSED"; message: string } | undefined {
+  const contract = contractFor(deps);
+  if ("reason" in contract) return undefined;
+  const path = deliveryPathOf(specOf(contract).id, engineOf(contract).id);
+  if (!path) return undefined;
+  const checked = checkDeliveredTokens({ env: deps.env ?? process.env, path, now: (deps.now ?? (() => new Date()))(), repoRoot: repoPaths().root });
+  return checked.ok ? undefined : { ok: false, code: checked.code, message: checked.message };
+}
+
 /** Read-only: the run's identifiers against the cloud, as the DISCOVERY identity sees them. Repeating it observes again; it never applies again. */
 const observeCommand: Command = async (flags, _terminal, deps, out) => {
   const opened = await openSealed(flags.sealed[0]);
   if (!("sealed" in opened)) return blocked(opened, out);
+  const undelivered = deliveryRefusal(deps);
+  if (undelivered) return blocked(undelivered, out);
   const result = await observeRun(opened.sealed.artifactSha256, observeDeps(deps));
   if (!result.ok) return blocked(result, out);
   const { record } = result;
@@ -830,6 +846,8 @@ const removeWorkspaceCommand: Command = async (flags, terminal, deps, out) => {
 const verifyCleanupCommand: Command = async (flags, _terminal, deps, out) => {
   const opened = verifyCleanupProposal(readInput(flags.proposal[0], "--proposal"));
   if (!opened.ok) return blocked(opened, out);
+  const undelivered = deliveryRefusal(deps);
+  if (undelivered) return blocked(undelivered, out);
   const result = await verifyProposalLeftovers(opened.proposal, observeDeps(deps));
   if (!result.ok) return blocked(result, out);
   const { record } = result;

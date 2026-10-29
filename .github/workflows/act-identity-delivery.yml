@@ -69,6 +69,9 @@ jobs:
       ALZ_DELIVERY_HOLD_MINUTES: ${{ inputs.hold_minutes }}
       ALZ_DELIVERY_REFRESH_SECONDS: "60"
       ALZ_DELIVERY_GCP_AUDIENCE: ${{ vars.ALZ_GCP_WIF_AUDIENCE }}
+      # SHA-256 of scripts/act-identity-runner-hook.sh as reviewed. A runner instance whose job-started hook is not this exact
+      # file is refused before any token is minted (test/act-identity-delivery-workflow.test.ts keeps the two equal).
+      ALZ_RUNNER_HOOK_SHA256: "c34288aafc59bc0343571534df7c1827275b3251c8fb7a62c07c9b357551d1e8"
     steps:
       - name: Hold a refreshed identity token
         shell: node {0}
@@ -78,6 +81,7 @@ jobs:
           // deletes it. Prints names and times only, never a token. Exit 0 released or hold ended, 1 refused or failed.
           const fs = require("node:fs");
           const path = require("node:path");
+          const crypto = require("node:crypto");
           const PATHS = {
             "aws-terraform": { scope: "aws-terraform", identities: ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"], audience: "sts.amazonaws.com" },
             "aws-cdk": { scope: "aws-cdk", identities: ["DISCOVERY", "CHANGESET", "APPLY"], audience: "sts.amazonaws.com" },
@@ -143,6 +147,24 @@ jobs:
             const root = e.ALZ_IDENTITY_DELIVERY_ROOT ?? "";
             if (!PLAIN.test(root)) refuse("ALZ_IDENTITY_DELIVERY_ROOT is not set to an absolute path in the runner's .env");
             privateDir(root, "ALZ_IDENTITY_DELIVERY_ROOT");
+            // Defense in depth: this instance must run the reviewed job-started hook, configured for this repository and this
+            // instance's own work directory, or no token is minted here.
+            const hook = e.ACTIONS_RUNNER_HOOK_JOB_STARTED ?? "";
+            if (!PLAIN.test(hook)) refuse("this runner names no job-started hook (ACTIONS_RUNNER_HOOK_JOB_STARTED)");
+            const ownerFile = (file, what, mask) => {
+              let stat;
+              try { stat = fs.lstatSync(file); } catch { refuse(what + " is missing"); }
+              if (stat.isSymbolicLink() || !stat.isFile() || stat.uid !== uid || (stat.mode & mask) !== 0) refuse(what + " is not an owner-only regular file");
+            };
+            ownerFile(hook, "the job-started hook", 0o022);
+            if (!/^[0-9a-f]{64}$/.test(e.ALZ_RUNNER_HOOK_SHA256 ?? "") || crypto.createHash("sha256").update(fs.readFileSync(hook)).digest("hex") !== e.ALZ_RUNNER_HOOK_SHA256) {
+              refuse("this runner's job-started hook is not the reviewed script");
+            }
+            const conf = path.join(path.dirname(hook), "act-identity-runner-hook.conf");
+            ownerFile(conf, "the hook configuration", 0o077);
+            const settings = Object.fromEntries(fs.readFileSync(conf, "utf8").split("\n").map((line) => /^(REPOSITORY|RUNNER_WORK|NODE)=(.+)$/.exec(line)).filter(Boolean).map((m) => [m[1], m[2]]));
+            if (settings.REPOSITORY !== repository) refuse("the hook configuration names another repository");
+            if (typeof settings.RUNNER_WORK !== "string" || e.GITHUB_EVENT_PATH !== settings.RUNNER_WORK + "/_temp/_github_workflow/event.json") refuse("the hook configuration is not this runner instance's");
             const session = path.join(root, e.ALZ_DELIVERY_PATH);
             try { fs.mkdirSync(session, { mode: 0o700 }); } catch (error) { if (error.code !== "EEXIST") throw error; }
             privateDir(session, "the session directory");
