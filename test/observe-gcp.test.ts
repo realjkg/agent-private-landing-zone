@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import type { BlueprintEntry } from "../src/observe/blueprint.js";
+import type { Blueprint, BlueprintEntry } from "../src/observe/blueprint.js";
+import { GCP_SWEEP_CONTROL_TYPES, observeBlueprint, type ResourceReader, type VerifierId } from "../src/observe/verify.js";
 import { GCP_READ_TYPES, GCP_VERIFIER, READ_SCOPES, createDiscoveryGcpReader, type GcpHttp, type GcpRequest, type GcpResponse } from "../src/observe/gcp-rest.js";
 
 // The GCP reader (slice S3 of the GCP release-path PLAN). SYNTHETIC: a scripted HTTP fake stands in for Google, and every token
@@ -321,4 +322,42 @@ test("D11 read-back: a topic's storage policy must be exactly the contract's reg
   // Only the topic type carries a storage policy: another entry type is never compared.
   const { reader } = createDiscoveryGcpReader({ env: identityEnv(), projectId: PROJECT, storagePolicyRegion: "europe-west4", http: scopedGoogle(["us-central1"]).http });
   assert.equal((await reader.check(entry(TOPIC, "google_storage_bucket"))).existence, "NOT_CHECKABLE");
+});
+
+// --- #358 review N2: the sweep's positive control ------------------------------------------------------------------------------
+
+test("#358 review N2: a GCP sweep that does not list the run's own present topic proves nothing: INCONCLUSIVE with the inventory INCOMPLETE, never VERIFIED", async () => {
+  const unit = "alzu-0123456789abcdef0123";
+  const reader = (listed: string[] | undefined, verifier: VerifierId = "GCP_REST", existence: "PRESENT" | "ABSENT" = "PRESENT"): ResourceReader => ({
+    verifier,
+    check: async (e) => ({ address: e.address, type: e.type, identifier: e.id, existence }),
+    listTagged: async () => listed === undefined ? undefined : { identifiers: listed, complete: true },
+  });
+  const blueprint = (entries: BlueprintEntry[]): Blueprint => ({ entries, missing: [] });
+  const topic = entry(TOPIC);
+  // Listed: the control holds, and an otherwise clean run is VERIFIED.
+  const listed = await observeBlueprint(blueprint([topic]), { unitId: unit, reader: reader([TOPIC]) });
+  assert.deepEqual([listed.verdict, listed.inventory, listed.sweepNotListing], ["VERIFIED", "COMPLETE", undefined]);
+  // A query Google accepts but that matches nothing: complete and empty. Without the control this read as VERIFIED.
+  const empty = await observeBlueprint(blueprint([topic]), { unitId: unit, reader: reader([]) });
+  assert.deepEqual([empty.verdict, empty.inventory, empty.sweepNotListing], ["INCONCLUSIVE", "INCOMPLETE", [TOPIC]]);
+  assert.deepEqual(empty.unexpected, []);
+  // Something else listed, but not the run's own topic: still no control, and the stray still fails the run.
+  const other = await observeBlueprint(blueprint([topic]), { unitId: unit, reader: reader(["projects/" + PROJECT + "/topics/stray"]) });
+  assert.deepEqual([other.verdict, other.sweepNotListing], ["FAILED", [TOPIC]]);
+  // Only a run-created (IN_PLAN) resource of a control type, read present, is a control.
+  const notInPlan = await observeBlueprint(blueprint([{ ...topic, origin: "NOT_IN_PLAN" }]), { unitId: unit, reader: reader([]) });
+  assert.equal(notInPlan.sweepNotListing, undefined);
+  const otherType = await observeBlueprint(blueprint([entry("projects/" + PROJECT + "/subscriptions/s", "google_pubsub_subscription")]), { unitId: unit, reader: reader([]) });
+  assert.equal(otherType.sweepNotListing, undefined);
+  const absent = await observeBlueprint(blueprint([topic]), { unitId: unit, reader: reader([], "GCP_REST", "ABSENT") });
+  assert.deepEqual([absent.verdict, absent.sweepNotListing], ["FAILED", undefined], "an absent topic is FAILED on its own read");
+  // A failed listing stays what it was (INCOMPLETE, no control claim), and the other clouds' readers are unchanged.
+  const failed = await observeBlueprint(blueprint([topic]), { unitId: unit, reader: reader(undefined) });
+  assert.deepEqual([failed.verdict, failed.inventory, failed.sweepNotListing], ["INCONCLUSIVE", "INCOMPLETE", undefined]);
+  for (const verifier of ["AWS_CLOUD_CONTROL", "AZURE_RESOURCE_MANAGER"] as const) {
+    const unchanged = await observeBlueprint(blueprint([topic]), { unitId: unit, reader: reader([], verifier) });
+    assert.deepEqual([unchanged.verdict, unchanged.inventory, unchanged.sweepNotListing], ["VERIFIED", "COMPLETE", undefined], verifier);
+  }
+  assert.deepEqual([...GCP_SWEEP_CONTROL_TYPES], ["google_pubsub_topic"]);
 });

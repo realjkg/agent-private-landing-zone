@@ -46,7 +46,7 @@ const NOTHING = " Nothing was written.";
 export function buildRecoveryEvidence(input: RecoveryRecordInput): { ok: true; evidence: RecoveryGateEvidence } | RecoveryRecordRefusal {
   const { contract } = input;
   const contractSha256 = pilotContractSha256(contract);
-  if (input.interrupted.contractSha256 !== contractSha256) return { ok: false, code: "CONTRACT_MISMATCH", message: "The interrupted apply ran under another pilot contract than the one pinned now." + NOTHING };
+  if (input.interrupted.contractSha256 !== contractSha256) return { ok: false, code: "CONTRACT_MISMATCH", message: "The interrupted apply ran under another pilot contract than the reviewed contract in this checkout." + NOTHING };
   if (input.sourceCommit === undefined || !COMMIT.test(input.sourceCommit)) return { ok: false, code: "SOURCE_CHANGED", message: "The product source commit could not be established, so the record cannot be bound to the candidate." + NOTHING };
   if (input.interrupted.sourceCommit !== input.sourceCommit || input.resumed.sourceCommit !== input.sourceCommit) {
     return { ok: false, code: "SOURCE_CHANGED", message: "The interrupted apply or the apply that followed ran from another product commit than this one; a recovery record is bound to the candidate commit both ran on." + NOTHING };

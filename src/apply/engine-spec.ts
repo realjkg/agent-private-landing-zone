@@ -126,8 +126,9 @@ export type EngineCleanupRun = {
   /**
    * The engine's state as it stands now, read-only, for identifiers only (a location remediation checks that the address it deletes
    * still maps to exactly the resource id it was approved for). Optional: an engine without it cannot run a location remediation.
+   * May return a promise (D5): the driver awaits it.
    */
-  stateDocument?(): StateDocument | undefined;
+  stateDocument?(): MaybePromise<StateDocument | undefined>;
 };
 
 /** What the CLI tells a person before each step; the engine's own steps and identities are what they are told about. */
@@ -176,6 +177,11 @@ export type EngineSpec = {
    * a type. Absent: the engine takes no canary allowlist yet, so a contract naming one is refused and no APPLY is authorized for it.
    */
   canaryTypeOk?(value: string): boolean;
+  /**
+   * The largest count one canary entry may allow, when the engine creates fewer than the general bound: GCP_API creates exactly one
+   * topic per run (D8), so its canary is refused at load unless the count is 1 (#358 review N4). Absent: the general bound.
+   */
+  canaryCountMax?: number;
   /** Whether the engine has a state backend whose settings the plan can embed, so a contract may set `embedStateWrite`. Absent: it has none (CDK). */
   embedsStateWrite?: boolean;
   /** The manifest mode sealing and applying accept; the manifest's engine must be this spec's. */

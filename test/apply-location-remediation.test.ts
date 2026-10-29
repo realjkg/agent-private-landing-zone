@@ -6,6 +6,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { signApproval } from "../src/apply/approval.js";
+import { TERRAFORM } from "../src/apply/engines/terraform.js";
+import { withAsyncSteps } from "./helpers/async-steps.js";
 import {
   buildCleanupProposal, buildLocationRemediationProposal, computeProposalSha256, proposalLines, signCleanupProposal, verifyCleanupProposal, type CleanupProposal, type ProposalInput,
 } from "../src/apply/cleanup-proposal.js";
@@ -230,6 +232,19 @@ test("location remediation (SYNTHETIC): a run's network found in the wrong locat
 
   // A proposal runs once: replaying it after the deletion is refused.
   refused(await remediate(w, run, proposal), "PROPOSAL_ALREADY_EXECUTED");
+});
+
+test("the remediation recheck awaits the engine's state read (D5, #358 coordinator note on #348): an engine whose cleanup stateDocument returns a promise is judged on what it read, and the remediation runs", async () => {
+  const w = world();
+  const run = await applied(w);
+  const proposal = proposed(w, run);
+  const result = await withAsyncSteps(TERRAFORM, {}, async (log) => {
+    const ran = await remediate(w, run, proposal);
+    assert.ok(log.includes("cleanupStateDocument"), "the state was read through the async step");
+    return ran;
+  });
+  assert.ok(result.ok, JSON.stringify(result));
+  assert.deepEqual(destroyPlans().map((c) => c.args.filter((a) => a.startsWith("-target="))).at(-1), ["-target=" + ADDRESS]);
 });
 
 // --- eligibility --------------------------------------------------------------------------------------------------------------
@@ -467,7 +482,7 @@ test("at the terminal (SYNTHETIC): propose-remediation writes the remediation an
   const project = writeProject(fresh("project"), target);
   const request = jsonFile({ environment: "DEV", target, projectRoot: project.projectRoot, policyVersion: POLICY, resolved: project.resolved }, "request");
   const manifest = jsonFile(project.manifest, "manifest");
-  const sealed = await cli(["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target), "RUN PROJECT CODE"]);
+  const sealed = await cli(["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target), "RUN PROJECT CODE", "EMBED STATE_WRITE DEV"]);
   assert.equal(sealed.code, 0, sealed.stderr);
   const { sealedPlanPath, reviewBundlePath, artifactSha256 } = sealed.data as { sealedPlanPath: string; reviewBundlePath: string; artifactSha256: string };
   const approved = await cli(["approve", "--bundle", reviewBundlePath, "--key", keyFile("alice"), "--approver", "alice"], ["APPROVE DEV " + artifactSha256.slice(0, 12)]);

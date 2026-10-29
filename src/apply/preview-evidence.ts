@@ -58,7 +58,7 @@ export function buildPreviewGateEvidence(input: PreviewEvidenceInput): { ok: tru
     return { ok: false, code: "SCENARIO_MISMATCH", message: input.gateId + " is about " + scenario.provider + " " + scenario.engine + "; this sealed plan was made under a " + contract.provider + " " + engine +
       " contract. Evidence of one provider or engine never qualifies another. Nothing was written." };
   }
-  if (sealed.contractSha256 !== pilotContractSha256(contract)) return { ok: false, code: "CONTRACT_MISMATCH", message: "The sealed plan was made under another pilot contract than the one pinned now. Nothing was written." };
+  if (sealed.contractSha256 !== pilotContractSha256(contract)) return { ok: false, code: "CONTRACT_MISMATCH", message: "The sealed plan was made under another pilot contract than the reviewed contract in this checkout. Nothing was written." };
   const changes = countChanges(sealed.changes);
   // The documented rule (docs/production-release-admission.md, gate 4): a change set with a delete, a replacement or an unreviewed
   // action is not preview-gate evidence at all, LIVE or SYNTHETIC; it is refused before any attestation is asked for, and the

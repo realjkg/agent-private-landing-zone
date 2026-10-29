@@ -105,7 +105,21 @@ export type ObserveReport = {
    */
   inventory: "COMPLETE" | "INCOMPLETE" | "NOT_AVAILABLE";
   verifier: VerifierId;
+  /**
+   * The sweep's positive control (GCP_REST only; #358 review N2): the run's own planned resources that their own read shows present
+   * but the unit sweep did not list. Non-empty means the sweep proved nothing (a query Google accepts but that matches nothing reads
+   * as complete and empty), so `inventory` is INCOMPLETE and the verdict is never VERIFIED. Right after an apply this is usually
+   * Cloud Asset's indexing delay (GF5): observe again after a few minutes.
+   */
+  sweepNotListing?: string[];
 };
+
+/**
+ * The types whose run-created resources the GCP unit sweep must list before an empty-of-strays answer counts (#358 review N2): the
+ * canary type of both GCP paths, which carries the unit's labels and which Cloud Asset indexes. A type outside this set is not used
+ * as a control, because the sweep is not known to list it.
+ */
+export const GCP_SWEEP_CONTROL_TYPES: ReadonlySet<string> = new Set(["google_pubsub_topic"]);
 
 /** Which independent read API answered: AWS Cloud Control through the aws CLI, or Azure Resource Manager or Google's REST APIs in process. */
 export type VerifierId = "AWS_CLOUD_CONTROL" | "AZURE_RESOURCE_MANAGER" | "GCP_REST";
@@ -212,7 +226,8 @@ export async function unexpectedTagged(blueprint: Blueprint, unitId: string, reg
  * VERIFIED: every entry is PRESENT, nothing planned is missing, nothing unexpected, and the listing was complete.
  * PARTIAL: as VERIFIED, except some resource types cannot be checked independently (they are named, not assumed), or the
  * run carries no unit tag, so nothing outside the state can be looked for.
- * INCONCLUSIVE: a check could not decide (access, throttling, an incomplete listing), or the blueprint names no resources
+ * INCONCLUSIVE: a check could not decide (access, throttling, an incomplete listing, or a GCP sweep that did not list the run's own
+ * present resource: `sweepNotListing`), or the blueprint names no resources
  * so nothing was checked; nothing is known to be wrong.
  * FAILED: something planned is absent or missing from the state, present somewhere the contract does not place it (`misplaced`),
  * or an unexpected resource carries the tag.
@@ -221,15 +236,23 @@ export async function observeBlueprint(blueprint: Blueprint, input: { unitId: st
   const reader = readerOf(input);
   const checks: ResourceCheck[] = [];
   for (const entry of blueprint.entries) checks.push(await reader.check(entry));
-  const listed = input.unitId === null ? null : unexpectedOf(blueprint, await reader.listTagged(input.unitId), reader.verifier);
-  const inventory = listed === null ? "NOT_AVAILABLE" : listed.complete ? "COMPLETE" : "INCOMPLETE";
+  const tagged = input.unitId === null ? undefined : await reader.listTagged(input.unitId);
+  const listed = input.unitId === null ? null : unexpectedOf(blueprint, tagged, reader.verifier);
+  // The positive control (GCP_REST): a complete listing counts only when it lists every run-created resource of a control type that
+  // its own read shows present. Otherwise the query may match nothing at all, and "nothing unexpected" proves nothing.
+  const sweepNotListing = reader.verifier === "GCP_REST" && tagged?.complete === true
+    ? checks.filter((check) => check.existence === "PRESENT" && GCP_SWEEP_CONTROL_TYPES.has(check.type) && check.identifier !== null &&
+        blueprint.entries.some((entry) => entry.address === check.address && entry.origin === "IN_PLAN") && !tagged.identifiers.includes(check.identifier))
+      .map((check) => check.identifier!).sort()
+    : [];
+  const inventory = listed === null ? "NOT_AVAILABLE" : listed.complete && sweepNotListing.length === 0 ? "COMPLETE" : "INCOMPLETE";
   const unexpected = listed?.unexpected ?? [];
   const has = (existence: Existence) => checks.some((check) => check.existence === existence);
   const verdict: ObserveVerdict =
     has("ABSENT") || checks.some((check) => check.misplaced === true) || blueprint.missing.length > 0 || unexpected.length > 0 ? "FAILED"
     : has("UNKNOWN") || inventory === "INCOMPLETE" || blueprint.entries.length === 0 ? "INCONCLUSIVE"
     : has("NOT_CHECKABLE") || inventory === "NOT_AVAILABLE" ? "PARTIAL" : "VERIFIED";
-  return { verdict, checks, missingFromState: [...blueprint.missing], unexpected, inventory, verifier: reader.verifier };
+  return { verdict, checks, missingFromState: [...blueprint.missing], unexpected, inventory, verifier: reader.verifier, ...(sweepNotListing.length > 0 ? { sweepNotListing } : {}) };
 }
 
 /**

@@ -36,6 +36,8 @@ export type ToolName =
   | "aws_version"
   | "aws_cloudformation"
   | "azure_deployment_stack"
+  /** The GCP API-native engine's one call (path 6): the sealed Pub/Sub topic create or delete, in process; no program runs. */
+  | "gcp_pubsub_topic"
   | "aws_sts_identity"
   | "aws_org_describe"
   | "aws_controltower_list_landing_zones"

@@ -701,7 +701,7 @@ Each one is checked against Google's published API reference or discovery docume
 
 **G2's result (2026-10-29, offline, no Google endpoint called):** the table is in `docs/act-pilot-gcp-api.md`, "Google API facts (GF1 to GF11)".
 - **VERIFIED** against Google's published discovery documents, protos and actions: GF2, the GF3 scope, the GF4 request shape, the GF6 delete of an absent topic, GF8, the GF10 permission name, and GF11 (functionally).
-- **UNVERIFIED-OWNER-LIVE**, each with how the product reports it and fails closed: GF1, the GF3 label query syntax, the GF4 read-back as sent, GF5, the GF6 duplicate create, GF7, GF9, and GF10 custom-role support.
+- **UNVERIFIED-OWNER-LIVE**, each with how the product reports it: GF1, the GF3 label query syntax, the GF4 read-back as sent, GF5, the GF6 duplicate create, GF7, GF9, and GF10 custom-role support. A refused query fails closed. An accepted query that matches nothing returned a complete, empty answer and passed silently until #358 review N2; observe's sweep positive control (`sweepNotListing`, `src/observe/verify.ts`) now reports it as `INCONCLUSIVE`.
 - **One finding for the reader's owner:** Cloud Asset documents label queries as `labels.<key>:<value>`, and the reader sends `labels.<key>=<value>`. If Google refuses that, every seal is `UNIT_LISTING_INCOMPLETE`, which fails closed.
 
 GF7 to GF11 are checked before bootstrap, and all of GF1 to GF11 before lane G2 merges. **G1's result (2026-10-29):** with no live call, GF7, GF9, GF10 and GF11 could not be verified from the repository or a pinned document. They stay **UNVERIFIED, MUST CHECK**, and the owner checks them against Google's IAM references before bootstrap (`docs/act-pilot-bootstrap-gcp.md`).
