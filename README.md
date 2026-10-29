@@ -315,7 +315,7 @@ Sovereignty means customer control over execution, models, data, keys, identity,
 ## Current safety boundary
 
 ```text
-ACT = DISABLED          (default; the only exception is the pinned internal pilot, docs/act-pilot-plan.md; a person runs it at the terminal or in the console wizard, docs/act-pilot-walkthrough.md)
+ACT = DISABLED          (default; the only exception is the internal pilot, enabled only by the owner's reviewed commit of its contract's authorize entry, docs/act-pilot-plan.md; a person runs it at the terminal or in the console wizard, docs/act-pilot-walkthrough.md)
 ```
 
 The repository currently exposes no Terraform apply/destroy, Pulumi up/destroy, CloudFormation execute-change-set, CDK deploy, Bicep deployment, OpenTofu apply, Crossplane mutation, or Ansible non-check execution through the broker.
