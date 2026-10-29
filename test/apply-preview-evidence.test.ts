@@ -88,7 +88,7 @@ async function seal(w: World, behavior: Behavior = GREENFIELD): Promise<Sealed> 
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target);
   const request = json({ environment: "DEV", target, projectRoot: project.projectRoot, policyVersion: POLICY, resolved: project.resolved }, "request");
-  const run = await cli(w, ["seal", "--request", request, "--manifest", json(project.manifest, "manifest"), ...requesterArgs()], [targetString(target), "RUN PROJECT CODE"]);
+  const run = await cli(w, ["seal", "--request", request, "--manifest", json(project.manifest, "manifest"), ...requesterArgs()], [targetString(target), "RUN PROJECT CODE", "EMBED STATE_WRITE DEV"]);
   assert.equal(run.code, 0, run.stderr);
   const { sealedPlanPath } = JSON.parse(run.stdout) as { sealedPlanPath: string };
   const loaded = await loadSealedPlan(sealedPlanPath);
@@ -109,7 +109,7 @@ async function brownfieldRefused(w: World, behavior: Behavior = BROWNFIELD, said
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target);
   const request = json({ environment: "DEV", target, projectRoot: project.projectRoot, policyVersion: POLICY, resolved: project.resolved }, "request");
-  const run = await cli(w, ["seal", "--request", request, "--manifest", json(project.manifest, "manifest"), ...requesterArgs()], [targetString(target), "RUN PROJECT CODE"]);
+  const run = await cli(w, ["seal", "--request", request, "--manifest", json(project.manifest, "manifest"), ...requesterArgs()], [targetString(target), "RUN PROJECT CODE", "EMBED STATE_WRITE DEV"]);
   assert.equal(run.code, 2, run.stdout);
   assert.match(run.stderr, /^BLOCKED RESOURCE_NOT_IN_CANARY: /);
   assert.match(run.stderr, said);

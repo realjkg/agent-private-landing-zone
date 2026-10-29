@@ -197,12 +197,12 @@ const SAVED_SETTINGS: ReadonlySet<string> = new Set(["bucket", "prefix", CREDENT
  * when saved, must be exactly the STATE_WRITE identity's own `GOOGLE_APPLICATION_CREDENTIALS` and `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT`
  * in `env` (the environment init's configuration was written from); and every other setting must be absent or `null`.
  */
-function savedBackendMatches(backend: Record<string, unknown>, target: GcpTarget, env: NodeJS.ProcessEnv): boolean {
+function savedBackendMatches(backend: Record<string, unknown>, target: GcpTarget, env: NodeJS.ProcessEnv, requireStateWrite = false): boolean {
   const config = isRecord(backend.config) ? backend.config : {};
   const [bucket, ...prefix] = target.backend.split("/");
   const stateWrite = identityVariables(env, "STATE_WRITE");
   const unsetOr = (name: string, variable: string, ok: RegExp): boolean =>
-    config[name] === undefined || config[name] === null || (typeof config[name] === "string" && ok.test(config[name] as string) && stateWrite.get(variable) === config[name]);
+    (!requireStateWrite && (config[name] === undefined || config[name] === null)) || (typeof config[name] === "string" && ok.test(config[name] as string) && stateWrite.get(variable) === config[name]);
   // Each part on its own (review N5 of #320): a bucket and prefix joined differently cannot name the same "<bucket>/<prefix>".
   return backend.type === "gcs" && config.bucket === bucket && config.prefix === prefix.join("/") &&
     unsetOr(CREDENTIALS_SETTING, CREDENTIALS, TOKEN_FILE) && unsetOr(IMPERSONATE_SETTING, IMPERSONATE, SERVICE_ACCOUNT) &&
@@ -537,7 +537,7 @@ export const GCP: GcpProviderSpec = {
   },
   ambientRefusal: ambient,
   backendConfig: (env, target) => backendConfig(env, asGcp(target)),
-  savedBackendMatches: (saved, target, env) => savedBackendMatches(saved, asGcp(target), env),
+  savedBackendMatches: (saved, target, env, requireStateWrite) => savedBackendMatches(saved, asGcp(target), env, requireStateWrite),
   backendType: "gcs",
   backendLocation: (target) => backendLocation(asGcp(target)),
   // Spike finding F: `apply <planfile>` takes the backend's connection and credentials from the apply process's environment.

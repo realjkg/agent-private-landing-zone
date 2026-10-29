@@ -36,7 +36,7 @@ const completeDraft = (over: Record<string, unknown> = {}) => ({
   targets: { DEV: { accountId: "123456789012", region: "eu-central-1", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "pilot-dev" } },
   requiredApprovals: { DEV: 1 }, maxApprovalAgeMinutes: 30,
   approvers: [{ id: "pilot-owner", publicKeyPem: keys.alice.pub, environments: ["DEV"] }],
-  killSwitchPath: ".runs/apply/STOP-DEV", ...over,
+  killSwitchPath: ".runs/apply/STOP-DEV", embedStateWrite: true, ...over,
 });
 /** The three-stage chain with two production approvers. */
 const chainDraft = () => ({
@@ -65,9 +65,15 @@ test("a complete draft with fake ids and test keys is COMPLETE, maps every owner
   assert.deepEqual(report.inputs.map((x) => x.field), [
     "enabled", "provider", "engine", "policyVersion", "enabledEnvironments",
     "targets.DEV.accountId", "targets.DEV.region", "targets.DEV.backend", "targets.DEV.workspace", "requiredApprovals.DEV",
-    "maxApprovalAgeMinutes", "approvers[0].id", "approvers[0].publicKeyPem", "approvers[0].environments", "killSwitchPath",
+    "maxApprovalAgeMinutes", "approvers[0].id", "approvers[0].publicKeyPem", "approvers[0].environments", "killSwitchPath", "embedStateWrite",
   ]);
   assert.ok(report.inputs.every((x) => x.input.length > 0 && x.status === "PRESENT"));
+  // The STATE_WRITE binding is required for Terraform (owner decision 6486426552): a draft without it is never COMPLETE.
+  const { embedStateWrite: _dropped, ...unbound } = completeDraft();
+  const missing = checkDraftContract(unbound);
+  assert.equal(missing.complete, false);
+  assert.equal(missing.inputs.find((x) => x.field === "embedStateWrite")?.status, "MISSING");
+  assert.equal(checkDraftContract(completeDraft({ embedStateWrite: false })).complete, false, "false is refused by the validator");
   // The inputs that are not contract fields are listed with where they are checked instead, naming the engine's four identities.
   assert.match(report.outsideContract[0].input, /DISCOVERY, STATE, STATE_WRITE, APPLY/);
   assert.ok(report.outsideContract.some((x) => /execution host/.test(x.input)) && report.outsideContract.some((x) => /cleanup owner/.test(x.input)));
@@ -124,7 +130,7 @@ test("the Azure Terraform DEV example (docs/act-pilot-azure-terraform-g0.md) nam
   assert.deepEqual(report.inputs.map((x) => x.field), [
     "enabled", "provider", "engine", "policyVersion", "enabledEnvironments",
     "targets.DEV.tenantId", "targets.DEV.subscriptionId", "targets.DEV.backend", "targets.DEV.workspace", "targets.DEV.location", "requiredApprovals.DEV",
-    "maxApprovalAgeMinutes", "approvers[0].id", "approvers[0].publicKeyPem", "approvers[0].environments", "killSwitchPath",
+    "maxApprovalAgeMinutes", "approvers[0].id", "approvers[0].publicKeyPem", "approvers[0].environments", "killSwitchPath", "embedStateWrite",
   ]);
   // Every value that only the owner can supply is refused as a placeholder or the example's fake backend, each by its field.
   // The DEV-only scope itself is accepted for Azure Terraform (#298, owner decision 6442856302).
@@ -286,7 +292,7 @@ test("a region, workspace or kill switch path that equals a shipped example's va
   assert.match(contractCheckLines(usual, "usual.json").join("\n"), /COMPLETE: every input is present and the shape is valid, with 3 notice\(s\) above/);
   // A valid CDK draft (the stack name is the backend, the workspace must be default, capabilities per environment) is COMPLETE.
   const cdk = checkDraftContract({
-    ...chainDraft(), engine: "CDK",
+    ...chainDraft(), engine: "CDK", embedStateWrite: undefined,
     targets: {
       DEV: { accountId: "123456789012", region: "us-east-1", backend: "PilotStack", workspace: "default", capabilities: [] },
       QA: { accountId: "234567890123", region: "us-east-1", backend: "PilotStack", workspace: "default", capabilities: [] },

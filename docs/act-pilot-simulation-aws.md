@@ -66,6 +66,18 @@ The "What it does not prove" list below is unchanged by this re-run. In particul
 
 `test/apply-emulated-aws.test.ts` drives the real driver (`sealPreview`, `runApply`) through: seal with the real engine (the review bundle verifies; the built-in resource is listed as untagged by the deletion unit, not refused); an Ed25519 test approval over a fixture AWS contract with fake 12-digit account ids; apply (state lands in the emulator, the lock file is gone, evidence and ledger written, no secret in any result); a second apply of the same artifact refused (`ARTIFACT_ALREADY_APPLIED`); a stale plan refused (`PLAN_STALE`, outcome `FAILED_NO_CHANGE`, state unchanged, no lock left behind); a held native lock (`FAILED_NO_CHANGE`, the other holder's lock object and its content untouched); the kill switch before the engine; and the kill switch while Terraform runs (`KILLED`, lock released, the interrupted resource recorded in state). All seven pass. The qualification attestation is forged in the test (labeled as such) because no person can attest an emulator.
 
+## The STATE_WRITE binding (owner decision 6486426552)
+
+**EMULATED, no cloud reached.** An eighth scenario in `test/apply-emulated-aws.test.ts` seals under a contract that binds STATE_WRITE (`embedStateWrite: true`, now required). The four identities have distinct dummy tokens. The test then identifies the role behind each request from moto's request recorder and from moto's record of the credentials it issued to each assumed role.
+
+- **The decrypted plan.** Every file in Terraform's plan archive was read. The plan names STATE_WRITE's role ARN and token file path, nothing of APPLY's, and no token value.
+- **Renewal.** STATE_WRITE's and APPLY's token files were rewritten after the seal, and the unchanged sealed plan then applied.
+- **The apply's requests.** Every bucket request was signed with credentials moto issued to STATE_WRITE, or to STATE for a read. APPLY never reached the bucket.
+- **The state and the lock.** The state write and the lock object's `PUT` and `DELETE` were STATE_WRITE's.
+- **The renewed token.** STATE_WRITE assumed its role with the renewed token only. No request used a token from before the renewal.
+
+All eight scenarios pass. **Not proven:** real STS trust conditions, IAM and `s3:` condition keys. moto accepts any token.
+
 ## Defects the real binary exposed
 
 - **`src/apply/providers/aws.ts`: the provider allowlist refused Terraform's built-in provider.** `terraform show -json` lists `terraform.io/builtin/terraform` under `configuration.provider_config` whenever a project uses `terraform_data` (or `terraform_remote_state`), and `assertProviderConfig` refused it (`PROVIDER_CONFIG_NOT_IN_CONTRACT`), so the AWS path could not seal the built-in-only fixture G1b calls for. The Azure spec skips non-azurerm providers and never hit this. Fixed in this change with a **narrow, fail-closed rule**, not a blanket allowance: the built-in provider is allowed for `terraform_data` managed resources only. Every resource and data source the plan names is judged (`ProviderUse`, read by `engines/terraform.ts` from four places, because none alone is complete: the configuration tree through every module, the changes, the prior state and the planned values); any use of the built-in provider that is a data source, or whose type is not `terraform_data`, is refused with `PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT` at seal and again at apply, where the plan is shown and judged again. That covers `terraform_remote_state` (a data source that reads another backend with the running identity's credentials) and any built-in type this code does not name. The judgment falls back to the type's `terraform_` prefix when the plan leaves a use's provider unnamed, so nothing of that provider passes unjudged. Why the configuration tree: with Terraform 1.16.4, a `terraform_remote_state` data source whose read fails appears in `configuration.root_module.resources` only, not in `resource_changes`, `prior_state` or `planned_values`. `test/apply-aws.test.ts` pins the exact `provider_config` entry 1.16.4 emits, `terraform_data` allowed, `terraform_remote_state` refused in each of the four places, an unknown built-in type refused, and a built-in data source refused.
@@ -81,7 +93,7 @@ Does **not** prove:
 - **The aws provider.** The registry is blocked; no aws resource was planned or applied. Provider-block checks (`allowed_account_ids`, `assume_role`, the denied attributes) were not exercised against a real provider.
 - **Real bucket policies, S3 versioning, encryption or object lock**, and whether the DEV bucket's policy lets the STATE role read while refusing it the lock file.
 - **Real latency, throttling or retry behavior** of S3 and STS.
-- **Identity separation between STATE_WRITE and APPLY.** Finding (b) shows the plan embeds the STATE_WRITE role; which role AWS would actually see on the state write during `apply <planfile>` is settled only by a real-AWS run with CloudTrail.
+- **Identity separation between STATE_WRITE and APPLY on real AWS.** Finding (b) shows the plan embeds the STATE_WRITE role. The binding scenario above shows moto saw only STATE_WRITE (and STATE's reads) on the bucket. Which role real AWS sees is settled only by a real-AWS run with CloudTrail.
 
 ## Empirical answers
 

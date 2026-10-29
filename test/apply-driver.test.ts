@@ -822,7 +822,15 @@ test("identity gate: a variable for an identity this system never reads, or a co
   refused(forbidden, "IDENTITY_NOT_CONFIGURED");
   assert.match((forbidden as { message: string }).message, /ALZ_DEPLOY_ARM_CLIENT_SECRET/);
   assert.ok(!(forbidden as { message: string }).message.includes("x-deploy-secret"), "names, never values");
-  refused(await runApply(requestFor(s, approvals), { ...w.deps, env: { ...ENV, ALZ_APPLY_ARM_CLIENT_SECRET: ENV.ALZ_STATE_ARM_CLIENT_SECRET } }), "IDENTITY_COLLAPSED");
+  refused(await runApply(requestFor(s, approvals), { ...w.deps, env: { ...ENV, ALZ_APPLY_ARM_OIDC_TOKEN_FILE: ENV.ALZ_STATE_ARM_OIDC_TOKEN_FILE } }), "IDENTITY_COLLAPSED");
+  // A client secret on any identity is refused by name (owner decision 6486426552): the azurerm backend would prefer it over the
+  // plan's STATE_WRITE binding.
+  for (const identity of ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"]) {
+    const secret = await runApply(requestFor(s, approvals), { ...w.deps, env: { ...ENV, ["ALZ_" + identity + "_ARM_CLIENT_SECRET"]: "x-" + identity.toLowerCase() + "-secret" } });
+    refused(secret, "IDENTITY_NOT_CONFIGURED");
+    assert.match((secret as { message: string }).message, new RegExp("ALZ_" + identity + "_ARM_CLIENT_SECRET"));
+    assert.ok(!(secret as { message: string }).message.includes("x-" + identity.toLowerCase() + "-secret"), "names, never values");
+  }
   assert.equal(applyCalls().length, 0);
 });
 

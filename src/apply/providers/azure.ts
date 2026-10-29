@@ -36,13 +36,16 @@ function backendOk(value: string): boolean {
 
 /**
  * Anything that lets a child fall back to the az CLI, a managed identity, a
- * certificate or an Azure SDK default instead of the identity's own OIDC token
+ * certificate, a client secret or an Azure SDK default instead of the identity's own OIDC token
  * file, or to another cloud's credentials (`AWS_*`, and `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*`, `GCE_*`, which the Terraform apply
- * profile can inject since GCP was admitted). The recommended setup is `ARM_*` with `ARM_USE_OIDC` and
- * `ARM_OIDC_TOKEN_FILE`, but that is not enforced: a per-identity `ARM_CLIENT_SECRET` is still injectable on the shared
- * Terraform profiles and is accepted as that identity's own explicit credential (docs/act-pilot-apply.md, Azure).
+ * profile can inject since GCP was admitted). Every identity uses `ARM_*` with an OIDC token file only.
+ *
+ * `ARM_CLIENT_SECRET` is refused by name (owner decision 6486426552). Terraform 1.16.4's azurerm backend prefers a client secret in
+ * its process environment over the OIDC settings the sealed plan embeds: an apply child carrying APPLY's secret asked Entra ID for a
+ * state token as STATE_WRITE's client id with APPLY's secret (observed against the emulated token endpoint in
+ * test/apply-emulated.test.ts). The plan's binding is only as strong as the absence of that variable, so no identity may carry one.
  */
-const FALLBACK_VARIABLE = /^(AZURE_.*|ARM_USE_(?!OIDC$).*|ARM_MSI_.*|ARM_CLIENT_CERTIFICATE.*|AWS_.*|GOOGLE_.*|GCLOUD_.*|CLOUDSDK_.*|GCE_.*)$/;
+const FALLBACK_VARIABLE = /^(AZURE_.*|ARM_USE_(?!OIDC$).*|ARM_MSI_.*|ARM_CLIENT_CERTIFICATE.*|ARM_CLIENT_SECRET|AWS_.*|GOOGLE_.*|GCLOUD_.*|CLOUDSDK_.*|GCE_.*)$/;
 
 const ambient = (env: NodeJS.ProcessEnv) => ambientRefusal(env, {
   fallback: FALLBACK_VARIABLE, ambient: /^(AZURE|ARM)_/, fallbackTo: "the az CLI, ambient or another cloud's credentials",
@@ -107,16 +110,17 @@ const SAVED_SETTINGS = new Set(["storage_account_name", "container_name", "key",
  * `ARM_CLIENT_ID` and `ARM_OIDC_TOKEN_FILE` in `env`, the environment init's configuration was written from (review N3 of #318). A
  * saved value with no STATE_WRITE value to match is refused.
  */
-function savedBackendMatches(backend: Record<string, unknown>, target: AzureTarget, env: NodeJS.ProcessEnv): boolean {
+function savedBackendMatches(backend: Record<string, unknown>, target: AzureTarget, env: NodeJS.ProcessEnv, requireStateWrite = false): boolean {
   const config = isRecord(backend.config) ? backend.config : {};
   const [account, container, ...key] = target.backend.split("/");
+  // With requireStateWrite every STATE_WRITE setting must be saved; otherwise one that is saved must still be STATE_WRITE's own.
   const unsetOr = (name: string, ok: (value: string) => boolean): boolean =>
-    config[name] === undefined || config[name] === null || (typeof config[name] === "string" && ok(config[name] as string));
+    (!requireStateWrite && (config[name] === undefined || config[name] === null)) || (typeof config[name] === "string" && ok(config[name] as string));
   const stateWrite = identityVariables(env, "STATE_WRITE");
   const isStateWrite = (name: string) => (v: string): boolean => stateWrite.get(name) === v;
   // Each part on its own (review N5 of #320): parts joined differently cannot name the same "<account>/<container>/<key>".
   return backend.type === "azurerm" && config.storage_account_name === account && config.container_name === container && config.key === key.join("/") &&
-    config.use_azuread_auth === true && (config.use_oidc === undefined || config.use_oidc === null || config.use_oidc === true) &&
+    config.use_azuread_auth === true && (config.use_oidc === true || (!requireStateWrite && (config.use_oidc === undefined || config.use_oidc === null))) &&
     unsetOr("tenant_id", (v) => GUID.test(v) && v.toLowerCase() === target.tenantId.toLowerCase()) &&
     unsetOr("subscription_id", (v) => GUID.test(v) && v.toLowerCase() === target.subscriptionId.toLowerCase()) &&
     unsetOr("client_id", (v) => SAFE_VALUE.test(v) && isStateWrite("ARM_CLIENT_ID")(v)) &&
@@ -286,7 +290,7 @@ export const AZURE: ProviderSpec = {
   backendConfig: (env, target) => backendConfig(env, target as AzureTarget),
   backendType: "azurerm",
   backendLocation: (target) => backendLocation(target as AzureTarget),
-  savedBackendMatches: (saved, target, env) => savedBackendMatches(saved, target as AzureTarget, env),
+  savedBackendMatches: (saved, target, env, requireStateWrite) => savedBackendMatches(saved, target as AzureTarget, env, requireStateWrite),
   // Simulation finding (docs/act-pilot-simulation.md): the plan embeds the seal-time backend settings (now the product's backend file, under the azurerm pin); the rest is filled from the apply process's ARM_* variables.
   filledAtApply: ["use_oidc", "client_id", "tenant_id", "subscription_id", "oidc_token_file_path"],
   // What init may select (review of #327, round 5): the allowed providers, by exact registry source. The built-in provider is never selected.

@@ -126,11 +126,11 @@ test("GCP is admitted with Terraform for DEV only: the provider is registered, t
   assert.match(reason(gcpContract({ engine: "BICEP" })), /^engine: BICEP is valid only with AZURE/);
 });
 
-test("GCP Terraform requires embedStateWrite true (#345 review N1): absent, false or a non-boolean is refused at load and seals nothing; AWS and Azure Terraform keep their opt-in default", async () => {
+test("Terraform requires embedStateWrite true on GCP, AWS and Azure (#345 review N1; owner decision 6486426552): absent, false or a non-boolean is refused at load and seals nothing", async () => {
   const loaded = loadPilotContract(contractAt(gcpContract()));
   assert.equal(loaded.enabled, true);
   assert.equal((loaded as PilotContract).embedStateWrite, true);
-  const required = /^embedStateWrite: GCP TERRAFORM \(path 5\) requires embedStateWrite true/;
+  const required = /^embedStateWrite: GCP TERRAFORM requires embedStateWrite true/;
   const absent = (({ embedStateWrite: _dropped, ...rest }) => rest)(gcpContract());
   for (const [label, raw] of [["absent", absent], ["false", gcpContract({ embedStateWrite: false })]] as const) {
     assert.match(reason(raw), required, label);
@@ -149,10 +149,16 @@ test("GCP Terraform requires embedStateWrite true (#345 review N1): absent, fals
   assert.equal(refused.ok, false);
   assert.equal((refused as { code?: string }).code, "CONTRACT_INVALID");
   assert.equal(callsOf(fakeDir).length, before, "no engine call");
-  // AWS and Azure Terraform are unchanged (an owner decision): a contract without embedStateWrite still loads.
+  // AWS and Azure Terraform are bound the same way: with the setting they load, without it (or with false) they are refused.
   for (const raw of [awsContractJson(KILL), azureContractJson(KILL)]) {
-    assert.equal("embedStateWrite" in raw, false);
-    assert.equal(loadPilotContract(contractAt(raw)).enabled, true, (raw as { provider: string }).provider);
+    const provider = (raw as { provider: string }).provider;
+    assert.equal(loadPilotContract(contractAt(raw)).enabled, true, provider);
+    const { embedStateWrite: _dropped, ...without } = raw as Record<string, unknown>;
+    for (const bad of [without, { ...without, embedStateWrite: false }]) {
+      const off = loadPilotContract(contractAt(bad));
+      assert.equal(off.enabled, false, provider);
+      assert.match((off as { reason: string }).reason, new RegExp("^embedStateWrite: " + provider + " TERRAFORM requires embedStateWrite true"), provider);
+    }
   }
 });
 

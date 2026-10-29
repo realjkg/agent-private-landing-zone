@@ -242,6 +242,8 @@ describe("Azure state auth is Entra ID only: a seal through the fake engine", ()
         pinned: PINNED, spec: AZURE, contractSha256: H("9"), sourceCommit: SOURCE_COMMIT,
         provenance: { engineBinarySha256: H("e"), qualification: { state: "UNQUALIFIED", reason: "Fixture: no qualification evidence." } },
         requester: REQUESTER, now: () => NOW, unit: pilotUnitOf({ provider: "AZURE", contractSha256: H("9"), environment: "DEV", target }),
+        // Every Terraform contract binds STATE_WRITE (owner decision 6486426552).
+        embedStateWrite: true,
       });
     } finally { snapshot.remove(); scratch.remove(); }
   }

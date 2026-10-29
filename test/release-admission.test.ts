@@ -283,7 +283,7 @@ const contractJson = (enabled: boolean, age = 60) => ({
   targets: Object.fromEntries(Object.entries({ DEV: pilotTarget("2", "fixturedevstore"), QA: pilotTarget("4", "fixtureqastore"), PROD: pilotTarget("3", "fixtureprodstore") })
     .map(([env, target]) => [env, { ...target, canary: { resources: [{ type: "azurerm_virtual_network", count: 1 }] } }])),
   requiredApprovals: { DEV: 1, QA: 1, PROD: 2 }, maxApprovalAgeMinutes: age, approvers, killSwitchPath: join(pilotRoot, "KILL"),
-  authorize: { DEV: ["APPLY"], QA: ["APPLY"], PROD: ["APPLY"] },
+  authorize: { DEV: ["APPLY"], QA: ["APPLY"], PROD: ["APPLY"] }, embedStateWrite: true,
 });
 /** Writes the contract as a reviewed commit would: the contract carries its own authorization, there is no hash file. */
 const writeContract = (enabled: boolean, age = 60) => {

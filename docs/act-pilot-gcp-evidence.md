@@ -35,7 +35,7 @@ Owner decision 6481421924 lists the acceptance items: authorization and canary s
 Build it from the bootstrap outputs (`bootstrap/config.gcp.template.json`, `TERRAFORM`). Three settings are required on this path:
 
 - `"provider": "GCP"`, `"engine": "TERRAFORM"`, and `"enabledEnvironments": ["DEV"]`: path 5 is DEV only.
-- `"embedStateWrite": true`. Without it, the gcs backend takes its credentials from the apply process's environment, which is APPLY's. The EMULATED run (`test/apply-emulated-gcp.test.ts`, last test) shows APPLY then holds the lock and writes the state, and the bootstrap's deny policy forbids that live. With it, every state access in the EMULATED seal, apply and cleanup was STATE_WRITE's.
+- `"embedStateWrite": true`, required for every Terraform contract (owner decision 6486426552). Without it, the gcs backend takes its credentials from the apply process's environment, which is APPLY's: an earlier EMULATED run showed APPLY then holds the lock and writes the state, and the bootstrap's deny policy forbids that live. A contract without it is now refused at load (`test/apply-emulated-gcp.test.ts`). With it, every state access in the EMULATED seal, apply and cleanup was STATE_WRITE's, and a renewed token file was used without resealing.
 - `targets.DEV.canary` is exactly `{ "resources": [{ "type": "google_pubsub_topic", "count": 1 }] }`.
 
 ### Evidence, step by step

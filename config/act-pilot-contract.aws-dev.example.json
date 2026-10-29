@@ -3,6 +3,7 @@
   "enabled": false,
   "provider": "AWS",
   "engine": "TERRAFORM",
+  "embedStateWrite": true,
   "policyVersion": "REPLACE-WITH-REVIEWED-POLICY-VERSION",
   "enabledEnvironments": ["DEV"],
   "targets": {

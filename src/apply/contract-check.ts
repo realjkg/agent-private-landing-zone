@@ -209,7 +209,10 @@ export function checkDraftContract(raw: unknown, examples: ReturnType<typeof shi
     });
   }
   add("killSwitchPath", "the kill switch file path the pilot owner controls", raw.killSwitchPath, "killSwitchPath");
-  if (raw.embedStateWrite !== undefined) add("embedStateWrite", "whether the seal-time init embeds STATE_WRITE's non-secret settings (optional; default off)", raw.embedStateWrite);
+  // Required true for every Terraform contract (owner decision 6486426552): the plan names STATE_WRITE for the state backend.
+  if (raw.engine === "TERRAFORM" || raw.embedStateWrite !== undefined) {
+    add("embedStateWrite", "true: the seal-time init embeds STATE_WRITE's backend identity settings (no secret, only ids and a token or credential file path); required for Terraform", raw.embedStateWrite);
+  }
 
   // The validator's first refusal, attached to its field; a refusal that names no listed field is reported on the shape alone.
   if (!shape.ok) {

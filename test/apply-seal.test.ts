@@ -65,6 +65,8 @@ function fixture(options: { target?: typeof DEV_TARGET; environment?: "DEV" | "Q
     env: options.env ?? identityEnv(options.environment ?? "DEV"), policyVersion: POLICY, engineVersion: ENGINE_VERSION, toolDirs: [toolDir],
     pinned: { tenantId: TENANT, subscriptionId: target.account, backend: target.backend, workspace: target.workspace, location: AZURE_LOCATION_FIXTURE, canary: options.canary ?? CANARY_AZURE }, spec: AZURE, contractSha256: H("9"), authorizationSha256: H("a"), targetSha256: H("b"), sourceCommit: SOURCE_COMMIT,
     provenance: PROVENANCE, requester: REQUESTER, now: () => new Date("2026-10-11T10:00:00.000Z"),
+    // Every Terraform contract binds STATE_WRITE (owner decision 6486426552), so the driver always seals with the binding.
+    embedStateWrite: true,
     unit: pilotUnitOf({ provider: "AZURE", contractSha256: H("9"), environment: options.environment ?? "DEV", target }),
   };
   return { input, scratch, cleanup: () => { snapshot.remove(); scratch.remove(); } };

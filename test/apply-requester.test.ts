@@ -315,14 +315,14 @@ test("./alz apply seal takes --requester and --key, shows the requester before t
   assert.equal((await cli(w, base, [])).code, 1);
   assert.equal((await cli(w, [...base, "--requester", "carol"], [])).code, 1);
   const before = engineCalls().length;
-  const stranger = await cli(w, [...base, "--requester", "mallory", "--key", keyFile("mallory")], [`${target.account} | ${target.backend} | ${target.workspace}`, "RUN PROJECT CODE"]);
+  const stranger = await cli(w, [...base, "--requester", "mallory", "--key", keyFile("mallory")], [`${target.account} | ${target.backend} | ${target.workspace}`, "RUN PROJECT CODE", "EMBED STATE_WRITE DEV"]);
   assert.equal(stranger.code, 2);
   assert.match(stranger.stderr, /REQUESTER_NOT_ALLOWED/);
-  const wrongKey = await cli(w, [...base, "--requester", "carol", "--key", keyFile("alice")], [`${target.account} | ${target.backend} | ${target.workspace}`, "RUN PROJECT CODE"]);
+  const wrongKey = await cli(w, [...base, "--requester", "carol", "--key", keyFile("alice")], [`${target.account} | ${target.backend} | ${target.workspace}`, "RUN PROJECT CODE", "EMBED STATE_WRITE DEV"]);
   assert.equal(wrongKey.code, 2);
   assert.match(wrongKey.stderr, /REQUESTER_KEY_MISMATCH/);
   assert.equal(engineCalls().length, before, "no engine ran");
-  const ok = await cli(w, [...base, ...requesterArgs()], [`${target.account} | ${target.backend} | ${target.workspace}`, "RUN PROJECT CODE"]);
+  const ok = await cli(w, [...base, ...requesterArgs()], [`${target.account} | ${target.backend} | ${target.workspace}`, "RUN PROJECT CODE", "EMBED STATE_WRITE DEV"]);
   assert.equal(ok.code, 0, ok.stderr);
   assert.match(ok.term.out.join(""), /requester {7}dana/);
   const result = JSON.parse(ok.stdout) as { requesterId: string; reviewBundlePath: string };

@@ -170,10 +170,16 @@ async function sealViaCli(w: World, environment: ApplyEnvironment = "DEV"): Prom
   const target = targetOf(environment);
   const project = writeProject(fresh("project"), target);
   const run = await cliRun({ ...w, cli: { ...w.cli, env: identityEnv(environment) } },
-    ["seal", "--request", requestFile(project, target, environment), "--manifest", json(project.manifest, "manifest"), ...requesterArgs()], [targetString(target), PHRASE]);
+    ["seal", "--request", requestFile(project, target, environment), "--manifest", json(project.manifest, "manifest"), ...requesterArgs()], [targetString(target), PHRASE, "EMBED STATE_WRITE " + environment]);
   assert.equal(run.code, 0, run.stderr);
   const result = JSON.parse(run.stdout) as { artifactSha256: string; sealedPlanPath: string; reviewBundlePath: string };
   return { project, target, environment, path: result.sealedPlanPath, bundle: result.reviewBundlePath, artifactSha256: result.artifactSha256 };
+}
+/** Every Terraform contract binds STATE_WRITE (owner decision 6486426552): seal asks this phrase after the project-code one. */
+async function answerEmbed(port: number, environment: string): Promise<void> {
+  const embed = await until(port, (s) => s.run?.status === "WAITING" && s.run.dialog?.kind === "EMBED_STATE_WRITE");
+  assert.equal(embed.run!.dialog!.phrase, "EMBED STATE_WRITE " + environment);
+  await call(port, "POST", "/pilot/answer", { body: { dialogId: embed.run!.dialog!.id, answer: "EMBED STATE_WRITE " + environment } });
 }
 async function sealViaUi(port: number, project: Project, target: ResolvedTarget, environment: ApplyEnvironment = "DEV"): Promise<Sealed> {
   const started = await call(port, "POST", "/pilot/seal", { body: { environment, requestPath: requestFile(project, target, environment), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() } });
@@ -185,6 +191,7 @@ async function sealViaUi(port: number, project: Project, target: ResolvedTarget,
   const second = await until(port, (s) => s.run?.status === "WAITING" && s.run.dialog?.kind === "RUN_PROJECT_CODE");
   assert.equal(second.run!.dialog!.phrase, PHRASE);
   await call(port, "POST", "/pilot/answer", { body: { dialogId: second.run!.dialog!.id, answer: PHRASE } });
+  await answerEmbed(port, environment);
   const done = await finished(port);
   assert.equal(done.run!.result!.exit, 0, JSON.stringify(done.run!.result));
   const data = done.run!.result!.data as { artifactSha256: string; sealedPlanPath: string; reviewBundlePath: string };
@@ -559,8 +566,8 @@ test("seal, approve, apply wholly in the console: every phrase is asked exactly 
   assert.ok(!everything.includes("BEGIN PRIVATE KEY") && !everything.includes(keys.alice.priv.split("\n")[1]));
 });
 
-test("the same contract opt-in asks for the STATE_WRITE phrase in the console, and a wrong one runs no engine", async () => {
-  const w = await world(contractJson(KILL, { embedStateWrite: true }));
+test("the contract's STATE_WRITE binding asks for its phrase in the console, and a wrong one runs no engine", async () => {
+  const w = await world(contractJson(KILL));
   const { port } = await serve(w);
   await choose(port);
   const target = targetOf("DEV");
@@ -573,7 +580,7 @@ test("the same contract opt-in asks for the STATE_WRITE phrase in the console, a
   await call(port, "POST", "/pilot/answer", { body: { dialogId: state.run!.dialog!.id, answer: PHRASE } });
   state = await until(port, (s) => s.run?.dialog?.kind === "EMBED_STATE_WRITE");
   assert.equal(state.run!.dialog!.phrase, "EMBED STATE_WRITE DEV");
-  assert.match(state.run!.transcript, /WARNING: this contract sets embedStateWrite/);
+  assert.match(state.run!.transcript, /WARNING: this contract binds STATE_WRITE \(embedStateWrite\)/);
   const done = await answer(port, "embed state_write dev");
   assert.equal(done.run!.result!.exit, 1);
   assert.equal(done.run!.result!.code, "EMBED_STATE_WRITE_CONFIRMATION_MISMATCH");
@@ -851,6 +858,7 @@ test("prepare in the console writes the request and manifest from the contract a
   await call(port, "POST", "/pilot/answer", { body: { dialogId: first.run!.dialog!.id, answer: targetString(target) } });
   const second = await until(port, (s) => s.run?.status === "WAITING" && s.run.dialog?.kind === "RUN_PROJECT_CODE");
   await call(port, "POST", "/pilot/answer", { body: { dialogId: second.run!.dialog!.id, answer: PHRASE } });
+  await answerEmbed(port, "DEV");
   const sealed = await finished(port);
   assert.equal(sealed.run!.result!.exit, 0, JSON.stringify(sealed.run!.result));
 });
@@ -911,6 +919,7 @@ async function prepareAndSealInConsole(port: number, project: Project, target: R
   await call(port, "POST", "/pilot/answer", { body: { dialogId: first.run!.dialog!.id, answer: targetString(target) } });
   const second = await until(port, (s) => s.run?.status === "WAITING" && s.run.dialog?.kind === "RUN_PROJECT_CODE");
   await call(port, "POST", "/pilot/answer", { body: { dialogId: second.run!.dialog!.id, answer: PHRASE } });
+  await answerEmbed(port, "DEV");
   const sealedRun = (await finished(port)).run!.result!;
   assert.equal(sealedRun.exit, 0, JSON.stringify(sealedRun));
   // The review the approvers see names the cleanup marker (the deletion unit) the sealed plan was checked for.

@@ -103,7 +103,32 @@ Nothing else is in the role: no `*`, no `Microsoft.Authorization/*` action (so A
 
 Offline evidence for this section, all synthetic: `terraform fmt -check`, `init -backend=false`, `validate` and `terraform test` (`bootstrap/aws/tests/discovery.tftest.hcl`, a mocked provider: the default, the deny with and without an override, the managed-policy allowlist and its lookalikes, and the exception rules with every wildcard form) with Terraform 1.16.4 and hashicorp/aws 6.68.0; `test/discovery-scope.test.ts` and `test/act-dev1-automation.test.py` read the policy as written. None of this shows that AWS evaluates the policy as intended.
 
-If the contract sets `embedStateWrite` (opt-in, Terraform engine only, `docs/act-pilot-apply.md`), sealing and `qualify` also carry the STATE_WRITE principal's non-secret settings, so STATE_WRITE must be usable on the machine that seals: its role or client, and its OIDC token file path, must be configured there, and its trust conditions (and any required reviewers on its environment) apply to sealing as well as applying. Sealing is then write-capable at the backend. This is unverified on a real backend.
+Every Terraform contract sets `embedStateWrite: true` (required since owner decision 6486426552; `docs/act-pilot-apply.md`). Sealing and `qualify` therefore also carry the STATE_WRITE principal's non-secret settings, so STATE_WRITE must be usable on the machine that seals:
+- its role or client, and its OIDC token file path, must be configured there;
+- its trust conditions, and any required reviewers on its environment, apply to sealing as well as applying.
+
+Sealing is then write-capable at the backend. This is shown in emulation only, not on a real backend. On Azure, no identity may carry a client secret: the azurerm backend would prefer it over the plan's binding, so it is refused.
+
+### APPLY and the state (Azure)
+
+The owner decision 6486426552 (#39) asks for two things on Azure. The first is a correct backend binding: the plan names STATE_WRITE. The second is an effective denial of APPLY's access to the state, as a supplement to the binding, not a substitute. The binding is in place (`docs/act-pilot-apply.md`). **The effective denial is not achievable with the mechanisms `bootstrap/azure` can use. Azure Terraform stays BLOCKED on it** (`config/release/status.json`, `act:azure-terraform`). This needs an owner decision.
+
+What the bootstrap has today is denial by **absence** of a grant:
+- APPLY has no role on the state resource group, account or container.
+- None of APPLY's custom roles has a data action. Both are defined and assigned at the pilot resource group only.
+- The account takes no shared key and no SAS.
+
+`test/bootstrap-azure.test.ts` pins all of this. The weakness is that a later grant would not be blocked. What an explicit denial would need, and why each candidate fails:
+
+| Mechanism | Why it does not deny APPLY on the state |
+| --- | --- |
+| RBAC deny assignment | A customer cannot create one directly. Azure creates them only for managed applications and deployment stacks. |
+| Deployment-stack deny settings | Whether they cover blob **data** actions (read, write, lease) is unverified offline. This configuration claims nothing it cannot show. |
+| ABAC condition | It narrows only the role assignment that carries it. It cannot remove access that APPLY gets from another assignment. |
+| Network rules, private endpoint | They tell networks apart, not identities. APPLY runs on the same host as STATE_WRITE. |
+| ADLS Gen2 ACL | It is consulted only when RBAC has not granted access, so it cannot override an RBAC grant. |
+
+The reasoning is also in `bootstrap/azure/modules/environment/main.tf`, next to the state role assignments. Nothing here was run against Azure.
 
 Other properties:
 

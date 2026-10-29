@@ -255,7 +255,10 @@ function prepareWorkspace(session: Session, input: WorkspaceInput): void {
 
 /**
  * The backend binding: the backend init saved must be the contract's, so the project's own backend block cannot aim state somewhere
- * else, and any identity setting it saved must be the STATE_WRITE identity's own in `env`, the environment init's configuration came from.
+ * else, and it must name the STATE_WRITE identity, with that identity's own settings in `env`, the environment init's configuration
+ * came from (owner decision 6486426552: explicit STATE_WRITE binding). An absent identity setting is refused, because Terraform would
+ * then take the backend's credentials from the process that runs it: APPLY's for `apply <planfile>`. Checked at seal (the binding the
+ * plan embeds), at the apply's prepare and at cleanup, each before anything can change.
  */
 function assertBackendInContract(work: string, pinned: PilotTarget, spec: ProviderSpec, env: NodeJS.ProcessEnv): void {
   let saved: unknown;
@@ -265,7 +268,7 @@ function assertBackendInContract(work: string, pinned: PilotTarget, spec: Provid
     saved = JSON.parse(readFileSync(file, "utf8"));
   } catch { return stop("BACKEND_UNREADABLE"); }
   const backend = (saved as { backend?: unknown } | null)?.backend;
-  if (!spec.savedBackendMatches(isRecord(backend) ? backend : {}, pinned, env)) stop("BACKEND_NOT_IN_CONTRACT");
+  if (!spec.savedBackendMatches(isRecord(backend) ? backend : {}, pinned, env, true)) stop("BACKEND_NOT_IN_CONTRACT");
 }
 
 // --- the change list -----------------------------------------------------------------------------------------
@@ -654,13 +657,15 @@ export const TERRAFORM: EngineSpec = {
   plan(input) {
     const planFile = join(input.scratchDir, SEAL_PLAN_FILE);
     const embed = input.embedStateWrite === true;
+    // The contract requires the binding (contract.ts); a seal without it is refused here too, before any engine runs.
+    if (!embed) return stop("STATE_WRITE_NOT_EMBEDDED");
     const backendConfigPath = join(input.scratchDir, APPLY_BACKEND_CONFIG_FILE);
     const session = sealSession(input);
     try {
       prepareWorkspace(session, {
         snapshotPath: input.snapshotPath, engineVersion: input.engineVersion, target: input.target,
         stateIdentity: "STATE", backendType: input.spec.backendType, selectableProviders: input.spec.selectableProviders, initArgv: APPLY_INIT_ARGV,
-        // The contract's backend location (written 0600, removed as soon as init ends), and on opt-in STATE_WRITE's non-secret settings too, so the plan embeds them.
+        // The contract's backend location (written 0600, removed as soon as init ends), and STATE_WRITE's non-secret settings too (required for Terraform), so the plan embeds them.
         beforeInit: () => writeFileSync(backendConfigPath, embed
           ? input.spec.backendConfig(nonSecretStateWrite(input.env), input.pinned)
           : input.spec.backendLocation(input.pinned), { mode: 0o600, flag: "wx" }),
