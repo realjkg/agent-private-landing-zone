@@ -60,6 +60,13 @@ export const PACKAGE_OWNERS = {
   "scripts/field-package.ts": ["test/release-package-field-manifest.test.ts"],
 };
 
+// The shipped configuration and policy trees: the exclusion test scans them as package content (no secret, no service), and the
+// field manifest test reads the release configuration. A change anywhere under them selects those tests, beside other owners.
+export const PACKAGE_TREE_OWNERS = {
+  "config/": ["test/release-package-exclusions.test.ts", "test/release-package-field-manifest.test.ts"],
+  "policy/": ["test/release-package-exclusions.test.ts"],
+};
+
 // Fixtures a test reads from disk (not imported), so the import closure never selects their owner.
 export const FIXTURE_OWNERS = {
   "test/fixtures/backend-pin/cases.json": ["test/apply-backend-pin-real.test.ts"],
@@ -203,6 +210,7 @@ export function planChanged(changedPaths, files) {
   for (const path of changed) {
     if (Object.hasOwn(TEMPLATE_OWNERS, path)) addExisting(selected, files, TEMPLATE_OWNERS[path]);
     if (Object.hasOwn(PACKAGE_OWNERS, path)) addExisting(selected, files, PACKAGE_OWNERS[path]);
+    for (const [root, owners] of Object.entries(PACKAGE_TREE_OWNERS)) if (path.startsWith(root)) addExisting(selected, files, owners);
     if (INVENTORY_INPUT.test(path)) addExisting(selected, files, INVENTORY_GUARDS);
     if (cited.has(path)) addExisting(selected, files, [ACCEPTANCE_TEST]);
     if (RELEASE_STATUS_INPUT.test(path)) {

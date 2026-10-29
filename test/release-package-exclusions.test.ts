@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { gzipSync } from "node:zlib";
+import { deflateRawSync, gzipSync } from "node:zlib";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -23,31 +23,34 @@ const tsx = resolve(repository, "node_modules/.bin/tsx");
 const cli = resolve(repository, "src/cli/release-package.ts");
 const b64url = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
 const jwt = () => [b64url({ alg: "RS256", typ: "JWT" }), b64url({ sub: "repo:example/example:environment:act-dev", aud: "sts.amazonaws.com", exp: 1 }), "s".repeat(43)].join(".");
-const pem = (type: "pkcs8" | "pkcs1") => generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey.export({ type, format: "pem" }).toString();
+const pem = (type: "pkcs8" | "pkcs1") => generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type, format: "pem" }).toString();
 const enabledContract = (extra: Record<string, unknown> = {}) => JSON.stringify({
   schemaVersion: 1, enabled: true, provider: "AWS", engine: "TERRAFORM", targets: {}, requiredApprovals: {}, maxApprovalAgeMinutes: 60,
   approvers: [], killSwitchPath: ".runs/apply/KILL", ...extra,
 });
 const codes = (findings: { code: ExclusionCode }[]) => [...new Set(findings.map((x) => x.code))].sort();
 const base40 = () => "wJalrXUtnFEMI/K7MDENG/" + "bPxRfiCYEXAMPLEKEY"; // 40 characters, the AWS secret key length
-/** A stored (uncompressed) zip with the given entry names, written the way zip tools write one: local headers, directory, end record. */
-function zip(names: string[]): Buffer {
+/** A zip written the way zip tools write one (local headers, directory, end record); each entry stored, deflated or a given method. */
+function zipFiles(entries: [string, Buffer][], method: 0 | 8 | 12 = 0): Buffer {
   const locals: Buffer[] = [];
   const central: Buffer[] = [];
   let offset = 0;
-  for (const name of names) {
-    const body = Buffer.from("x");
+  for (const [name, content] of entries) {
+    const body = method === 8 ? deflateRawSync(content) : content;
     const nameBytes = Buffer.from(name);
-    const local = Buffer.alloc(30); local.writeUInt32LE(0x04034b50, 0); local.writeUInt32LE(1, 18); local.writeUInt32LE(1, 22); local.writeUInt16LE(nameBytes.length, 26);
-    const entry = Buffer.alloc(46); entry.writeUInt32LE(0x02014b50, 0); entry.writeUInt32LE(1, 20); entry.writeUInt32LE(1, 24); entry.writeUInt16LE(nameBytes.length, 28); entry.writeUInt32LE(offset, 42);
+    const local = Buffer.alloc(30); local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(method, 8);
+    local.writeUInt32LE(body.length, 18); local.writeUInt32LE(content.length, 22); local.writeUInt16LE(nameBytes.length, 26);
+    const entry = Buffer.alloc(46); entry.writeUInt32LE(0x02014b50, 0); entry.writeUInt16LE(method, 10);
+    entry.writeUInt32LE(body.length, 20); entry.writeUInt32LE(content.length, 24); entry.writeUInt16LE(nameBytes.length, 28); entry.writeUInt32LE(offset, 42);
     locals.push(local, nameBytes, body); central.push(entry, nameBytes);
-    offset += 30 + nameBytes.length + 1;
+    offset += 30 + nameBytes.length + body.length;
   }
   const directory = Buffer.concat(central);
-  const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(names.length, 8); end.writeUInt16LE(names.length, 10);
+  const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10);
   end.writeUInt32LE(directory.length, 12); end.writeUInt32LE(offset, 16);
   return Buffer.concat([...locals, directory, end]);
 }
+const zip = (names: string[]) => zipFiles(names.map((name) => [name, Buffer.from("x")]));
 
 /** The planted files, one per owner-listed exclusion, each with the code the guard must give it. */
 const PLANTED: readonly { path: string; body: () => string | Buffer; code: ExclusionCode }[] = [
@@ -123,6 +126,17 @@ const PLANTED: readonly { path: string; body: () => string | Buffer; code: Exclu
   { path: "config/pilot-wrapped.json", body: () => JSON.stringify({ pilots: { dev: JSON.parse(enabledContract()) } }), code: "ENABLED_CONTRACT" },
   { path: "config/pilot-no-approvers.json", body: () => JSON.stringify({ enabled: true, provider: "AWS", engine: "TERRAFORM", targets: {} }), code: "ENABLED_CONTRACT" },
   { path: "config/authorize-only.json", body: () => JSON.stringify({ authorize: { DEV: ["APPLY"] } }), code: "ENABLED_CONTRACT" },
+  { path: "dist/aws-secret-key.env", body: () => "AWS_SECRET_KEY=" + base40() + "\n", code: "TOKEN" },
+  { path: "dist/secret-access-key.yml", body: () => "SECRET_ACCESS_KEY: " + base40() + "\n", code: "TOKEN" },
+  { path: "dist/sas-sp.txt", body: () => "https://example.net/c?sp=r&sig=" + "abcdEFGH1234abcd%3D", code: "TOKEN" },
+  { path: "dist/sas-host.txt", body: () => "https://acct.blob.core.windows.net/c/x?sig=" + "abcdEFGH1234abcd%3D", code: "TOKEN" },
+  // N8: zip contents, stored or deflated, are judged as files of the package; an entry that cannot be read fails closed.
+  { path: "work/creds.zip", body: () => zipFiles([["readme.txt", Buffer.from("hello")], ["credentials", Buffer.from("[default]\naws_access_key_id = x\n")]], 8), code: "CLOUD_CREDENTIALS" },
+  { path: "work/pilot.zip", body: () => zipFiles([["pilot.json", Buffer.from(enabledContract())]]), code: "ENABLED_CONTRACT" },
+  { path: "work/keys.zip", body: () => zipFiles([["id_ed25519", Buffer.from("x")]], 8), code: "PRIVATE_KEY" },
+  { path: "work/bzip.zip", body: () => zipFiles([["notes.txt", Buffer.from("x")]], 12), code: "UNREADABLE" },
+  { path: "config/authorize-object.json", body: () => JSON.stringify({ authorize: { DEV: { APPLY: true } } }), code: "ENABLED_CONTRACT" },
+  { path: "config/padded.json", body: () => Buffer.concat([Buffer.alloc(8), Buffer.from(enabledContract()), Buffer.alloc(8)]), code: "ENABLED_CONTRACT" },
   { path: "dist/glued.txt", body: () => "x" + jwt(), code: "TOKEN" },
   { path: "dist/glued-gh.txt", body: () => "token_ghp_" + "A1b2C3d4".repeat(5), code: "TOKEN" },
 ];
@@ -253,6 +267,36 @@ test("staging refuses a folder that is not empty and a checkout that is not buil
   }
 });
 
+test("staging names are read NUL-separated and removed only inside the stage: a newline in a name, glob characters or a leading dash in STAGE change nothing in the checkout", () => {
+  const source = checkout();
+  const parent = mkdtempSync(join(tmpdir(), "alz-pkg-odd-"));
+  try {
+    // The review's probe: a committed name with a newline once split into ".json", which was removed from the checkout.
+    writeFileSync(join(source, "config", "act-pilot-contract\n.json"), enabledContract());
+    writeFileSync(join(source, ".json"), "checkout file\n");
+    writeFileSync(join(source, "config", ".json"), "checkout file\n");
+    for (const name of ["g[x]* stage", "-dash-stage"]) {
+      const run = spawnSync("bash", [join(repository, "scripts/release-stage.sh"), name], { cwd: parent, encoding: "utf8", timeout: 60000, env: { ...process.env } });
+      // The script stages from the checkout it runs in.
+      assert.notEqual(run.status, 0, "a folder that is not a checkout is refused");
+      const staged = spawnSync("bash", ["-c", 'cd "$1" && "$2" "$3"', "stage", source, join(repository, "scripts/release-stage.sh"), join(parent, name)], { encoding: "utf8", timeout: 60000 });
+      assert.equal(staged.status, 0, staged.stderr);
+      const stageConfig = join(parent, name, "config");
+      assert.equal(existsSync(join(stageConfig, "act-pilot-contract\n.json")), false, name + ": the newline name is left out");
+      assert.equal(existsSync(join(stageConfig, "act-pilot-contract.json")), false, name);
+      assert.equal(existsSync(join(stageConfig, "evidence-runner.json")), false, name + ": glob characters in STAGE do not keep the runner configuration");
+      assert.ok(existsSync(join(stageConfig, "tool-pins.json")), name);
+      assert.ok(existsSync(join(stageConfig, ".json")), name + ": an unrelated staged file stays");
+    }
+    // Nothing in the checkout was touched.
+    for (const kept of [".json", "config/.json", "config/act-pilot-contract\n.json", "config/act-pilot-contract.json", "config/evidence-runner.json"]) {
+      assert.ok(existsSync(join(source, kept)), kept + " stays in the checkout");
+    }
+  } finally {
+    cleanup(source, parent);
+  }
+});
+
 /** Docker's .dockerignore rule: the last pattern that matches a path, or one of its parent folders, decides; `!` keeps. */
 function dockerIgnored(patterns: string[], path: string): boolean {
   let ignored = false;
@@ -354,7 +398,7 @@ test("release-package --verify refuses a manifest that names excluded content, e
 test("the package installs no runner service or launch agent: the staged and image file sets, and the shipped sources, configuration and policy, carry none", () => {
   // The staging script copies exactly these, so scripts/ (the identity runner hook) and bootstrap/ are never in the archive.
   const script = readFileSync(join(repository, "scripts/release-stage.sh"), "utf8");
-  const staged = [...script.matchAll(/^\s*cp (?:-R )?(.+?) "\$STAGE(?:\/[a-z]+)?\/?"$/gm)].flatMap((m) => m[1].split(/\s+/)).sort();
+  const staged = [...script.matchAll(/^\s*cp (?:-R )?(?:-- )?(.+?) "\$STAGE_ABS(?:\/[a-z]+)?\/?"$/gm)].flatMap((m) => m[1].split(/\s+/)).sort();
   assert.deepEqual(staged, ["alz", "config", "dist", "package-lock.json", "package.json", "policy", "sbom.cdx.json"]);
   // The runtime image copies the same kind of content, and nothing that registers or starts a runner.
   const dockerfile = readFileSync(join(repository, "Dockerfile"), "utf8");

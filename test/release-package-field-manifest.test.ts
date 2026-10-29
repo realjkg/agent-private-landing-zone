@@ -143,6 +143,12 @@ test("a model digest is VERIFIED only from a passed --production run of this com
     ["a mutation observed", verifyRun(digests, { production: { ...ok.production, session: { mutationObserved: true } } })],
     ["a stack check failed", verifyRun(digests, { stackChecks: [{ name: "default stack", passed: false }] })],
     ["the model's qualification failed", verifyRun(digests, {}, { passed: false })],
+    // Admission's PRIVATE_MODEL predicate refuses these too (round-2 review N10).
+    ["a top-level mutation observed", verifyRun(digests, { mutationObserved: true })],
+    ["live models with synthetic AWS evidence", verifyRun(digests, { mode: "LIVE_LOCAL_MODELS_WITH_SYNTHETIC_AWS_EVIDENCE" })],
+    ["no target host", verifyRun(digests, { production: { ...ok.production, context: { sourceCommit: COMMIT } } })],
+    ["a production fixture", verifyRun(digests, { production: { ...ok.production, fixture: true } })],
+    ["a synthetic flag", verifyRun(digests, { synthetic: true })],
   ];
   for (const [label, run] of forged) assert.equal(status(run), "NOT_VERIFIED", label);
   assert.equal(status(verifyRun(digests, {}, { digest: "sha256:" + "f".repeat(64) })), "MODEL_DIGEST_MISMATCH", "another digest installed");
@@ -207,6 +213,8 @@ test("artifact digests come only from the files given, and the archive is bound 
   refusal(() => build({ ...inputs, archiveSha256File: undefined, archive: archiveInput(tarGz(p.files.filter(([n]) => n !== "dist/cli/operator.js"))) }), "FIELD_ARCHIVE_CONTENT_MISMATCH");
   refusal(() => build({ ...inputs, archiveSha256File: undefined, archive: archiveInput(tarGz([["link", Buffer.alloc(0)]], "2")) }), "FIELD_ARCHIVE_UNREADABLE");
   refusal(() => build({ ...inputs, archiveSha256File: undefined, archive: archiveInput(Buffer.from("not an archive")) }), "FIELD_ARCHIVE_UNREADABLE");
+  // An earlier, shadowed copy of a listed name carrying other content (round-2 review N9).
+  refusal(() => build({ ...inputs, archiveSha256File: undefined, archive: archiveInput(tarGz([["dist/cli/operator.js", Buffer.from(JSON.stringify({ enabled: true, provider: "AWS", engine: "TERRAFORM", targets: {}, authorize: { DEV: ["APPLY"] } }))], ...p.files])) }), "FIELD_ARCHIVE_UNREADABLE");
 
   refusal(() => build({ ...inputs, archiveSha256File: checksumOf(p.archive, "1".repeat(64)) }), "FIELD_ARCHIVE_CHECKSUM_MISMATCH");
   refusal(() => build({ archiveSha256File: checksumOf(p.archive) }), "FIELD_ARCHIVE_MISSING");

@@ -17,7 +17,7 @@ if [[ -z "$STAGE" ]]; then
   echo "usage: scripts/release-stage.sh STAGE_DIR" >&2
   exit 2
 fi
-if [[ -e "$STAGE" ]] && [[ -n "$(ls -A "$STAGE")" ]]; then
+if [[ -e "$STAGE" ]] && [[ -n "$(ls -A -- "$STAGE")" ]]; then
   echo "release-stage: $STAGE is not empty; stage into a new folder" >&2
   exit 1
 fi
@@ -28,16 +28,28 @@ for source in dist policy config package.json package-lock.json alz sbom.cdx.jso
   fi
 done
 
-mkdir -p "$STAGE"
-cp -R dist "$STAGE/dist"
-cp -R policy "$STAGE/policy"
-cp -R config "$STAGE/config"
-cp package.json package-lock.json alz sbom.cdx.json "$STAGE/"
-chmod +x "$STAGE/alz"
+mkdir -p -- "$STAGE"
+# Every later path is under this absolute, resolved folder, whatever characters STAGE holds (spaces, globs, a leading dash).
+STAGE_ABS="$(cd -- "$STAGE" && pwd -P)"
+cp -R -- dist "$STAGE_ABS/dist"
+cp -R -- policy "$STAGE_ABS/policy"
+cp -R -- config "$STAGE_ABS/config"
+cp -- package.json package-lock.json alz sbom.cdx.json "$STAGE_ABS/"
+chmod +x -- "$STAGE_ABS/alz"
 
-# The owner's files: removed from the stage only, each one named.
-find "$STAGE/config" \( -name 'act-pilot-contract*' ! -name '*.example.json' \) -o -path "$STAGE/config/evidence-runner.json" |
-  while IFS= read -r owned; do
-    echo "release-stage: left out the owner's ${owned#"$STAGE"/}"
-    rm -rf -- "$owned"
-  done
+# The owner's files: removed from the stage only, each one named. Names are read NUL-separated from inside the staged config/
+# folder, so no character in a name or in STAGE can split a name or point the removal anywhere else; a path that does not
+# resolve inside the stage is refused, never removed.
+# The list is read completely before anything is removed.
+mapfile -d '' -t owned_files < <(cd -- "$STAGE_ABS/config" && find . \( \( -name 'act-pilot-contract*' ! -name '*.example.json' \) -o -path './evidence-runner.json' \) -prune -print0)
+for owned in "${owned_files[@]}"; do
+  relative="${owned#./}"
+  target="$STAGE_ABS/config/$relative"
+  parent="$(cd -- "$(dirname -- "$target")" && pwd -P)"
+  case "$parent/" in
+    "$STAGE_ABS"/*) ;;
+    *) echo "release-stage: refusing to remove a path outside the stage: config/$relative" >&2; exit 1 ;;
+  esac
+  printf "release-stage: left out the owner's config/%s\n" "$relative"
+  rm -rf -- "$target"
+done

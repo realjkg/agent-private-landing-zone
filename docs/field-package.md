@@ -39,13 +39,14 @@ So a build from the authorization commit still packages, and the package still c
 | The owner's pilot contract `config/act-pilot-contract.json` (enabled or not), a draft of it, the retired pin, or any other `act-pilot-contract*` file except the disabled `*.example.json` shapes | name | `PILOT_CONTRACT` |
 | A pilot contract that is enabled or carries an `authorize` entry, under any name: JSON (with a BOM, UTF-16, nested in an array or object), YAML, or one gzip or base64 layer of either | content | `ENABLED_CONTRACT` |
 | The owner's runner configuration `config/evidence-runner.json`, which names customer targets | name | `OWNER_CONFIGURATION` |
-| Tokens and keys in any file: JWTs (delivered `<IDENTITY>.jwt` files included), GitHub tokens, AWS access key ids, AWS secret access keys (by their key name and a 40-character value), Azure storage keys and connection strings (`AccountKey=`, `SharedAccessSignature=`), and Azure SAS URLs (`sig=` with `sv=` or `se=`); `.env`, `.npmrc` and `.netrc` files by name | content and name | `TOKEN` |
+| Tokens and keys in any file: JWTs (delivered `<IDENTITY>.jwt` files included), GitHub tokens, AWS access key ids, AWS secret access keys (by a key name such as `aws_secret_access_key`, `AWS_SECRET_KEY`, `SECRET_ACCESS_KEY` or `SecretAccessKey` and a 40-character value), Azure storage keys and connection strings (`AccountKey=`, `SharedAccessSignature=`), and Azure SAS URLs (`sig=` with another SAS field such as `sv=`, `se=` or `sp=`, or on a `*.core.windows.net` host); `.env`, `.npmrc` and `.netrc` files by name | content and name | `TOKEN` |
 | Private keys: PEM (also escaped inside JSON), OpenSSH, PKCS#8/#12, Java keystores, PuTTY, kubeconfig client keys, `id_*` | content and name | `PRIVATE_KEY` |
 | Cloud credentials: an AWS shared-credentials file under any name (an INI section with `aws_*` keys), a cloud service-account key file, and the `.aws`, `.azure` and `gcloud` folders | content and name | `CLOUD_CREDENTIALS` |
 | Runner registration (`.runner`, `.credentials*`, `.service`, `svc.sh`, `actions-runner/`) | name | `RUNNER_REGISTRATION` |
 | Service units: launchd `.plist`, systemd `.service`, `.timer` and `.socket`, `LaunchAgents/`, `LaunchDaemons/` | name | `SERVICE_UNIT` |
 | Terraform state, by name (`*.tfstate*`, `terraform.tfstate.d/`) and by content (`terraform_version`, `lineage` and `serial`); working folders; real `*.tfvars` | content and name | `TERRAFORM_STATE`, `TERRAFORM_WORKDIR`, `TERRAFORM_VARIABLES` |
-| Saved plans: by name (`*.tfplan`, `*.tfplan.json`, `tfplan`, `plan.out`, `*.plan`); a zip under any name whose directory holds `tfplan`, `tfstate` or `tfconfig/` entries (a zip whose directory cannot be read fails closed); a JSON plan by content | content and name | `SAVED_PLAN` |
+| Saved plans: by name (`*.tfplan`, `*.tfplan.json`, `tfplan`, `plan.out`, `*.plan`); a zip under any name whose directory holds `tfplan`, `tfstate` or `tfconfig/` entries; a JSON plan by content | content and name | `SAVED_PLAN` |
+| Inside a zip that starts at the file's first byte: every stored or deflated entry is inflated in memory and judged by these same rules, by its name and content, one level deep. A zip whose directory cannot be read, or an entry in another compression method, fails closed | content | the entry's own code, or `UNREADABLE` |
 | Anything under `.runs/`: evidence, sealed plans, ledgers, journals, qualification records | name | `RUN_EVIDENCE` |
 | Pilot evidence and proposals elsewhere | name | `PILOT_EVIDENCE` |
 | Sealed plans and signed approvals, under any name | content | `SEALED_PLAN`, `SIGNED_APPROVAL` |
@@ -58,10 +59,14 @@ So a build from the authorization commit still packages, and the package still c
 - **One rule is limited to non-code files.** The YAML contract rule does not read JavaScript, TypeScript, CSS or HTML files, whose object literals read like YAML. Every other rule reads them.
 
 **Known limitations (not detected):**
-- more than one layer of encoding (for example base64 of base64), encrypted or password-protected archives, and archive formats other than zip inside the package;
-- contracts nested more than four levels deep in JSON;
-- identifiers that are not secrets (account, subscription or project ids, resource names) in a file that is not pilot evidence by name or shape;
-- secrets in a format none of the rules above names.
+- **More than one encoding layer:** base64 of base64, gzip of base64, gzip of gzip, and base64 embedded in a JSON value. One gzip or base64 layer of the whole file, and base64 of gzip, are decoded.
+- **Archives beyond one zip level:** a zip inside a zip, tar or tgz; a zip with bytes before it (for example a self-extracting archive); encrypted or password-protected zips (an entry that cannot be inflated fails closed); and archive formats other than zip.
+- **Contract forms the rules do not parse:** YAML with quoted keys or a JSON flow mapping; a contract written as a literal inside a JavaScript, TypeScript, CSS or HTML file (the YAML rule skips code files, and the JSON rules read whole-file JSON); JSON nested more than four levels deep.
+- **Weak shapes:** a SAS URL whose only SAS field is `sig=` on a host other than `*.core.windows.net`; secrets in a format none of the rules above names.
+- **Identifiers that are not secrets:** account, subscription or project ids and resource names in a file that is not pilot evidence by name or shape.
+- **The root `node_modules`:** not walked (above).
+
+None of these is the file the product reads as its authority: `config/act-pilot-contract.json` is matched by name, case-insensitively, and staging leaves it out.
 
 **What the guard is for.** It is a backstop, not a scanner of the customer's data. Staging, which never copies `.runs/` or anything outside the listed folders, is the first control.
 
@@ -90,7 +95,7 @@ npx tsx scripts/field-package.ts --source-commit <accepted SHA> --out <folder> \
 The inputs are the files `supply-chain.yml` uploads as its `agent-private-landing-zone-supply-chain` artifact. The generator writes `field-package.json` and its rendering, `field-package.md`, into `<folder>`. It refuses, and writes nothing, in these cases:
 - the checkout is not exactly that commit, or has uncommitted changes;
 - the release manifest names another commit, fails its own validation or lists an excluded file;
-- the archive is given without its release manifest, is not that manifest's package file for file, or holds a link;
+- the archive is given without its release manifest, is not that manifest's package file for file, holds a link, or repeats a name (an earlier, shadowed copy could ride along);
 - the SBOM or the archive checksum contradicts another input;
 - the journey matrix does not check.
 
@@ -106,7 +111,7 @@ The inputs are the files `supply-chain.yml` uploads as its `agent-private-landin
 | `toolPins` | `config/tool-pins.json` (Terraform, Ollama, AWS CLI, Azure CLI, Bicep, Node) | Always present |
 | `scans.sbom`, `scans.trivy`, `scans.npmAudit` | CycloneDX, Trivy JSON and `npm audit --json` output, summarized by severity | `NOT_RUN` |
 | `platforms`, `supportedPlatforms` | `platform:*` in `config/release/status.json`. A platform is supported only when its gate is `PASS` on LIVE evidence for this commit | `NOT_QUALIFIED` |
-| `models` | The committed pins in `config/tool-pins.json` and one `./alz models verify --production` run. A model is `VERIFIED` only when that run passed as a whole and in every production and stack check, was made from this commit (`production.context.sourceCommit`) under the prompt policy this commit ships (`policyHash`), carries no fixture or synthetic marker, and its record shows the committed pin installed and qualified. `models verify` writes no LIVE label of its own, so a production run on the target host is the strongest claim its output can make | `MODEL_DIGEST_UNPINNED`, `NOT_VERIFIED` or `MODEL_DIGEST_MISMATCH` |
+| `models` | The committed pins in `config/tool-pins.json` and one `./alz models verify --production` run. A model is `VERIFIED` only when that run passed as a whole and in every production and stack check, was made from this commit (`production.context.sourceCommit`) under the prompt policy this commit ships (`policyHash`), carries no fixture, synthetic or mutation marker, names its target host, and its record shows the committed pin installed and qualified. These are the release admission review's private-model rules plus the policy and pin checks; sharing one exported predicate with `src/qualification/release-admission.ts` is a follow-up. `models verify` writes no LIVE label of its own, so a production run on the target host is the strongest claim its output can make | `MODEL_DIGEST_UNPINNED`, `NOT_VERIFIED` or `MODEL_DIGEST_MISMATCH` |
 | `paths` (six-path matrix) | The provider and engine pairs the accepted ProductionDeploymentContract admits (`src/qualification/production-contract.ts`), the journey rows (`config/acceptance/journeys.json`, checked by `src/release/acceptance.ts`) and the `act:*` gates. A path is `LIVE_QUALIFIED` only when its gate is `PASS` on LIVE evidence for this commit and its journey row is `LIVE_PASS` | `NOT_QUALIFIED`, or `NOT_AVAILABLE` when the product does not admit the path |
 | `knownLimitations`, `outOfScope`, `followUps` | Every in-scope gate that has not passed, the owner's scope exclusions, and every work-graph node that is not DONE | Always present |
 | `act` | `DISABLED` by default, with no packaged contract | Always |

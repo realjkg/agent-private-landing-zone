@@ -25,6 +25,8 @@ ENV ALZ_SOURCE_COMMIT=$SOURCE_COMMIT
 
 COPY test/ ./test/
 COPY Dockerfile ./Dockerfile
+# test/release-package-exclusions.test.ts reads the context rules that keep the owner's contract out of the image. Test stage only.
+COPY .dockerignore ./.dockerignore
 COPY scripts/ ./scripts/
 COPY security/ ./security/
 COPY config/ ./config/

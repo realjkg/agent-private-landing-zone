@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, w
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { CANARY_OWNERS, TERRAFORM_CANARY_UNIT_TEST, diffCommand, EXIT_OVER_CAP, FIXTURE_OWNERS, importsOf, PACKAGE_OWNERS, planChanged, routeOf, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
+import { CANARY_OWNERS, TERRAFORM_CANARY_UNIT_TEST, diffCommand, EXIT_OVER_CAP, FIXTURE_OWNERS, importsOf, PACKAGE_OWNERS, PACKAGE_TREE_OWNERS, planChanged, routeOf, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
 
 function fixture() {
   return new Map([
@@ -634,4 +634,14 @@ test("the field package's staging, image and generator files select the package 
   // The image files keep their existing owners too.
   files.set("test/container-security.test.ts", "test()");
   assert.ok(planChanged(["Dockerfile"], files).nodeTests.includes("test/container-security.test.ts"));
+});
+
+test("a change under the shipped config/ or policy/ tree selects the package tests that scan or read it", () => {
+  const files = fixture();
+  for (const owners of Object.values(PACKAGE_TREE_OWNERS)) for (const owner of owners) files.set(owner, "test()");
+  for (const path of ["config/tool-pins.json", "config/acceptance/journeys.json", "policy/opa/security.rego"]) {
+    files.set(path, "x");
+    const root = Object.keys(PACKAGE_TREE_OWNERS).find((r) => path.startsWith(r));
+    for (const owner of PACKAGE_TREE_OWNERS[root]) assert.ok(planChanged([path], files).nodeTests.includes(owner), path + " selects " + owner);
+  }
 });

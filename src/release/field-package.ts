@@ -194,11 +194,14 @@ function auditSummary(input: { file: string; bytes: Buffer }): FieldPackageManif
 
 /** A marker that a record was made by a fixture, a simulation or a synthetic run, anywhere in the object or its records. */
 const syntheticMarker = (value: Record<string, unknown>): boolean =>
-  value.fixture === true || value.mock === true || value.simulation === true ||
-  value.evidenceMode === "SYNTHETIC" || value.label === "SYNTHETIC" || value.mode === "OFFLINE_FIXTURE_ONLY";
+  value.fixture === true || value.mock === true || value.simulation === true || value.synthetic === true ||
+  value.evidenceMode === "SYNTHETIC" || value.label === "SYNTHETIC" ||
+  value.mode === "OFFLINE_FIXTURE_ONLY" || value.mode === "LIVE_LOCAL_MODELS_WITH_SYNTHETIC_AWS_EVIDENCE";
 
 /**
- * Why a `./alz models verify --production` run cannot vouch for any model of this commit, or undefined when it can. The run must
+ * Why a `./alz models verify --production` run cannot vouch for any model of this commit, or undefined when it can. It mirrors
+ * the release admission review's PRIVATE_MODEL predicate (src/qualification/release-admission.ts, not exported; sharing one
+ * exported predicate is the follow-up that removes the drift) and adds the policy and pin checks. The run must
  * be the production qualification on the target host (the same shape the release admission review's private-model gate
  * requires: production context, session, checks and stack checks all passed), bound to this commit, made under the prompt
  * policy this commit ships, passed as a whole, and carry no fixture or synthetic marker. `./alz models verify` writes no LIVE
@@ -206,12 +209,15 @@ const syntheticMarker = (value: Record<string, unknown>): boolean =>
  */
 export function modelRunProblem(evidence: unknown, commit: string): string | undefined {
   if (!isRecord(evidence) || !Array.isArray(evidence.records)) return "not ./alz models verify output";
-  if (syntheticMarker(evidence) || evidence.records.some((r) => isRecord(r) && syntheticMarker(r))) return "it is marked as a fixture or synthetic run";
+  if (syntheticMarker(evidence) || evidence.records.some((r) => isRecord(r) && syntheticMarker(r)) ||
+      (isRecord(evidence.production) && syntheticMarker(evidence.production))) return "it is marked as a fixture or synthetic run";
+  if (evidence.mutationObserved === true) return "it observed a mutation";
   if (evidence.passed !== true) return "the run as a whole did not pass";
   if (evidence.policyHash !== promptPolicyHash()) return "it was made under another prompt policy than this commit ships";
   const production = evidence.production;
   if (!isRecord(production) || !isRecord(production.context)) return "it is not a --production run, so it names no commit or target host";
   if (production.context.sourceCommit !== commit) return "it was made from another commit";
+  if (!isRecord(production.context.host)) return "it names no target host";
   if (production.passed !== true || !isRecord(production.session) || production.session.mutationObserved !== false ||
       !Array.isArray(production.checks) || production.checks.length === 0 || !production.checks.every((x) => isRecord(x) && x.passed === true)) {
     return "its production qualification did not pass";
@@ -406,7 +412,8 @@ export function buildFieldPackage(inputs: FieldPackageInputs, facts: RepositoryF
 
 /**
  * The regular files of a gzip tar archive (ustar, GNU long names, pax paths), by normalized path, read in memory without
- * extracting anything. A link or any other entry type that is not a directory is refused, as the package guard refuses it.
+ * extracting anything. A link or any other entry type that is not a directory is refused, as the package guard refuses it,
+ * and so is a name that appears twice.
  */
 export function tarFiles(gz: Buffer): Map<string, Buffer> {
   const tar = gunzipSync(gz, { maxOutputLength: 1024 * 1024 * 1024 });
@@ -433,6 +440,8 @@ export function tarFiles(gz: Buffer): Map<string, Buffer> {
     if (type === "5") continue;
     if (type !== "0" && type !== "\0" && type !== "7") throw new Error("entry " + name + " is not a regular file");
     if (name === "" || name.split("/").includes("..")) throw new Error("unsafe entry name");
+    // A repeated name would let an earlier, shadowed copy ride along with the certified one; refuse it.
+    if (files.has(name)) throw new Error("entry " + name + " appears more than once");
     files.set(name, Buffer.from(body));
   }
   return files;

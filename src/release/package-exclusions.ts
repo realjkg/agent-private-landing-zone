@@ -1,6 +1,6 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { gunzipSync } from "node:zlib";
+import { gunzipSync, inflateRawSync } from "node:zlib";
 
 /**
  * The field package exclusion guard (owner decision 2026-10-29, "Close ACT enablement blockers", item 4; docs/field-package.md).
@@ -91,15 +91,15 @@ const KUBE_CLIENT_KEY = /client-key-data:\s*[A-Za-z0-9+/]{40}/;
 const JWT = /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}/;
 const GITHUB_TOKEN = /(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})/;
 const AWS_ACCESS_KEY_ID = /(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])/;
-/** An AWS secret access key by its own key name (INI, environment, JSON or the STS SecretAccessKey field) and a 40-character value. */
-const AWS_SECRET = /(?:aws_?secret_?access_?key|SecretAccessKey)["']?\s*[:=]\s*["']?[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])/i;
+/** An AWS secret access key by its own key name (aws_secret_access_key, AWS_SECRET_KEY, SECRET_ACCESS_KEY, the STS SecretAccessKey field) and a 40-character value. */
+const AWS_SECRET = /(?:aws_?secret_?(?:access_?)?key|secret_?access_?key)["']?\s*[:=]\s*["']?[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])/i;
 const INI_SECTION = /^\s*\[[^\]\r\n]+\]\s*$/m;
 const AWS_INI_KEY = /^\s*aws_(?:access_key_id|secret_access_key|session_token)\s*=\s*\S/im;
 const AZURE_ACCOUNT_KEY = /AccountKey=[A-Za-z0-9+/]{20,}={0,2}/;
 const AZURE_SAS_STRING = /SharedAccessSignature=[^;\s"']*sig=/i;
 const SAS_SIG = /[?&]sig=[A-Za-z0-9%+/=]{16,}/g;
 
-/** An Azure SAS URL: a `sig=` signature in the same query as a `sv=` version or `se=` expiry. */
+/** An Azure SAS URL: a `sig=` signature with another SAS field (`sv=`, `se=`, `sp=` and the rest) or on an Azure storage host. */
 function sasUrl(text: string): boolean {
   for (const match of text.matchAll(SAS_SIG)) {
     const at = match.index ?? 0;
@@ -109,7 +109,7 @@ function sasUrl(text: string): boolean {
     const begin = query.slice(0, local).search(/[^\s"'<>]*$/);
     const finish = query.slice(local).search(/[\s"'<>]/);
     const url = query.slice(begin, finish < 0 ? undefined : local + finish);
-    if (/[?&](?:sv|se)=/.test(url)) return true;
+    if (/[?&](?:sv|se|sp|sr|srt|ss|st|spr|skoid|sktid)=/.test(url) || /\.core\.windows\.net[/:?]/i.test(url)) return true;
   }
   return false;
 }
@@ -119,7 +119,8 @@ const has = (value: Record<string, unknown>, ...keys: string[]) => keys.every((k
 const ENVIRONMENT_KEYS = new Set(["DEV", "QA", "PROD"]);
 /** A contract's `authorize` entry: environments mapped to the operations ACT may run there. */
 const authorizes = (value: unknown): boolean => isRecord(value) &&
-  Object.entries(value).some(([key, ops]) => ENVIRONMENT_KEYS.has(key.toUpperCase()) && (Array.isArray(ops) ? ops.length > 0 : typeof ops === "string"));
+  Object.entries(value).some(([key, ops]) => ENVIRONMENT_KEYS.has(key.toUpperCase()) &&
+    (Array.isArray(ops) ? ops.length > 0 : typeof ops === "string" || (isRecord(ops) && Object.keys(ops).length > 0)));
 
 /** What one parsed JSON value is, by shape, at any depth up to four (so a wrapper array or object does not hide it). */
 function shapeFindings(path: string, root: unknown): ExclusionFinding[] {
@@ -154,27 +155,45 @@ function yamlContract(text: string): boolean {
 const ZIP_LOCAL = 0x04034b50;
 const ZIP_CENTRAL = 0x02014b50;
 const ZIP_END = 0x06054b50;
-/** The entry names of a zip archive, read from its central directory without extracting anything; undefined when unreadable. */
-export function zipEntryNames(bytes: Buffer): string[] | undefined {
+/**
+ * The entries of a zip archive, read from its central directory without extracting anything to disk: each name, and its bytes
+ * when it is stored or deflated (inflated in memory, bounded). Undefined when the directory cannot be read.
+ */
+export function zipEntries(bytes: Buffer): { name: string; data?: Buffer }[] | undefined {
   const min = Math.max(0, bytes.length - 22 - 0xffff);
   for (let at = bytes.length - 22; at >= min; at--) {
     if (bytes.readUInt32LE(at) !== ZIP_END) continue;
     const count = bytes.readUInt16LE(at + 10);
     let offset = bytes.readUInt32LE(at + 16);
-    const names: string[] = [];
+    const entries: { name: string; data?: Buffer }[] = [];
     for (let i = 0; i < count; i++) {
       if (offset + 46 > bytes.length || bytes.readUInt32LE(offset) !== ZIP_CENTRAL) return undefined;
+      const method = bytes.readUInt16LE(offset + 10);
+      const compressed = bytes.readUInt32LE(offset + 20);
       const nameLength = bytes.readUInt16LE(offset + 28);
       const extra = bytes.readUInt16LE(offset + 30);
       const comment = bytes.readUInt16LE(offset + 32);
+      const local = bytes.readUInt32LE(offset + 42);
       if (offset + 46 + nameLength > bytes.length) return undefined;
-      names.push(bytes.subarray(offset + 46, offset + 46 + nameLength).toString("utf8"));
+      const name = bytes.subarray(offset + 46, offset + 46 + nameLength).toString("utf8");
+      let data: Buffer | undefined;
+      if (local + 30 <= bytes.length && bytes.readUInt32LE(local) === ZIP_LOCAL) {
+        const start = local + 30 + bytes.readUInt16LE(local + 26) + bytes.readUInt16LE(local + 28);
+        const raw = start + compressed <= bytes.length ? bytes.subarray(start, start + compressed) : undefined;
+        try {
+          if (raw && method === 0) data = Buffer.from(raw);
+          else if (raw && method === 8) data = inflateRawSync(raw, { maxOutputLength: 64 * 1024 * 1024 });
+        } catch { data = undefined; }
+      }
+      entries.push({ name, data: name.endsWith("/") ? Buffer.alloc(0) : data });
       offset += 46 + nameLength + extra + comment;
     }
-    return names;
+    return entries;
   }
   return undefined;
 }
+/** The entry names of a zip archive, or undefined when its directory cannot be read. */
+export const zipEntryNames = (bytes: Buffer): string[] | undefined => zipEntries(bytes)?.map((entry) => entry.name);
 const PLAN_ENTRY = /^(?:tfplan|tfstate|tfstate-prev|tfconfig\/.*)$/;
 
 /** The text forms of a file worth matching: as read, UTF-16 decoded, one gzip layer, and one base64 layer. Each is cheap to skip. */
@@ -212,13 +231,21 @@ function views(bytes: Buffer): string[] {
  * approval, Terraform state or a JSON plan. A zip is judged by its directory: one holding a Terraform plan's entries is a saved
  * plan, and a zip whose directory cannot be read fails closed.
  */
-export function contentExclusions(path: string, bytes: Buffer): ExclusionFinding[] {
+export function contentExclusions(path: string, bytes: Buffer, depth = 0): ExclusionFinding[] {
   const out: ExclusionFinding[] = [];
   const add = (code: ExclusionCode, reason: string) => { if (!out.some((x) => x.code === code && x.reason === reason)) out.push(finding(path, code, reason)); };
   if (bytes.length >= 4 && bytes.readUInt32LE(0) === ZIP_LOCAL) {
-    const names = zipEntryNames(bytes);
-    if (names === undefined) add("UNREADABLE", "a zip archive whose directory cannot be read");
-    else if (names.some((name) => PLAN_ENTRY.test(name))) add("SAVED_PLAN", "a saved Terraform plan (a zip holding tfplan, tfstate or tfconfig entries)");
+    const entries = zipEntries(bytes);
+    if (entries === undefined) add("UNREADABLE", "a zip archive whose directory cannot be read");
+    else {
+      if (entries.some((entry) => PLAN_ENTRY.test(entry.name))) add("SAVED_PLAN", "a saved Terraform plan (a zip holding tfplan, tfstate or tfconfig entries)");
+      // One level in: each stored or deflated entry is judged by name and content, as a file of the package would be.
+      for (const entry of entries) {
+        if (depth > 0) break;
+        if (entry.data === undefined) { add("UNREADABLE", "a zip entry that cannot be read in memory: " + entry.name); continue; }
+        for (const found of [...pathExclusions(entry.name), ...contentExclusions(entry.name, entry.data, depth + 1)]) add(found.code, "inside the zip, " + entry.name + ": " + found.reason);
+      }
+    }
   }
   for (const text of views(bytes)) {
     if (PEM_PRIVATE_KEY.test(text) || PUTTY_KEY.test(text) || KUBE_CLIENT_KEY.test(text)) add("PRIVATE_KEY", "the file holds a private key");
@@ -230,7 +257,8 @@ export function contentExclusions(path: string, bytes: Buffer): ExclusionFinding
     if (AZURE_ACCOUNT_KEY.test(text) || AZURE_SAS_STRING.test(text)) add("TOKEN", "the file holds an Azure storage key or connection string");
     if (sasUrl(text)) add("TOKEN", "the file holds an Azure shared access signature URL");
     if (!CODE_FILE.test(path) && yamlContract(text)) add("ENABLED_CONTRACT", "a pilot contract in YAML form that is enabled or carries an authorize entry");
-    const trimmed = text.trimStart();
+    // NUL padding around a JSON document does not hide it.
+    const trimmed = text.replace(/^[\s\u0000]+|[\s\u0000]+$/g, "");
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       let value: unknown;
       try { value = JSON.parse(trimmed); } catch { value = undefined; }
