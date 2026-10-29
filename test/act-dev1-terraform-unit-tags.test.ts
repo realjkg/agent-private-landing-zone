@@ -48,9 +48,13 @@ const AWS_CLOUD: Cloud = {
   address: "aws_cloudwatch_log_group.act_dev1", type: "aws_cloudwatch_log_group", tagAttributes: ["tags", "tags_all"],
   providerConfig: { aws: { name: "aws", full_name: AWS_SOURCE, expressions: { region: { references: ["var.region"] } } } },
 };
+/** The contract with every target at `location`. */
+const withLocation = <T extends { targets: Record<string, unknown> }>(contract: T, location: string): T =>
+  ({ ...contract, targets: Object.fromEntries(Object.entries(contract.targets).map(([env, target]) => [env, { ...(target as object), location }])) });
 const AZURE_CLOUD: Cloud = {
   // Owner decision E1: the contract's canary allowlist is the committed canary's one virtual network (the example contract's).
-  provider: "AZURE", dir: AZURE_DIR, contract: (kill) => withCanary(contractJson(kill), { resources: [{ type: "azurerm_virtual_network", count: 1 }] }), target: targetOf, env: identityEnv,
+  // Owner decision of 2026-10-28: each target names its authorized location, the region the canary's `location` variable places it in.
+  provider: "AZURE", dir: AZURE_DIR, contract: (kill) => withLocation(withCanary(contractJson(kill), { resources: [{ type: "azurerm_virtual_network", count: 1 }] }), "eastus2"), target: targetOf, env: identityEnv,
   vars: { resource_group_name: "rg-alz-pilot-dev", location: "eastus2", canary_name: "vnet-alz-act-dev-1-canary-01", owner: "qa" },
   address: "azurerm_virtual_network.act_dev1", type: "azurerm_virtual_network", tagAttributes: ["tags"],
   providerConfig: { azurerm: { name: "azurerm", full_name: AZURERM_SOURCE, expressions: { features: [{}], resource_provider_registrations: { constant_value: "none" } } } },
@@ -61,7 +65,8 @@ function plannedChange(cloud: Cloud, unitTags: Record<string, string>): unknown 
   const tags = { ...BASE_TAGS, ...unitTags };
   return {
     address: cloud.address, mode: "managed", type: cloud.type, name: "act_dev1", provider_name: cloud.provider === "AWS" ? AWS_SOURCE : AZURERM_SOURCE,
-    change: { actions: ["create"], before: null, after: Object.fromEntries(cloud.tagAttributes.map((name) => [name, tags])), after_unknown: { id: true } },
+    // The Azure canary's `location = var.location` resolves at plan time to the operator's value (owner decision of 2026-10-28 judges it).
+    change: { actions: ["create"], before: null, after: { ...Object.fromEntries(cloud.tagAttributes.map((name) => [name, tags])), ...(cloud.provider === "AZURE" ? { location: cloud.vars.location } : {}) }, after_unknown: { id: true } },
   };
 }
 
