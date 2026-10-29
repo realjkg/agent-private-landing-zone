@@ -135,3 +135,10 @@ spec:
         - provider: AWS
           engine: CDK
           mutation: CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET
+        # Owner decision 6483993252 (#39): DEV-only paths admitted in code. GCP / GCP_API is not listed (INT-2).
+        - provider: AZURE
+          engine: BICEP
+          mutation: AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE
+        - provider: GCP
+          engine: TERRAFORM
+          mutation: TERRAFORM_APPLY_OF_SEALED_PLAN

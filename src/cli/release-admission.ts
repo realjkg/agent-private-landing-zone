@@ -42,6 +42,9 @@ export async function releaseAdmission(args: string[]): Promise<void> {
       gate.id + (gate.blockers.length ? " (" + gate.blockers.join(", ") + ")" : ""));
   }
   if (result.actPilot) console.log("Pilot ACT (human-authorized, " + result.actPilot.provider + " " + result.actPilot.engine + ") under contract " + result.actPilot.contractSha256);
+  for (const path of result.actPilots) {
+    console.log("Pilot ACT path (human-authorized, " + path.provider + " " + path.engine + ") under contract " + path.contractSha256 + " from commit " + path.contractCommit);
+  }
   console.log("Source: " + sourceCommit);
   console.log("Candidate identity: " + result.candidateIdentityHash);
   console.log("Admission report: " + out);

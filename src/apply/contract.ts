@@ -303,15 +303,23 @@ export function duplicateKeyOf(source: string): string | undefined {
 
 /** The validated contract when it authorizes at least one operation, or a disabled result with the reason and the refusal code it maps to. Never throws. */
 export function loadPilotContract(path: string = repoPaths().contract): PilotContract | DisabledContract {
-  const off = (code: DisabledContract["code"], reason: string): DisabledContract => ({ enabled: false, reason, code });
   let source: string;
   try {
     source = readFileSync(path, "utf8");
   } catch (error) {
     return (error as NodeJS.ErrnoException)?.code === "ENOENT"
-      ? off("ACT_DISABLED", "contract file is missing")
-      : off("CONTRACT_INVALID", "contract file is unreadable");
+      ? { enabled: false, reason: "contract file is missing", code: "ACT_DISABLED" }
+      : { enabled: false, reason: "contract file is unreadable", code: "CONTRACT_INVALID" };
   }
+  return parsePilotContract(source);
+}
+
+/**
+ * The contract in `source`, the committed text of a contract file, judged exactly as `loadPilotContract` judges the file: release
+ * admission uses it for a path's contract read from that path's reviewed commit (src/qualification/release-admission.ts).
+ */
+export function parsePilotContract(source: string): PilotContract | DisabledContract {
+  const off = (code: DisabledContract["code"], reason: string): DisabledContract => ({ enabled: false, reason, code });
   let parsed: unknown;
   try { parsed = JSON.parse(source); } catch { return off("CONTRACT_INVALID", "contract could not be parsed as JSON"); }
   // The reviewed text is the authorization, so it states each field once: JSON.parse keeps the last of two keys silently.
