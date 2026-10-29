@@ -4,7 +4,6 @@ import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createDiscoveryGcpReader } from "../../observe/gcp-rest.js";
-import type { AdapterDescriptor, ResolvedTarget } from "../../teardown/driver/types.js";
 import { canonicalJson, type ArtifactManifest } from "../../teardown/manifest.js";
 import { ALZ_TAG_KEYS } from "../../teardown/unit.js";
 import { checkCredentialConfiguration, exchangeSubjectToken, impersonateServiceAccount, readRegularFile, readTokenFile, SERVICE_ACCOUNT, STS_TOKEN_URL, type GcpTokenFailure } from "../../tools/gcp-credentials.js";
@@ -19,6 +18,10 @@ import type { ApplyEnd, EngineApplyRun, EngineCleanupRun, EnginePlan, EnginePlan
 import { GCP_API_BACKEND_SENTINEL, GCP_API_TARGET, GCP_API_WORKSPACE, PARENT_LABEL, TOPIC_ID, TOPIC_PREFIX } from "../gcp-api-target.js";
 import { GCP } from "../providers/gcp.js";
 import type { PilotTarget, PlanChange, SealedUnit } from "../types.js";
+
+// The driver types this engine names, through the spec (no import from the teardown driver: test/teardown-driver-denials.test.ts).
+type AdapterDescriptor = EngineSpec["applyAdapter"];
+type ResolvedTarget = EngineRunInput["target"];
 
 /**
  * Path 6 of the narrow ACT-DEV release: GCP API-native provisioning (docs/act-pilot-gcp-api.md; the accepted design is
