@@ -78,12 +78,15 @@ test("release gate registry covers actual AWS, Azure, Pulumi and production obli
 
 test("the GCP gates are unmet requirements: they block an empty release, and no AWS or Azure report ever stands in for them", async () => {
   assert.deepEqual(previewScenarioOf("preview:terraform-gcp-brownfield"), { provider: "GCP", engine: "TERRAFORM", estate: "brownfield" });
-  // act:gcp-terraform waits for a Phase E GCP scenario (test/phase-e-simulated-builds.test.ts requires one per ACT path).
-  assert.equal(ACT_RELEASE_PATHS.some((path) => (path.provider as string) === "GCP"), false);
+  // act:gcp-terraform is derived from ACT_RELEASE_PATHS now that GCP Terraform has its Phase E scenario (owner decision 6481421924);
+  // GCP API-native has no release path until its engine is admitted (act:gcp-gcp_api is a later integration step).
+  assert.deepEqual(ACT_RELEASE_PATHS.filter((path) => path.provider === "GCP"), [{ provider: "GCP", engine: "TERRAFORM" }]);
+  assert.ok(PRODUCTION_RELEASE_GATES.some((gate) => gate.id === "act:gcp-terraform" && gate.mode === "LIVE_ACT"));
+  assert.ok(!PRODUCTION_RELEASE_GATES.some((gate) => gate.id.startsWith("act:gcp-") && gate.id !== "act:gcp-terraform"));
   const h = harness();
   try {
     const empty = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root });
-    for (const id of ["gcp-provider", "preview:terraform-gcp-brownfield"]) {
+    for (const id of ["gcp-provider", "preview:terraform-gcp-brownfield", "act:gcp-terraform"]) {
       assert.equal(empty.gates.find((g) => g.id === id)?.status, "BLOCKED", id);
       assert.ok(empty.blockers.some((m) => m.includes(id)), id);
     }
@@ -456,6 +459,25 @@ test("each listed provider/engine pair is admitted on its own; an unlisted pair 
   for (const [provider, engine] of [["AZURE", "CDK"], ["GCP", "TERRAFORM"], ["AWS", "PULUMI"], ["*", "*"]]) {
     assert.deepEqual(await attempt(provider, engine), ["ACT_PILOT_COMBINATION_NOT_ALLOWED"], provider + "/" + engine);
   }
+});
+
+test("act:gcp-terraform admits only a GCP Terraform record-live record: an AWS record, a GCP_API record or a GCP record under another gate is BLOCKED (SYNTHETIC fixture records)", async () => {
+  const h = harness();
+  try {
+    const record = {
+      schemaVersion: 1, label: "LIVE", step: "execute", cloud: "GCP", engine: "TERRAFORM", environment: "DEV",
+      target: { projectId: "sovereign-lz-dev" }, sourceCommit: commit, artifactSha256: "1".repeat(64), outcome: "SUCCEEDED",
+      evidenceSha256: "2".repeat(64), contractSha256: "3".repeat(64), authorizationSha256: "4".repeat(64), attestedBy: "owner", attestedAt: "2026-10-28T00:00:00.000Z",
+    };
+    const status = async (payload: object, gate = "act:gcp-terraform") => (await reviewProductionRelease({
+      manifest: input([h.attach(gate, "LIVE_ACT", payload)]), expectedCommit: commit, root: h.root,
+    })).gates.find((g) => g.id === gate)?.status;
+    assert.equal(await status(record), "EVIDENCE_PRESENT");
+    assert.equal(await status({ ...record, cloud: "AWS" }), "BLOCKED");
+    assert.equal(await status({ ...record, engine: "GCP_API" }), "BLOCKED");
+    assert.equal(await status(record, "act:aws-terraform"), "BLOCKED");
+    assert.equal(await status(record, "act:azure-terraform"), "BLOCKED");
+  } finally { h.cleanup(); }
 });
 
 test("a live ACT gate admits only the record-live record of its own path, commit and a successful apply", async () => {

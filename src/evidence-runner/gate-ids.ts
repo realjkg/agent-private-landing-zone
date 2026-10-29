@@ -9,10 +9,10 @@ export const RELEASE_GATE_IDS: readonly string[] = [
   "source-ci", "release-archive", "arm64-final-image", "private-model-runtime", "aws-provider", "azure-provider", "gcp-provider",
   "preview:terraform-aws-brownfield", "preview:pulumi-azure-greenfield", "preview:opentofu-aws-brownfield", "preview:bicep-azure-brownfield",
   "preview:cloudformation-aws-existing", "preview:cdk-aws-brownfield", "preview:ansible-existing-hosts", "preview:crossplane-local-render",
-  "preview:terraform-azure-brownfield", "preview:pulumi-aws-greenfield", "preview:pulumi-aws-brownfield", "preview:pulumi-azure-brownfield", "preview:terraform-gcp-brownfield",
+  "preview:terraform-azure-brownfield", "preview:terraform-gcp-brownfield", "preview:pulumi-aws-greenfield", "preview:pulumi-aws-brownfield", "preview:pulumi-azure-brownfield",
   "isolated-recovery",
   "lifecycle:clean-install", "lifecycle:upgrade", "lifecycle:rollback", "lifecycle:uninstall", "lifecycle:configuration-migration",
   "platform:darwin-arm64", "platform:darwin-x64", "platform:linux-x64", "platform:linux-arm64", "platform:win32-arm64", "platform:win32-x64",
-  "act:aws-terraform", "act:azure-terraform", "act:aws-cdk", "act:azure-bicep", "act-run-recovery", "security-review:independent",
+  "act:aws-terraform", "act:azure-terraform", "act:aws-cdk", "act:azure-bicep", "act:gcp-terraform", "act-run-recovery", "security-review:independent",
   "pillar:operational-excellence", "pillar:security", "pillar:reliability", "pillar:performance", "pillar:cost", "pillar:sustainability",
 ];

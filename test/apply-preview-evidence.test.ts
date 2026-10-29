@@ -141,7 +141,7 @@ test("the gate's scenario is bound: every preview gate names one provider, engin
   for (const gate of PRODUCTION_RELEASE_GATES.filter((g) => g.mode === "LIVE_PREVIEW")) {
     const scenario = previewScenarioOf(gate.id);
     assert.ok(scenario, gate.id);
-    // GCP names one gate before it is an admitted provider (a requirement no plan can meet yet); every other gate is AWS's or Azure's.
+    // GCP names one gate, its Terraform brownfield scenario from Phase E (src/qualification/phase-e.ts); every other gate is AWS's or Azure's.
     const providers = gate.id === "preview:terraform-gcp-brownfield" ? ["GCP"] : ["AWS", "AZURE"];
     assert.ok(providers.includes(scenario.provider) && ["brownfield", "greenfield"].includes(scenario.estate), gate.id);
   }
@@ -152,7 +152,8 @@ test("the gate's scenario is bound: every preview gate names one provider, engin
   // A scenario's estate and provider are parsed, never cast: an unknown estate or provider is refused, so nothing binds silently.
   assert.deepEqual(previewGateScenarioOf({ id: "x", provider: "AWS", engine: "TERRAFORM", mock: "greenfield" }), { provider: "AWS", engine: "TERRAFORM", estate: "greenfield" });
   assert.throws(() => previewGateScenarioOf({ id: "x", provider: "AWS", engine: "TERRAFORM", mock: "unknown" }), /PREVIEW_GATE_ESTATE_UNKNOWN: x has mock unknown/);
-  assert.throws(() => previewGateScenarioOf({ id: "x", provider: "GCP", engine: "TERRAFORM", mock: "brownfield" }), /PREVIEW_GATE_PROVIDER_UNKNOWN/);
+  assert.deepEqual(previewGateScenarioOf({ id: "x", provider: "GCP", engine: "TERRAFORM", mock: "brownfield" }), { provider: "GCP", engine: "TERRAFORM", estate: "brownfield" });
+  assert.throws(() => previewGateScenarioOf({ id: "x", provider: "PRIVATE", engine: "TERRAFORM", mock: "brownfield" }), /PREVIEW_GATE_PROVIDER_UNKNOWN: x names provider PRIVATE/);
   const counted = countChanges([{ address: "a.b", type: "x", action: "CREATE" }, { address: "a.c", type: "x", action: "UPDATE" }, { address: "output.o", type: "output", action: "UPDATE" }]);
   assert.deepEqual({ ...counted, byAction: { ...counted.byAction } }, { total: 2, create: 1, preExistingTouched: 1, byAction: { CREATE: 1, UPDATE: 1 } });
 });

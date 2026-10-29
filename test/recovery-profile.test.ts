@@ -430,3 +430,11 @@ test("plain-language status and recovery test preflight preserve the non-mutatin
     /Production data is prohibited/i,
   );
 });
+
+test("a GCP recovery intent is refused: recovery targets are AWS or Azure, and a GCP intent is never compiled as an Azure scope", () => {
+  assert.throws(
+    () => compileRecoveryTarget({ ...developmentIntent, provider: "GCP" }, context, baseline),
+    /RECOVERY_PROFILE_INVALID: GCP has no recovery scope type/,
+  );
+  assert.equal(compileRecoveryTarget({ ...developmentIntent, provider: "AZURE" }, context, baseline).scope.type, "AZURE_SUBSCRIPTION");
+});

@@ -30,6 +30,9 @@ export const ACT_RELEASE_PATHS: readonly { provider: ProviderId; engine: EngineI
   { provider: "AWS", engine: "TERRAFORM" }, { provider: "AZURE", engine: "TERRAFORM" }, { provider: "AWS", engine: "CDK" },
   // Path 4, admitted in code for DEV only (owner decision E2, #39). Its gate is an unmet requirement (BLOCKED) until live evidence exists.
   { provider: "AZURE", engine: "BICEP" },
+  // Path 5, admitted in code for DEV only (#339; owner decision 6481421924, #39). Its gate is BLOCKED until live evidence exists.
+  // GCP API-native (path 6, act:gcp-gcp_api) is added by its own integration step once the engine is admitted, not here.
+  { provider: "GCP", engine: "TERRAFORM" },
 ];
 /** Which cloud each live-provider gate's report must name. A gate missing here admits no report (never a default cloud). */
 const LIVE_PROVIDER_CLOUD: Readonly<Record<string, string>> = { "aws-provider": "AWS", "azure-provider": "AZURE", "gcp-provider": "GCP" };

@@ -8,6 +8,7 @@ import type {
 } from "./types.js";
 import { discoverAws } from "../providers/aws/discover.js";
 import { discoverAzure } from "../providers/azure/discover.js";
+import { discoverGcp } from "../providers/gcp/discover.js";
 import { DISABLED_EMITTER, type Emitter } from "../observability/bus.js";
 
 /**
@@ -70,7 +71,9 @@ export async function discoverEnvironment(
       () =>
         options.provider === "AWS"
           ? discoverAws(options.mock)
-          : discoverAzure(options.mock),
+          : options.provider === "AZURE"
+            ? discoverAzure(options.mock)
+            : discoverGcp(options.mock),
     );
 
     for (const resource of providerResult.resources) {

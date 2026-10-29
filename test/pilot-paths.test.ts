@@ -108,13 +108,20 @@ test("GET /pilot/paths: one entry per journey row, read from journeys.json and s
     if (!path.isContractPath) assert.equal(path.decisions, undefined);
     if (path.liveStatus !== "LIVE_PASS") assert.ok(path.blockers.length > 0 && path.blockers.every((b: any) => typeof b.text === "string" && b.text.length > 10), path.label);
   }
-  // GCP is not in this release; its rows say so first.
-  for (const gcp of report.paths.filter((p: any) => p.cloud === "GCP")) {
-    assert.equal(gcp.inRelease, false);
-    assert.equal(gcp.actGate, null);
-    assert.equal(gcp.blockers[0].party, "RELEASE_SCOPE");
-  }
-  assert.deepEqual(report.paths.filter((p: any) => p.inRelease).map((p: any) => p.label), ["AWS · Terraform", "AWS · CDK", "Azure · Terraform", "Azure · Bicep"]);
+  // GCP Terraform is a release path (act:gcp-terraform) and shows its real gate status; GCP API-native has no release path yet,
+  // so its row says so first. The row's engine is GCP_API (decision D18), and its display word stays "API-native".
+  const gcpTerraform = report.paths.find((p: any) => p.cloud === "GCP" && p.engine === "TERRAFORM");
+  assert.equal(gcpTerraform.label, "GCP · Terraform");
+  assert.equal(gcpTerraform.inRelease, true);
+  assert.deepEqual([gcpTerraform.actGate?.id, gcpTerraform.actGate?.status, gcpTerraform.actGate?.owner], ["act:gcp-terraform", "BLOCKED", "OWNER"]);
+  assert.ok(!gcpTerraform.blockers.some((b: any) => b.party === "RELEASE_SCOPE"), "GCP Terraform is in this release");
+  assert.ok(gcpTerraform.blockers.some((b: any) => b.source === "GATE" && b.party === "OWNER"), "its gate waits on the owner");
+  const gcpApi = report.paths.find((p: any) => p.cloud === "GCP" && p.engine === "GCP_API");
+  assert.equal(gcpApi.label, "GCP · API-native");
+  assert.equal(gcpApi.inRelease, false);
+  assert.equal(gcpApi.actGate, null);
+  assert.equal(gcpApi.blockers[0].party, "RELEASE_SCOPE");
+  assert.deepEqual(report.paths.filter((p: any) => p.inRelease).map((p: any) => p.label), ["AWS · Terraform", "AWS · CDK", "Azure · Terraform", "Azure · Bicep", "GCP · Terraform"]);
   // The contract is read as it is now, before any readiness check: known, but nothing ready.
   assert.equal(report.contract.state, "ENABLED");
   assert.equal(report.contract.provider, "AZURE");
@@ -298,15 +305,15 @@ test("a missing release status reads as readiness unknown, never as out of this 
     mkdirSync(join(bare, "config/acceptance"), { recursive: true });
     copyFileSync(join(ROOT, "config/acceptance/journeys.json"), join(bare, "config/acceptance/journeys.json"));
     const report = deploymentPaths(bare, [], enabled());
-    for (const label of ["AWS · Terraform", "AWS · CDK", "Azure · Terraform", "Azure · Bicep"]) {
+    for (const label of ["AWS · Terraform", "AWS · CDK", "Azure · Terraform", "Azure · Bicep", "GCP · Terraform"]) {
       const path = report.paths.find((p) => p.label === label)!;
       assert.equal(path.inRelease, true, label);
       assert.equal(path.actGate, null, label);
       assert.ok(path.blockers.some((b) => b.party === "UNKNOWN" && /Readiness unknown/.test(b.text)), label);
       assert.ok(!path.blockers.some((b) => b.party === "RELEASE_SCOPE"), label);
     }
-    // GCP is outside the code's release paths, so it is still not in this release.
-    assert.ok(report.paths.filter((p) => p.cloud === "GCP").every((p) => !p.inRelease));
+    // GCP API-native is outside the code's release paths, so it is still not in this release.
+    assert.deepEqual(report.paths.filter((p) => !p.inRelease).map((p) => p.label), ["GCP · API-native"]);
   } finally { removeTree(bare); }
 });
 

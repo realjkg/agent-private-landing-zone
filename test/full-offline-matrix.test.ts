@@ -8,12 +8,13 @@ const commit = "b".repeat(40);
 
 test("catalog covers every declared provider/adapter/estate and excludes N/A", () => {
   const cases = catalogOfflineCases();
-  assert.equal(cases.length, 78);
+  // 78 AWS/Azure-era cases plus the three GCP Terraform cases (PLAN_REQUIRED, never invoked by this matrix).
+  assert.equal(cases.length, 81);
   assert.equal(new Set(cases.map((c) => c.id)).size, cases.length);
   for (const [expected, count] of [
     ["PREVIEW", 24], ["DENY_UNKNOWN", 13],
     ["DENY_GREENFIELD", 2], ["NOT_APPLICABLE", 9],
-    ["PLAN_REQUIRED", 30],
+    ["PLAN_REQUIRED", 33],
   ] as const) assert.equal(cases.filter((c) => c.expected === expected).length, count);
   for (const name of ["CLOUDFORMATION", "AWS_CDK"]) {
     for (const estate of ["greenfield", "brownfield", "unknown"]) {
@@ -46,22 +47,26 @@ test("all 39 applicable scenarios produce source-bound, per-gate offline evidenc
     report.rows.filter((row) => row.status === "FAILED").slice(0, 15)));
   assert.equal(report.mode, "OFFLINE_FIXTURE_ONLY");
   assert.deepEqual(report.count, {
-    cases: 78, previews: 24, ownershipDenied: 13,
+    cases: 81, previews: 24, ownershipDenied: 13,
     existingStackDenied: 2, notApplicable: 9,
-    planRequired: 30, offlineVerified: 498, failed: 0,
+    planRequired: 33, offlineVerified: 498, failed: 0,
     liveNotRun: 96, applicableFaults: 252, faultNotApplicable: 12,
   });
-  assert.equal(report.rows.length, 645);
+  assert.equal(report.rows.length, 648);
   assert.equal(report.executedCases.length, 39);
-  assert.equal(report.excludedCases.length, 39);
+  assert.equal(report.excludedCases.length, 42);
   assert.match(report.evidenceHash, /^[a-f0-9]{64}$/);
-  assert.equal(new Set(report.rows.map((row) => row.id)).size, 645);
+  assert.equal(new Set(report.rows.map((row) => row.id)).size, 648);
   assert.ok(report.rows.every((row) => row.sourceCommit === commit &&
     /^[a-f0-9]{64}$/.test(row.rowHash)));
   assert.equal(report.rows.filter((row) => row.status === "NOT_APPLICABLE").length,
     21);
   assert.equal(report.rows.filter((row) => row.status === "PLAN_REQUIRED").length,
-    30);
+    33);
+  for (const estate of ["greenfield", "brownfield", "unknown"]) {
+    assert.equal(report.rows.find((row) => row.caseId === "terraform-gcp-" + estate)?.status, "PLAN_REQUIRED", "GCP is never run by the AWS/Azure offline matrix");
+  }
+  assert.ok(!report.executedCases.some((id) => id.includes("gcp")));
   assert.ok(report.rows.filter((row) => row.status === "VERIFIED_OFFLINE")
     .every((row) => Boolean(row.evidenceHash)));
   assert.ok(report.rows.filter((row) => row.status === "NOT_RUN")
