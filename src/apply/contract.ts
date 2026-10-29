@@ -195,6 +195,15 @@ const DEV_ONLY_PATHS: readonly { provider: string; engine: string; path: string 
   { provider: "AZURE", engine: "BICEP", path: "path 4" },
   { provider: "GCP", engine: "TERRAFORM", path: "path 5" },
 ];
+/**
+ * The paths whose contract must set `embedStateWrite: true` (#345 review 6486151611, N1; coordinator record 6486167857): without it the
+ * plan leaves the state backend's identity to the apply process, so `terraform apply <planfile>` would lock and write the state as
+ * APPLY. GCP Terraform is new and DEV only, and its documents and bootstrap say "must", so the rule is enforced here. AWS and Azure
+ * Terraform keep the owner's opt-in default (an owner decision); their reviewed bootstraps refuse APPLY the state, so they fail closed.
+ */
+const STATE_WRITE_REQUIRED_PATHS: readonly { provider: string; engine: string; path: string }[] = [
+  { provider: "GCP", engine: "TERRAFORM", path: "path 5" },
+];
 class NotImplemented extends Invalid {}
 
 function validate(raw: unknown): PilotContract {
@@ -244,6 +253,10 @@ function validate(raw: unknown): PilotContract {
     ...(typeof policy === "string" ? { policyVersion: policy } : {}),
     ...(authorize !== undefined ? { authorize } : {}),
   };
+  const stateWriteRequired = STATE_WRITE_REQUIRED_PATHS.find((p) => p.provider === spec.id && p.engine === engine.id);
+  if (stateWriteRequired && contract.embedStateWrite !== true) {
+    bad("embedStateWrite: " + stateWriteRequired.provider + " " + stateWriteRequired.engine + " (" + stateWriteRequired.path + ") requires embedStateWrite true, so the plan names STATE_WRITE for the state backend and an apply never locks or writes the state as APPLY");
+  }
   if (scoped !== undefined && !contract.approvers.some((entry) => entry.environments.includes("DEV"))) {
     bad("approvers: DEV-only pilot requires an authorized DEV approver");
   }

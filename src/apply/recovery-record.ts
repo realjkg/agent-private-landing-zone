@@ -79,7 +79,17 @@ export function buildRecoveryEvidence(input: RecoveryRecordInput): { ok: true; e
   return { ok: true, evidence };
 }
 
-/** The admission manifest record for one written evidence file (src/qualification/release-admission.ts `ReleaseGateSubmission`). */
-export function recoveryAdmissionRecordOf(evidence: RecoveryGateEvidence, evidencePath: string, bytes: string): { id: string; mode: "ACT_RECOVERY"; sourceCommit: string; targetHardwareId: string; evidencePath: string; evidenceSha256: string } {
-  return { id: evidence.gateId, mode: "ACT_RECOVERY", sourceCommit: evidence.sourceCommit, targetHardwareId: evidence.targetHardwareId, evidencePath, evidenceSha256: sha256(Buffer.from(bytes)) };
+/**
+ * The admission manifest record for one written evidence file (src/qualification/release-admission.ts `ReleaseGateSubmission`).
+ *
+ * A manifest entry always names the release candidate: admission refuses an entry for another commit (EVIDENCE_IDENTITY_MISMATCH).
+ * The evidence itself names the commit the apply ran at. In a single-path release that is the candidate, so the entry takes it from
+ * the evidence, as before. In a multi-path release (`actPilots`) a path's apply runs at the commit that carries its contract, which is
+ * not the candidate; the caller then passes `candidateCommit`, and the entry names it while the evidence bytes and hash stay unchanged.
+ */
+export function recoveryAdmissionRecordOf(
+  evidence: RecoveryGateEvidence, evidencePath: string, bytes: string, candidateCommit?: string,
+): { id: string; mode: "ACT_RECOVERY"; sourceCommit: string; targetHardwareId: string; evidencePath: string; evidenceSha256: string } {
+  if (candidateCommit !== undefined && !COMMIT.test(candidateCommit)) throw new Error("RECOVERY_CANDIDATE_COMMIT_INVALID: the candidate is a full 40-character commit id");
+  return { id: evidence.gateId, mode: "ACT_RECOVERY", sourceCommit: candidateCommit ?? evidence.sourceCommit, targetHardwareId: evidence.targetHardwareId, evidencePath, evidenceSha256: sha256(Buffer.from(bytes)) };
 }

@@ -298,8 +298,8 @@ describe("GCP Terraform through the real driver: real Terraform and google 8.9.0
   let unitLabels: Record<string, string> = {};
 
   /**
-   * The DEV contract. `embedStateWrite: true` is what keeps the state STATE_WRITE's on this path: without it, the plan leaves the gcs
-   * backend's `credentials` and `impersonate_service_account` to the apply process's environment, APPLY's (see the last test).
+   * The DEV contract. `embedStateWrite: true` is what keeps the state STATE_WRITE's on this path: without it, the plan would leave the gcs
+   * backend's `credentials` and `impersonate_service_account` to the apply process's environment, APPLY's, so the contract requires it (see the last test).
    */
   const contract = (embedStateWrite = true) => ({
     schemaVersion: 1, enabled: true, provider: "GCP", engine: "TERRAFORM", enabledEnvironments: ["DEV"],
@@ -605,16 +605,23 @@ describe("GCP Terraform through the real driver: real Terraform and google 8.9.0
     } finally { rmSync(KILL, { force: true }); }
   });
 
-  it("EMULATED finding for the owner's contract: without embedStateWrite the apply process's own identity, APPLY, locks, reads and writes the state; with it STATE_WRITE does", async () => {
-    useContract(contract(false));
+  it("EMULATED: a GCP contract without embedStateWrite true (absent or false) is refused at load (#345 review N1), so no seal starts and no request reaches the emulated state backend or Pub/Sub", async () => {
+    // Before the contract rule, this run showed the risk: without embedStateWrite the apply process's own identity, APPLY, locked,
+    // read and wrote the gcs state. The contract now refuses such a contract, so that apply can no longer be sealed.
+    const absent = (({ embedStateWrite: _dropped, ...rest }) => rest)(contract());
     try {
-      const s = await seal("alz-act-dev-1-noembed-01");
-      const before = emulator.log().length;
-      assert.ok((await run(s)).ok);
-      const backend = emulator.log().slice(before).filter((e) => e.host === "storage.googleapis.com" && e.method !== "GET");
-      assert.ok(backend.length > 0 && backend.every((e) => e.sa === email("APPLY")), "APPLY held the lock and wrote the state: " + JSON.stringify(backend.map((e) => [e.method, e.sa])));
-      // Live, bootstrap/gcp's deny policy refuses APPLY every Cloud Storage object permission, so such an apply could not lock the state:
-      // the owner's GCP contract sets embedStateWrite: true (docs/act-pilot-gcp-evidence.md), as the contract above does.
+      for (const raw of [contract(false), absent]) {
+        writeReviewedContract(contractPath, raw);
+        const off = loadPilotContract(contractPath);
+        assert.equal(off.enabled, false);
+        assert.match((off as { reason: string }).reason, /^embedStateWrite: GCP TERRAFORM \(path 5\) requires embedStateWrite true/);
+        await emptyWorkspace();
+        const before = emulator.log().length;
+        const result = await sealPreview(sealRequest(canary("alz-act-dev-1-noembed-01")), deps);
+        assert.equal(result.ok, false);
+        assert.equal((result as { code: string }).code, "CONTRACT_INVALID");
+        assert.equal(emulator.log().length, before, "nothing reached the emulator");
+      }
     } finally {
       useContract(contract());
     }

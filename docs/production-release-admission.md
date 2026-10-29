@@ -86,6 +86,17 @@ A `PILOT` release names its paths in one of two forms, never both (`ACT_PILOT_SC
 
   Each path's evidence is judged by its own contract only. A record that names another path's contract, authorization or commit is refused, and so is a record for a path the release does not declare. The recovery record is bound to the declared path whose contract it names. The candidate's own enabled contract, when there is one, must be among the declared paths (`ACT_PILOT_SHIPPED_CONTRACT_NOT_DECLARED`).
 
+  The contract commit's provenance is checked too, not only its content (#344 review N2):
+  - its id must name the commit object itself, so a tag id is refused;
+  - the candidate must be an ancestor of it, or the commit itself;
+  - it must be reachable from a branch or tag, so a dangling object is refused.
+
+  The rule is "ancestor", not "parent". The owner commits a path's contract in its own reviewed change on top of the candidate. The next path's contract replaces it in a later change on the same line, and a reviewed change may land as a merge commit. The tree check still requires each of those commits to differ from the candidate in the contract file only.
+
+  A refusal is `ACT_PILOT_CONTRACT_COMMIT_PROVENANCE:<gate>`. The reader runs git read-only and offline (`GIT_NO_LAZY_FETCH=1`).
+
+  A recovery record's manifest entry names the candidate commit, like every entry. The evidence names the commit the apply ran at. In the multi-path form, `recoveryAdmissionRecordOf` takes the candidate commit for that entry. The `./alz apply record-recovery` command does not pass it yet, so for a path whose contract commit is not the candidate, set the entry's `sourceCommit` to the candidate by hand. The evidence bytes and hash do not change. An entry left with the evidence commit is refused (`EVIDENCE_IDENTITY_MISMATCH`); it never admits wrongly.
+
   Any failed entry is refused with a blocker that names its gate: missing or disabled (`ACT_PILOT_CONTRACT_MISSING_OR_DISABLED:<gate>`), not authorized, unreadable, mismatched, duplicated or not allowed. When any entry fails, no path is bound.
 
 Admission also rejects an enabled contract beside a release that does not declare `PILOT`, and an `actPilot` or `actPilots` field on such a release. Any other value is rejected as before. The report still says `infrastructureAct: "DISABLED"` and `productionReleaseApproved: false`. It adds `actPilot` (the single scope, or `null`) and `actPilots` (the verified paths, or `[]`). Every release gate still needs its own evidence.

@@ -109,7 +109,8 @@ export type ActPilotPath = ActPilotScope & { contractCommit: string };
  */
 export type ContractAtCommit =
   | { ok: true; contract: PilotContract | { enabled: false }; changedPaths: string[] }
-  | { ok: false; reason: string };
+  /** `provenance: true` when the commit exists but is not the owner's commit on the candidate's line (see `gitContractReader`). */
+  | { ok: false; reason: string; provenance?: true };
 export type ContractReader = (commit: string) => Promise<ContractAtCommit>;
 export type GateReview = {
   id: string;
@@ -380,7 +381,7 @@ async function reviewPilotPaths(claimed: unknown, shipped: PilotContract | undef
     if (contractAt === undefined) { blockers.push("ACT_PILOT_CONTRACT_SOURCE_UNAVAILABLE:" + gateId); continue; }
     let read: ContractAtCommit;
     try { read = await contractAt(entry.contractCommit); } catch { read = { ok: false, reason: "the reader failed" }; }
-    if (!read.ok) { blockers.push("ACT_PILOT_CONTRACT_COMMIT_UNREADABLE:" + gateId); continue; }
+    if (!read.ok) { blockers.push((read.provenance === true ? "ACT_PILOT_CONTRACT_COMMIT_PROVENANCE:" : "ACT_PILOT_CONTRACT_COMMIT_UNREADABLE:") + gateId); continue; }
     // The commit may differ from the candidate in the contract file only: the code that ran the path's apply is the candidate's.
     if (!read.changedPaths.every((path) => path === CONTRACT_REPO_PATH)) { blockers.push("ACT_PILOT_CONTRACT_COMMIT_CHANGES_PRODUCT:" + gateId); continue; }
     const contract = read.contract;
@@ -405,15 +406,41 @@ async function reviewPilotPaths(claimed: unknown, shipped: PilotContract | undef
 /**
  * The default contract reader for a release reviewed in a git checkout at `root`: the contract file as `commit` holds it, judged by
  * `parsePilotContract`, and the paths whose content differs between `candidate` and `commit` (no rename detection, so a moved file
- * shows as two paths). Read-only; it runs git and writes nothing.
+ * shows as two paths). Read-only and offline: it runs git with lazy fetching off (`GIT_NO_LAZY_FETCH=1`, so a partial clone never
+ * reaches a remote) and writes nothing.
+ *
+ * Provenance (#344 review N2). Content alone is not enough, so the commit must also be the owner's commit on the candidate's line:
+ * - `commit` names a commit object itself (`rev-parse <c>^{commit}` is `<c>`): a tag id, even of an annotated tag on the right commit, is refused;
+ * - the candidate is an ancestor of `commit` (or `commit` itself). Ancestor, not parent: the owner commits a path's contract in its own
+ *   reviewed change on top of the candidate, and the next path's contract replaces it in a later change on the same line (so its parent
+ *   is the previous contract commit), and a reviewed change may land as a merge commit. The tree check above still requires every such
+ *   commit to differ from the candidate in the contract file only;
+ * - `commit` is reachable from a ref in the repository (`for-each-ref --contains`): a dangling object made with `commit-tree`, on no
+ *   branch or tag, is not a reviewed commit.
+ * An unrelated history fails the ancestor check. Each refusal is `provenance: true`, reported as ACT_PILOT_CONTRACT_COMMIT_PROVENANCE.
  */
 export function gitContractReader(root: string, candidate: string): ContractReader {
-  const git = (...args: string[]): string => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 10_000 });
+  const env = { ...process.env, GIT_NO_LAZY_FETCH: "1" };
+  const git = (...args: string[]): string => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 10_000, env });
+  const succeeds = (...args: string[]): boolean => { try { git(...args); return true; } catch { return false; } };
   return async (commit) => {
     if (!sha40.test(commit) || !sha40.test(candidate)) return { ok: false, reason: "not a full commit id" };
     try {
       git("cat-file", "-e", candidate + "^{commit}");
       git("cat-file", "-e", commit + "^{commit}");
+    } catch {
+      return { ok: false, reason: "the commit could not be read" };
+    }
+    try {
+      if (git("rev-parse", "--verify", "--end-of-options", commit + "^{commit}").trim() !== commit) {
+        return { ok: false, provenance: true, reason: "the id names a tag or another object, not the commit itself" };
+      }
+      if (!succeeds("merge-base", "--is-ancestor", candidate, commit)) {
+        return { ok: false, provenance: true, reason: "the candidate is not an ancestor of the contract commit" };
+      }
+      if (git("for-each-ref", "--contains", commit, "--format=%(refname)").trim() === "") {
+        return { ok: false, provenance: true, reason: "the contract commit is on no branch or tag (a dangling object)" };
+      }
       const changedPaths = git("diff", "--no-renames", "--name-only", candidate, commit, "--").split("\n").filter((x) => x !== "");
       let source: string | undefined;
       try { source = git("show", commit + ":" + CONTRACT_REPO_PATH); } catch { source = undefined; }

@@ -36,7 +36,7 @@ import { buildChildEnvironment } from "../src/tools/child-env.js";
 import { PROFILES, TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
 import { sha256 } from "../src/util/sha256.js";
 import {
-  CANARIES, ENGINE_VERSION, H, NOW, POLICY, REQUESTER, SOURCE_COMMIT, STATE_CANARY, approvalFor, approvers, behave as behaveIn, callsOf, human, installFakeTerraform, keys, sha,
+  CANARIES, ENGINE_VERSION, H, NOW, POLICY, REQUESTER, SOURCE_COMMIT, STATE_CANARY, approvalFor, approvers, awsContractJson, behave as behaveIn, callsOf, contractJson as azureContractJson, human, installFakeTerraform, keys, sha,
   writeReviewedContract, type Behavior,
 } from "./helpers/apply-fixtures.js";
 
@@ -90,7 +90,9 @@ const identityEnv = (): NodeJS.ProcessEnv => {
 const gcpContract = (over: Record<string, unknown> = {}) => ({
   schemaVersion: 1, enabled: true, provider: "GCP", engine: "TERRAFORM", enabledEnvironments: ["DEV"],
   targets: { DEV: { projectId: PROJECT, region: REGION, backend: BACKEND, workspace: "default", canary: CANARY } },
-  requiredApprovals: { DEV: 1 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: KILL, authorize: { DEV: ["APPLY", "CLEANUP"] }, ...over,
+  requiredApprovals: { DEV: 1 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: KILL, authorize: { DEV: ["APPLY", "CLEANUP"] },
+  // Required for GCP Terraform (#345 review N1): the plan names STATE_WRITE for the gcs backend.
+  embedStateWrite: true, ...over,
 });
 const contractAt = (contract: unknown): string => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, contract); return path; };
 const reason = (raw: unknown): string => { const r = inspectPilotContract(raw); return r.ok ? "OK" : r.reason; };
@@ -122,6 +124,36 @@ test("GCP is admitted with Terraform for DEV only: the provider is registered, t
   assert.ok("reason" in api && api.code === "NOT_IMPLEMENTED", JSON.stringify(api));
   assert.match(reason(gcpContract({ engine: "CDK" })), /^engine: CDK is valid only with AWS/);
   assert.match(reason(gcpContract({ engine: "BICEP" })), /^engine: BICEP is valid only with AZURE/);
+});
+
+test("GCP Terraform requires embedStateWrite true (#345 review N1): absent, false or a non-boolean is refused at load and seals nothing; AWS and Azure Terraform keep their opt-in default", async () => {
+  const loaded = loadPilotContract(contractAt(gcpContract()));
+  assert.equal(loaded.enabled, true);
+  assert.equal((loaded as PilotContract).embedStateWrite, true);
+  const required = /^embedStateWrite: GCP TERRAFORM \(path 5\) requires embedStateWrite true/;
+  const absent = (({ embedStateWrite: _dropped, ...rest }) => rest)(gcpContract());
+  for (const [label, raw] of [["absent", absent], ["false", gcpContract({ embedStateWrite: false })]] as const) {
+    assert.match(reason(raw), required, label);
+    const off = loadPilotContract(contractAt(raw));
+    assert.equal(off.enabled, false, label);
+    assert.equal((off as { code: string }).code, "CONTRACT_INVALID", label);
+    assert.match((off as { reason: string }).reason, required, label);
+  }
+  assert.match(reason(gcpContract({ embedStateWrite: "true" })), /^embedStateWrite: expected true or false/);
+  // Through the driver: a contract without it seals nothing, before any engine call.
+  const w = world();
+  writeReviewedContract(w.contractPath, absent);
+  const before = callsOf(fakeDir).length;
+  const p = gcpProject();
+  const refused = await sealPreview({ invocation: human(DEV), environment: "DEV", target: DEV, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, w.deps);
+  assert.equal(refused.ok, false);
+  assert.equal((refused as { code?: string }).code, "CONTRACT_INVALID");
+  assert.equal(callsOf(fakeDir).length, before, "no engine call");
+  // AWS and Azure Terraform are unchanged (an owner decision): a contract without embedStateWrite still loads.
+  for (const raw of [awsContractJson(KILL), azureContractJson(KILL)]) {
+    assert.equal("embedStateWrite" in raw, false);
+    assert.equal(loadPilotContract(contractAt(raw)).enabled, true, (raw as { provider: string }).provider);
+  }
 });
 
 test("DEV only: QA and PROD are refused in every form, and an AWS- or Azure-shaped target, or another target's fields, is not a GCP target", () => {
