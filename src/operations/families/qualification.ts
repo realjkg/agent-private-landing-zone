@@ -98,6 +98,14 @@ export const qualificationOperations: readonly OperationSpec[] = [
   "./alz qualify package --root <staged-release-root> --version {version} --source-commit {sourceCommit}",
   undefined, "release-verify"),
   handoff({
+    id: "release-ci-evidence", sub: "ci-evidence", cliScript: "src/cli/release-ci-evidence.ts",
+    args: "--gate <source-ci|release-archive> --run <run-id> --artifacts <export-dir>",
+    title: "Record a CI gate's evidence",
+    summary: "Turns the exported facts and downloaded artifact files of one supply-chain run of the frozen candidate into source-ci or release-archive admission evidence, reading files only.",
+    evidenceBasis: "READS EXPORTED RUN FACTS AND ARTIFACT FILES — NO TOKEN, NO CONNECTION, ACT DISABLED — WRITES ONE EVIDENCE FILE UNDER .runs/release/ci",
+  }, "It asks the person who exported the run facts to type an attestation at the terminal, and the console never attests for anyone.",
+  "./alz qualify ci-evidence --gate <source-ci|release-archive> --run <run-id> --artifacts <export-dir>"),
+  handoff({
     id: "provider-qualification-aws", sub: "provider-aws", cliScript: "src/cli/provider-qualification.ts",
     args: "--provider AWS --source-commit <sha> --aws-stack <name> --aws-template <file>",
     title: "AWS provider qualification",

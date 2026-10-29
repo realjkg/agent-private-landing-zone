@@ -50,7 +50,7 @@ test("the family is registered once, with the safety classes it claims", () => {
     ["release-verify", "READ_ONLY"],
   ]);
   assert.deepEqual(handoffs.map((item) => item.id), [
-    "release-package", "provider-qualification-aws", "provider-qualification-azure", "private-model-adversarial",
+    "release-package", "release-ci-evidence", "provider-qualification-aws", "provider-qualification-azure", "private-model-adversarial",
   ]);
   for (const item of qualificationOperations) {
     assert.equal(OPERATIONS.filter((other) => other.id === item.id).length, 1);
