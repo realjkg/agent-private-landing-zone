@@ -363,6 +363,9 @@ const GOOGLE = (expressions: Record<string, unknown> = {}): ProviderBlock => ({
   name: "google", full_name: "registry.terraform.io/hashicorp/google",
   expressions: { project: { constant_value: DEV.projectId }, region: { references: ["var.region"] }, default_labels: { references: ["local.unit_labels"] }, ...expressions },
 });
+/** The canary topic's storage policy as the configuration and the plan show it (hashicorp/google 8.9.0, the EMULATED run's real shapes). */
+const STORAGE_POLICY_CONFIG = { allowed_persistence_regions: { constant_value: [DEV.region] } };
+const STORAGE_POLICY_PLANNED = { message_storage_policy: [{ allowed_persistence_regions: [DEV.region], enforce_in_transit: null }] };
 const use = (type: string, provider: Pick<ProviderBlock, "name" | "full_name">, mode = "managed"): ProviderUse => ({ address: (mode === "data" ? "data." : "") + type + ".x", mode, type, provider });
 const judge = (blocks: ProviderBlock[], uses: ProviderUse[] = []) => codeFrom(() => GCP.assertProviderConfig(blocks, target(DEV), env(), uses));
 
@@ -393,7 +396,8 @@ test("provider config: hashicorp/google with default_labels and the contract's p
 test("review N1 of #339: every google provider block and every managed google resource is bound to the contract's project, configured and planned", () => {
   const google = { name: "google", full_name: "registry.terraform.io/hashicorp/google" };
   const topic = (extra: Partial<ProviderUse> = {}): ProviderUse => ({ ...use("google_pubsub_topic", google), ...extra });
-  const configured = (project?: unknown): ProviderUse => topic({ expressions: { name: { constant_value: "t" }, ...(project === undefined ? {} : { project }) } });
+  // Every configured canary topic carries the contract region's storage policy (R2 of G1), so these cases judge the project alone.
+  const configured = (project?: unknown): ProviderUse => topic({ expressions: { name: { constant_value: "t" }, message_storage_policy: [STORAGE_POLICY_CONFIG], ...(project === undefined ? {} : { project }) } });
   const withoutProject = GOOGLE(); delete withoutProject.expressions!.project;
   // The provider block: the contract's constant only, in every block and alias.
   for (const [label, block, code] of [
@@ -418,8 +422,8 @@ test("review N1 of #339: every google provider block and every managed google re
   ] as const) assert.equal(judge([GOOGLE()], [configured(project)]), code, label);
   assert.equal(judge([GOOGLE()], [topic({ expressions: { project_id: { constant_value: "victim-proj-123" } } })]), "PROVIDER_ACCOUNT_NOT_IN_CONTRACT", "project_id");
   // The resource's planned project: a change's after, a planned value, and an unknown one.
-  assert.equal(judge([GOOGLE()], [configured(), topic({ values: { name: "t", project: DEV.projectId }, unknown: { id: true, project: false } })]), "OK", "planned as the contract's project");
-  assert.equal(judge([GOOGLE()], [configured(), topic({ values: { name: "t" }, unknown: { id: true } })]), "OK", "no project attribute planned");
+  assert.equal(judge([GOOGLE()], [configured(), topic({ values: { name: "t", project: DEV.projectId, ...STORAGE_POLICY_PLANNED }, unknown: { id: true, project: false } })]), "OK", "planned as the contract's project");
+  assert.equal(judge([GOOGLE()], [configured(), topic({ values: { name: "t", ...STORAGE_POLICY_PLANNED }, unknown: { id: true } })]), "OK", "no project attribute planned");
   for (const [label, planned, code] of [
     ["RESOURCE topic planned project other (VALUES)", { values: { project: "victim-proj-123" } }, "PROVIDER_ACCOUNT_NOT_IN_CONTRACT"],
     ["planned project_id of another project", { values: { project_id: "victim-proj-123" } }, "PROVIDER_ACCOUNT_NOT_IN_CONTRACT"],
@@ -428,6 +432,101 @@ test("review N1 of #339: every google provider block and every managed google re
   ] as const) assert.equal(judge([GOOGLE()], [configured(), topic(planned as Partial<ProviderUse>)]), code, label);
   // Not google's: another allowed provider's resources carry no project.
   assert.equal(judge([GOOGLE()], [{ ...use("random_id", { name: "random", full_name: "registry.terraform.io/hashicorp/random" }), values: { project: "x" } }]), "OK", "a random resource is not judged for a project");
+});
+
+/**
+ * The canary topic exactly as hashicorp/google 8.9.0 plans it under Terraform 1.16.4 (the EMULATED run of test/apply-emulated-gcp.test.ts,
+ * read 2026-10-29): unset blocks are empty lists, unset attributes null, `deletion_policy` defaults to "DELETE" and the project is known.
+ */
+const PLANNED_TOPIC = {
+  deletion_policy: "DELETE", effective_labels: { "alz-unit": "u" }, ingestion_data_source_settings: [], kms_key_name: null, labels: { purpose: "act-dev-1" },
+  message_retention_duration: null, ...STORAGE_POLICY_PLANNED, message_transforms: [], name: "alz-act-dev-1-canary-01", project: DEV.projectId,
+  schema_settings: [], tags: null, timeouts: null,
+};
+const PLANNED_UNKNOWN = { effective_labels: {}, id: true, ingestion_data_source_settings: [], labels: {}, message_storage_policy: [{ allowed_persistence_regions: [false] }], message_transforms: [], schema_settings: [] };
+const CONFIGURED_TOPIC = { labels: { constant_value: { purpose: "act-dev-1" } }, message_storage_policy: [STORAGE_POLICY_CONFIG], name: { references: ["var.canary_name"] } };
+
+test("R1 and R2 of G1: the canary topic carries no CMEK, schema, ingestion, transform, retention, tag binding or project number, keeps the default deletion policy, and stores only in the contract's region", () => {
+  const google = { name: "google", full_name: "registry.terraform.io/hashicorp/google" };
+  const configuredTopic = (expressions: Record<string, unknown> = {}): ProviderUse => ({ ...use("google_pubsub_topic", google), expressions: { ...CONFIGURED_TOPIC, ...expressions } });
+  const plannedTopic = (values: Record<string, unknown> = {}, unknown: Record<string, unknown> = PLANNED_UNKNOWN): ProviderUse =>
+    ({ ...use("google_pubsub_topic", google), values: { ...PLANNED_TOPIC, ...values }, unknown });
+  const both = (expressions: Record<string, unknown> = {}, values: Record<string, unknown> = {}, unknown?: Record<string, unknown>) =>
+    judge([GOOGLE()], [configuredTopic(expressions), plannedTopic(values, unknown)]);
+  // The control: the real planned shape, configured with a constant region or with an expression the plan resolves.
+  assert.equal(both(), "OK");
+  assert.equal(both({ message_storage_policy: [{ allowed_persistence_regions: { references: ["var.region"] } }] }), "OK", "an expression, judged on the planned value");
+  assert.equal(both({ message_storage_policy: [{ ...STORAGE_POLICY_CONFIG, enforce_in_transit: { constant_value: true } }] }, { message_storage_policy: [{ allowed_persistence_regions: [DEV.region], enforce_in_transit: true }] }), "OK", "enforce_in_transit only narrows");
+  assert.equal(both({ deletion_policy: { constant_value: "DELETE" } }), "OK", "the default deletion policy, stated");
+
+  // R1: each attribute refused when configured, when planned with a value, and when unknown until apply.
+  const R1: readonly [string, unknown, unknown][] = [
+    ["kms_key_name", { constant_value: "projects/other-proj/locations/europe-west4/keyRings/r/cryptoKeys/k" }, "projects/other-proj/locations/europe-west4/keyRings/r/cryptoKeys/k"],
+    ["schema_settings", [{ schema: { constant_value: "projects/other-proj/schemas/s" } }], [{ schema: "projects/other-proj/schemas/s", encoding: "JSON", first_revision_id: null, last_revision_id: null }]],
+    ["ingestion_data_source_settings", [{ cloud_storage: [{ bucket: { constant_value: "other-bucket" } }] }], [{ cloud_storage: [{ bucket: "other-bucket" }] }]],
+    ["message_transforms", [{ javascript_udf: [{ code: { constant_value: "function f(m){return m}" }, function_name: { constant_value: "f" } }] }], [{ javascript_udf: [{ code: "function f(m){return m}", function_name: "f" }], disabled: false }]],
+    ["message_retention_duration", { constant_value: "600s" }, "600s"],
+    ["tags", { constant_value: { "tagKeys/123": "tagValues/456" } }, { "tagKeys/123": "tagValues/456" }],
+    ["project_number", { constant_value: "123456789012" }, "123456789012"],
+  ];
+  for (const [attribute, configured, planned] of R1) {
+    assert.equal(both({ [attribute]: configured }), "CANARY_ATTRIBUTE_NOT_IN_CONTRACT", attribute + " configured");
+    assert.equal(both({}, { [attribute]: planned }), "CANARY_ATTRIBUTE_NOT_IN_CONTRACT", attribute + " planned");
+    assert.equal(both({}, {}, { ...PLANNED_UNKNOWN, [attribute]: true }), "CANARY_ATTRIBUTE_NOT_IN_CONTRACT", attribute + " unknown until apply");
+    assert.equal(judge([GOOGLE()], [{ ...plannedTopic({ [attribute]: planned }), mode: "data", address: "data.google_pubsub_topic.x", expressions: { project: { constant_value: DEV.projectId } } }]), "OK", attribute + ": a data source of the type is read, not the canary");
+  }
+  assert.equal(both({ kms_key_name: { constant_value: null } }), "OK", "a null constant is unset");
+  assert.equal(both({}, { message_transforms: [{ ai_inference: [{ endpoint: "projects/other-proj/locations/us-central1/endpoints/e" }] }] }), "CANARY_ATTRIBUTE_NOT_IN_CONTRACT", "an AI inference transform");
+  assert.equal(both({}, {}, { ...PLANNED_UNKNOWN, schema_settings: [{ schema: true }] }), "CANARY_ATTRIBUTE_NOT_IN_CONTRACT", "an unknown nested inside a block");
+  for (const [label, expressions, values, unknown] of [
+    ["ABANDON configured", { deletion_policy: { constant_value: "ABANDON" } }, {}, undefined],
+    ["PREVENT configured", { deletion_policy: { constant_value: "PREVENT" } }, {}, undefined],
+    ["an expression", { deletion_policy: { references: ["var.policy"] } }, {}, undefined],
+    ["ABANDON planned", {}, { deletion_policy: "ABANDON" }, undefined],
+    ["unknown until apply", {}, {}, { ...PLANNED_UNKNOWN, deletion_policy: true }],
+  ] as const) assert.equal(both(expressions, values, unknown), "CANARY_ATTRIBUTE_NOT_IN_CONTRACT", "deletion_policy: " + label);
+
+  // R2: the storage policy, configured and planned.
+  for (const [label, expressions, values, unknown] of [
+    ["no storage-policy block configured", { message_storage_policy: undefined }, {}, undefined],
+    ["two blocks configured", { message_storage_policy: [STORAGE_POLICY_CONFIG, STORAGE_POLICY_CONFIG] }, {}, undefined],
+    ["another region configured", { message_storage_policy: [{ allowed_persistence_regions: { constant_value: ["us-central1"] } }] }, {}, undefined],
+    ["a second region configured", { message_storage_policy: [{ allowed_persistence_regions: { constant_value: [DEV.region, "us-central1"] } }] }, {}, undefined],
+    ["an empty region list configured", { message_storage_policy: [{ allowed_persistence_regions: { constant_value: [] } }] }, {}, undefined],
+    ["a region in another case", { message_storage_policy: [{ allowed_persistence_regions: { constant_value: [DEV.region.toUpperCase()] } }] }, {}, undefined],
+    ["a block with no region list", { message_storage_policy: [{ enforce_in_transit: { constant_value: true } }] }, {}, undefined],
+    ["no policy planned", {}, { message_storage_policy: [] }, undefined],
+    ["the policy absent from the plan", {}, { message_storage_policy: undefined }, undefined],
+    ["another region planned", {}, { message_storage_policy: [{ allowed_persistence_regions: ["us-central1"] }] }, undefined],
+    ["a second region planned", {}, { message_storage_policy: [{ allowed_persistence_regions: ["us-central1", DEV.region] }] }, undefined],
+    ["two planned blocks", {}, { message_storage_policy: [STORAGE_POLICY_PLANNED.message_storage_policy[0], STORAGE_POLICY_PLANNED.message_storage_policy[0]] }, undefined],
+    ["regions unknown until apply", {}, {}, { ...PLANNED_UNKNOWN, message_storage_policy: [{ allowed_persistence_regions: [true] }] }],
+    ["the whole block unknown until apply", {}, {}, { ...PLANNED_UNKNOWN, message_storage_policy: true }],
+  ] as const) {
+    const configured = { ...CONFIGURED_TOPIC, ...expressions } as Record<string, unknown>;
+    if (Object.hasOwn(expressions, "message_storage_policy") && expressions.message_storage_policy === undefined) delete configured.message_storage_policy;
+    const plannedValues = { ...PLANNED_TOPIC, ...values } as Record<string, unknown>;
+    if (Object.hasOwn(values, "message_storage_policy") && (values as Record<string, unknown>).message_storage_policy === undefined) delete plannedValues.message_storage_policy;
+    const code = judge([GOOGLE()], [{ ...use("google_pubsub_topic", google), expressions: configured }, { ...use("google_pubsub_topic", google), values: plannedValues, unknown: unknown ?? PLANNED_UNKNOWN }]);
+    assert.equal(code, "LOCATION_NOT_IN_CONTRACT", label);
+  }
+  // The contract region is the one judged: the same plan in another contract's region is refused.
+  assert.equal(codeFrom(() => GCP.assertProviderConfig([GOOGLE()], target({ ...DEV, region: "us-central1" }), env(), [configuredTopic(), plannedTopic()])), "LOCATION_NOT_IN_CONTRACT");
+  // A destroy plan's change has no planned values: only the configuration is judged, and the committed policy passes.
+  assert.equal(judge([GOOGLE()], [configuredTopic(), { ...use("google_pubsub_topic", google) }]), "OK", "a destroy");
+});
+
+test("the #339 follow-up: a google data source is judged by its configuration address, not its type; another read of the same type that the configuration does not show is refused", () => {
+  const google = { name: "google", full_name: "registry.terraform.io/hashicorp/google" };
+  const configured = (address: string): ProviderUse => ({ address, mode: "data", type: "google_project", provider: google, expressions: { project_id: { constant_value: DEV.projectId } } });
+  const read = (address: string, project = DEV.projectId): ProviderUse => ({ address, mode: "data", type: "google_project", provider: google, values: { project_id: project } });
+  assert.equal(judge([GOOGLE()], [configured("data.google_project.this"), read("data.google_project.this")]), "OK");
+  assert.equal(judge([GOOGLE()], [configured("data.google_project.this"), read("module.net.data.google_project.this")]), "OK", "the same configuration address inside a module");
+  assert.equal(judge([GOOGLE()], [configured("data.google_project.this"), read('data.google_project.this["a"]'), read("data.google_project.this[0]")]), "OK", "instances of the configured data source");
+  // Before: any configured google_project stood in for every read of that type. Now each read needs its own configured address.
+  assert.equal(judge([GOOGLE()], [configured("data.google_project.this"), read("data.google_project.other")]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", "an unconfigured read of the same type");
+  assert.equal(judge([GOOGLE()], [configured("data.google_project.this"), read("data.google_project.this_other")]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", "a lookalike address");
+  assert.equal(judge([GOOGLE()], [configured("data.google_project.this"), read("data.google_project.this[unparsed")]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", "an address that does not reduce is refused");
 });
 
 test("review N4: a use whose provider the plan does not name is refused, wherever it appears", () => {

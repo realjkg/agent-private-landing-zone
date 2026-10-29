@@ -300,6 +300,12 @@ UNVERIFIED (GF4): that `topics.create` accepts the field on `PUT` with no `updat
 7. [ ] The token scopes: the scope the STS exchange requests (the engine sends `cloud-platform`; GF8); `pubsub` for Pub/Sub `get`, `create` and `delete` (GF2); the narrowest scope Cloud Asset `searchAllResources` accepts (GF3).
 8. [ ] `bootstrap/gcp`'s contract-target output for GCP_API matches D9's shape (`projectId`, `region`, optional `parent`, `backend`, `workspace`, `topicPrefix`, `canary`).
 
+**G1 review result (2026-10-29).** The full table is in `docs/act-pilot-bootstrap-gcp.md`, "Before bootstrap: the D12 checklist".
+- Items 5, 6 and 8 are **verified in code** and pinned by tests: the custom roles, the APIs the bootstrap enables, the D9 target output, and no predefined role at all (the old `apply_additional_roles` allowlist is gone).
+- Item 7 is **partly** done: the reader's per-host scopes are implemented (D15), but GF3 and GF8 remain.
+- Items 1 to 4, and GF7, GF9, GF10 and GF11, remain **UNVERIFIED, MUST CHECK** against Google's references before bootstrap.
+- Path 5 needs the Cloud Asset grant too, for its unit sweep.
+
 **Why the addition.** The independent observation's verdict depends on the unit sweep. Without it, `listTagged` fails, the inventory is `INCOMPLETE`, and the verdict can never be better than `INCONCLUSIVE`: the observe step could not pass. D10's one-open-run check needs the same read. Path 5's DISCOVERY already holds this permission, so the two GCP paths' DISCOVERY grants become alike.
 
 **Token scopes.** See D15. The DISCOVERY token used for Pub/Sub reads carries the `pubsub` scope, as #303's engine already does, because Pub/Sub does not accept `cloud-platform.read-only` (UNVERIFIED GF2, but already the basis of #303). So DISCOVERY's read-only property rests on IAM, not on the OAuth scope.
@@ -399,7 +405,7 @@ Nothing is retried anywhere.
 - `check` reads by id; `listTagged` sweeps by unit. Both exist today. Label ownership is the engine's read before a delete, and run ownership is the records'.
 - **D11's independent read-back.** The reader learns one more fact for `google_pubsub_topic`, and only when the blueprint entry carries an expected value: `messageStoragePolicy.allowedPersistenceRegions`, compared exactly. A mismatch fails the check (`FAILED` verdict), and a missing field is `UNKNOWN`. The reader change is G1's (with the scope fix below); the blueprint entry's expected-policy field is INT's (`src/observe/blueprint.ts`).
 
-**Required correction (found in this review).** The reader requests `cloud-platform.read-only` for every GET, and its own header lists as UNVERIFIED whether Pub/Sub accepts that scope. #303 states that Pub/Sub refuses it with 403 (the v1 discovery document lists only `cloud-platform` and `pubsub` on `topics.get`). If so, every topic check reads `UNKNOWN` and every observation is `INCONCLUSIVE`, on path 5 as well as path 6.
+**Required correction (found in this review; done by G1, 2026-10-29: `READ_SCOPES` in `src/observe/gcp-rest.ts`, one federated exchange, then one token per host, and the storage-policy comparison: `openReader` passes the target region, and a mismatch is `misplaced` (#343's shared check), so the observation FAILS).** The reader requested `cloud-platform.read-only` for every GET, and its own header lists as UNVERIFIED whether Pub/Sub accepts that scope. #303 states that Pub/Sub refuses it with 403 (the v1 discovery document lists only `cloud-platform` and `pubsub` on `topics.get`). If so, every topic check reads `UNKNOWN` and every observation is `INCONCLUSIVE`, on path 5 as well as path 6.
 
 The reader therefore mints one token per host it reads:
 - `pubsub` for `pubsub.googleapis.com`;
@@ -614,18 +620,18 @@ All of these are SYNTHETIC: a fake for STS, IAM Credentials, Pub/Sub and Cloud A
 Each one is checked against Google's published API reference or discovery document, with no live call, and the result is recorded in G2's PR:
 
 - **GF1:** the request format of `sts.googleapis.com/v1/token`, JSON or form-encoded (D20).
-- **GF2:** the OAuth scopes `pubsub.projects.topics.get`, `.create` and `.delete` accept (D12, D15).
+- **GF2:** the OAuth scopes `pubsub.projects.topics.get`, `.create` and `.delete` accept (D12, D15). *Supported offline (G1):* the Pub/Sub v1 discovery document (revision 20261006) lists only `cloud-platform` and `pubsub` on all three. Google's acceptance is unverified.
 - **GF3:** the scopes `cloudasset.searchAllResources` accepts, and its query syntax for labels (D15).
-- **GF4:** that `topics.create` takes `messageStoragePolicy` on `PUT` and `topics.get` returns it as sent (D11).
+- **GF4:** that `topics.create` takes `messageStoragePolicy` on `PUT` and `topics.get` returns it as sent (D11). *Partly supported offline (G1):* the same discovery document has `create` as `PUT v1/{+name}` and `messageStoragePolicy` on `Topic`. hashicorp/google 8.9.0 sends it on that `PUT` (EMULATED run). The read-back is unverified.
 - **GF5:** Cloud Asset Inventory's indexing delay (D10).
 - **GF6:** the status and error code of a duplicate `topics.create` (409 `ALREADY_EXISTS`) and of a `DELETE` of an absent topic (404) (D14, D16).
 - **GF7:** whether any call on this path, Cloud Asset `searchAllResources` most likely, needs a quota project or `serviceusage.services.use` when made by the impersonated service account. **It may conflict with D12 checklist item 5**, which forbids every `serviceusage.*` permission. If it is needed, the conflict goes back to the owner before bootstrap; it is not resolved by widening a grant silently.
-- **GF8:** the scope the STS token exchange must request, and whether `cloud-platform` there is required (D12 item 7, D20).
+- **GF8:** the scope the STS token exchange must request, and whether `cloud-platform` there is required (D12 item 7, D20). *G1, EMULATED:* the google provider, the gcs backend and the reader all send `cloud-platform`, form-encoded. That is what Google's own client sends, not proof of what Google accepts.
 - **GF9:** that `pubsub.topics.create` alone covers a create carrying `messageStoragePolicy` (D12 item 2; with GF4).
 - **GF10:** that `cloudasset.assets.searchAllResources` is supported in custom roles at project level (D12 item 4).
 - **GF11:** that `roles/iam.workloadIdentityUser` carries `iam.serviceAccounts.getAccessToken` for federated principals, so no Token Creator role is needed (D12 items 5 and 7).
 
-GF7 to GF11 are checked by lane G1 before bootstrap, and all of GF1 to GF11 before lane G2 merges.
+GF7 to GF11 are checked before bootstrap, and all of GF1 to GF11 before lane G2 merges. **G1's result (2026-10-29):** with no live call, GF7, GF9, GF10 and GF11 could not be verified from the repository or a pinned document. They stay **UNVERIFIED, MUST CHECK**, and the owner checks them against Google's IAM references before bootstrap (`docs/act-pilot-bootstrap-gcp.md`).
 
 ## Decision index
 

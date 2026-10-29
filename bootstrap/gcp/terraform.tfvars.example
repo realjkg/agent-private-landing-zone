@@ -1,6 +1,6 @@
-# Copy to <env>.tfvars (ignored by git), one per project and engine. All values below are placeholders.
-environment = "DEV"
-engine      = "TERRAFORM" # or "GCP_API" (DEV only; DISCOVERY and APPLY only; no state_bucket_name)
+# Copy to <env>.tfvars (ignored by git), one per engine, in the DEV project only. All values below are placeholders.
+environment = "DEV"         # DEV only: both GCP paths are admitted for DEV only
+engine      = "TERRAFORM" # or "GCP_API" (DISCOVERY and APPLY only; no state_bucket_name; set topic_prefix)
 project_id  = "examplefake-dev"
 region      = "europe-west4"
 
@@ -24,9 +24,13 @@ token_files = {
 state_bucket_name = "examplefake-dev-state"
 # state_prefix    = "pilot/dev"
 
-# Optional: extra predefined roles for APPLY, from the reviewed allowlist only (roles/pubsub.publisher, roles/pubsub.subscriber,
-# roles/pubsub.viewer, roles/logging.viewer, roles/monitoring.viewer). Anything else needs a reviewed change to this package.
-# apply_additional_roles = []
+# GCP_API engine (decision D4): the topic namespace the contract authorizes
+# topic_prefix = "alz-act-dev1-"
+
+# Optional, both engines (decision D9): owner-declared, not observed
+# parent = "folders/000000000000"
+
+# No predefined role is ever added (owner decision D12): apply_additional_roles must stay empty.
 
 # Recommended for GitHub: pin the numeric repository and owner ids, so a recreated or transferred repository name is refused.
 # oidc_required_claims = { repository_id = "000000000", repository_owner_id = "000000000" }

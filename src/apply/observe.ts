@@ -76,7 +76,9 @@ export function openReader(deps: ObserveDeps, environment: ApplyEvidence["enviro
   }
   if (contract.provider === "GCP") {
     try {
-      const opened = createDiscoveryGcpReader({ env: deps.env, projectId: (target as GcpTarget).projectId, http: deps.gcp });
+      // The contract region, so the canary topic's storage policy, its only location, is read back (D11; lane G1, R2): a topic
+      // stored elsewhere is `misplaced`, and the observation FAILS.
+      const opened = createDiscoveryGcpReader({ env: deps.env, projectId: (target as GcpTarget).projectId, storagePolicyRegion: (target as GcpTarget).region, http: deps.gcp });
       return { ok: true, reader: opened.reader, binarySha256: null, close: opened.close };
     } catch {
       return refuse("CONTRACT_INVALID", "The contract's GCP target does not name a project the reader can use. Nothing was run.");

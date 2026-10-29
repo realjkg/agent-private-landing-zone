@@ -13,20 +13,26 @@ locals {
   role_base = "${replace(var.name_prefix, "-", "_")}_${local.env}_${replace(local.engine_tag, "-", "_")}"
   pool_id   = "${var.name_prefix}-${local.env}${local.api ? "-api" : ""}"
 
-  # The minimal workload: one labeled Pub/Sub topic in the DEV project. GCP_API gets exactly what path 6 named (#303): APPLY creates and
-  # deletes, DISCOVERY reads. Terraform also reads the topic back after creating it and can update its labels, and its DISCOVERY sweeps
-  # the unit's resources through Cloud Asset Inventory.
+  # The minimal workload: one labeled Pub/Sub topic in the DEV project (owner decision D12, #39 6483366237; lane G1's review in
+  # docs/act-pilot-bootstrap-gcp.md). Custom roles only, exactly these permissions:
+  # - DISCOVERY reads topic metadata and sweeps the unit's resources by label through Cloud Asset Inventory, on this project only.
+  #   The search sees the metadata of every indexed resource in the project, broader than the code's label filter (D12).
+  # - APPLY creates and deletes topics. GCP_API needs nothing else (#303). Terraform's google provider also reads the topic back after
+  #   creating it and before deleting it (seen in the EMULATED run, test/apply-emulated-gcp.test.ts), so TERRAFORM's APPLY also reads
+  #   topic metadata. No `pubsub.topics.update`: the canary is create only (owner decision E1), and a cleanup only deletes.
+  # No identity can publish, consume, change IAM or enable a service.
   workload_permissions = local.api ? {
-    DISCOVERY = ["pubsub.topics.get"]
+    DISCOVERY = ["cloudasset.assets.searchAllResources", "pubsub.topics.get"]
     APPLY     = ["pubsub.topics.create", "pubsub.topics.delete"]
     } : {
     DISCOVERY = ["cloudasset.assets.searchAllResources", "pubsub.topics.get"]
-    APPLY     = ["pubsub.topics.create", "pubsub.topics.delete", "pubsub.topics.get", "pubsub.topics.update"]
+    APPLY     = ["pubsub.topics.create", "pubsub.topics.delete", "pubsub.topics.get"]
   }
 
+  # Enabled here, by the owner's bootstrap run, and never at run time (D12): no pilot identity holds serviceusage.services.enable.
   services = toset(concat(
-    ["iam.googleapis.com", "iamcredentials.googleapis.com", "sts.googleapis.com", "pubsub.googleapis.com"],
-    local.terraform ? ["storage.googleapis.com", "cloudasset.googleapis.com"] : [],
+    ["iam.googleapis.com", "iamcredentials.googleapis.com", "sts.googleapis.com", "pubsub.googleapis.com", "cloudasset.googleapis.com"],
+    local.terraform ? ["storage.googleapis.com"] : [],
   ))
 }
 
@@ -100,9 +106,3 @@ resource "google_project_iam_member" "workload" {
   member   = local.members[each.key]
 }
 
-resource "google_project_iam_member" "apply_additional" {
-  for_each = toset(var.apply_additional_roles)
-  project  = var.project_id
-  role     = each.value
-  member   = local.members["APPLY"]
-}

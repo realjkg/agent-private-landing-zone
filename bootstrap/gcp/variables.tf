@@ -1,9 +1,9 @@
 variable "environment" {
-  description = "Which contract environment this project is."
+  description = "Which contract environment this project is. DEV only: both GCP paths are admitted for DEV only (#339, owner decision 6481421924)."
   type        = string
   validation {
-    condition     = contains(["DEV", "QA", "PROD"], var.environment)
-    error_message = "environment is DEV, QA or PROD."
+    condition     = var.environment == "DEV"
+    error_message = "environment is DEV: GCP Terraform and GCP API-native are admitted for DEV only."
   }
 }
 
@@ -106,15 +106,13 @@ variable "token_files" {
 }
 
 variable "apply_additional_roles" {
-  description = "Predefined roles APPLY needs beyond the minimal workload's custom role, granted on this project. Only roles on the reviewed allowlist below are accepted. A denylist cannot keep up: storage.admin can re-grant the state bucket, and deploymentmanager.editor or cloudbuild.builds.editor run deployments as a service agent that may hold project editor. A role joins the allowlist only by a reviewed change to this package, after checking that it cannot change IAM, the state bucket, or act as another identity. Least privilege remains the owner's review."
+  description = "Must stay empty. Owner decision D12 (#39 6483366237): every grant is a custom role listing exactly the reviewed permissions, and no predefined role is added to any pilot identity: no Viewer, Editor or Owner, no Pub/Sub role (publisher and subscriber publish and consume messages; pubsub.viewer is broader than topic metadata), no Cloud Asset, logging or monitoring viewer, no Token Creator. A role can only come back through a reviewed change to this package and a new owner decision."
   type        = list(string)
   default     = []
   validation {
-    # The reviewed allowlist: Pub/Sub data-plane and read roles for the minimal workload, and read-only telemetry. None administers IAM,
-    # storage or a deployment service, and none can act as another identity (UNVERIFIED against Google's role reference; a wrong entry is
-    # removed by review, never widened).
-    condition     = alltrue([for r in var.apply_additional_roles : contains(["roles/pubsub.publisher", "roles/pubsub.subscriber", "roles/pubsub.viewer", "roles/logging.viewer", "roles/monitoring.viewer"], r)])
-    error_message = "apply_additional_roles accepts only the reviewed allowlist: roles/pubsub.publisher, roles/pubsub.subscriber, roles/pubsub.viewer, roles/logging.viewer, roles/monitoring.viewer. Any other role (owner, editor, an admin, storage, deployment or build role) needs a reviewed change to this package."
+    # D12: the allowlist this package once had (Pub/Sub publisher, subscriber and viewer, logging and monitoring viewer) is gone.
+    condition     = length(var.apply_additional_roles) == 0
+    error_message = "apply_additional_roles must be empty: owner decision D12 adds no predefined role to a pilot identity. Every grant is a custom role with exactly the reviewed permissions."
   }
   validation {
     condition     = length(distinct(var.apply_additional_roles)) == length(var.apply_additional_roles)
@@ -123,6 +121,30 @@ variable "apply_additional_roles" {
   validation {
     condition     = var.engine != "GCP_API" || length(var.apply_additional_roles) == 0
     error_message = "The GCP_API engine's APPLY gets the minimal workload's permissions only."
+  }
+}
+
+variable "topic_prefix" {
+  description = "GCP_API only (decision D4): the topic namespace the contract target's topicPrefix authorizes, like alz-act-dev1-. Each run's topic is this prefix and a suffix drawn at seal."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.engine != "GCP_API" || (var.topic_prefix != null && can(regex("^alz-[a-z0-9-]{1,40}-$", coalesce(var.topic_prefix, "x"))))
+    error_message = "The GCP_API engine needs a topic_prefix like alz-act-dev1-: alz-, 1 to 40 lowercase letters, digits or hyphens, and a final hyphen."
+  }
+  validation {
+    condition     = var.engine != "TERRAFORM" || var.topic_prefix == null
+    error_message = "The TERRAFORM engine names its topic in the canary project; leave topic_prefix unset."
+  }
+}
+
+variable "parent" {
+  description = "Optional organizations/<n> or folders/<n> the contract target names (decision D9). Owner-declared, not observed: no pilot identity reads it, and no evidence claims verified placement."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.parent == null || can(regex("^(organizations|folders)/[1-9][0-9]{0,24}$", coalesce(var.parent, "x")))
+    error_message = "parent is organizations/<number> or folders/<number>."
   }
 }
 

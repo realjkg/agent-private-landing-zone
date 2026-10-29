@@ -175,6 +175,8 @@ test("each committed ACT-DEV-1 canary folder selects only its own focused test, 
     ["qualification/azure/act-dev1-canary/main.tf", "test/act-dev1-azure-canary.test.ts"],
     ["qualification/azure/act-dev1-bicep-canary/main.json", "test/act-dev1-bicep-canary.test.ts"],
     ["qualification/azure/act-dev1-bicep-canary/main.bicep", "test/act-dev1-bicep-canary.test.ts"],
+    ["qualification/gcp/act-dev1-canary/main.tf", "test/act-dev1-gcp-canary.test.ts"],
+    ["qualification/gcp/act-dev1-canary/.terraform.lock.hcl", "test/act-dev1-gcp-canary.test.ts"],
   ];
   for (const [path, owner] of cases) {
     const files = fixture();

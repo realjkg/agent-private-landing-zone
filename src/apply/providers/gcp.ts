@@ -261,13 +261,24 @@ const isDataUse = (use: ProviderUse): boolean => use.mode !== "managed" || DATA_
  */
 const DATA_SOURCE_PROJECT: Readonly<Record<string, string>> = { google_project: "project_id", google_pubsub_topic: "project" };
 
+/**
+ * The configuration address a use is read under (G1, the #339 follow-up "keyed by type"): the configuration tree names a data source
+ * relative to its module and without an instance key (`data.google_project.this`), the plan and the prior state by its full instance
+ * address (`module.net.data.google_project.this["a"]`). Both reduce to `data.<type>.<name>` here: the module path and one trailing
+ * instance key are dropped. An address that does not reduce cleanly keeps its own text, matches nothing, and is refused (fail closed).
+ */
+const configurationKeyOf = (address: string): string =>
+  address.replace(/^(?:module\.[A-Za-z0-9_-]+(?:\[(?:[0-9]+|"[^"\]]*")\])?\.)+/, "").replace(/\[(?:[0-9]+|"[^"\]]*")\]$/, "");
+
 function assertDataSourceProjects(uses: readonly ProviderUse[], target: GcpTarget): void {
+  // Keyed by configuration address, never by type alone: one configured data source naming the contract's project must not stand in
+  // for another read of the same type that the configuration tree does not show.
   const configured = new Set<string>();
   for (const use of uses) {
     const attribute = Object.hasOwn(DATA_SOURCE_PROJECT, use.type) ? DATA_SOURCE_PROJECT[use.type] : undefined;
     if (attribute === undefined || !isDataUse(use)) continue;
     if (use.expressions !== undefined) {
-      configured.add(use.type);
+      configured.add(configurationKeyOf(use.address));
       const expression = use.expressions[attribute];
       const constant = isRecord(expression) && Object.keys(expression).length === 1 ? expression.constant_value : undefined;
       if (typeof constant !== "string") stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
@@ -278,9 +289,87 @@ function assertDataSourceProjects(uses: readonly ProviderUse[], target: GcpTarge
   }
   // A read the configuration tree does not show could not be judged: refused, never assumed to be the contract's project.
   for (const use of uses) {
-    if (Object.hasOwn(DATA_SOURCE_PROJECT, use.type) && isDataUse(use) && !configured.has(use.type)) stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
+    if (Object.hasOwn(DATA_SOURCE_PROJECT, use.type) && isDataUse(use) && !configured.has(configurationKeyOf(use.address))) stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
   }
 }
+
+/**
+ * The canary topic's own attributes (G1: R1 and R2 of the #339 follow-ups, owner canary definition "no CMEK, no messages", owner
+ * decision 6481421924, and D11's storage policy, 6483366237). Checked on every managed `google_pubsub_topic`, the one type the canary
+ * allows, at seal, at the qualification plan and at the apply's re-derivation (the judge runs on each), from the configuration, the
+ * planned values and which planned values are unknown. Attribute names are hashicorp/google 8.9.0's (its pinned schema, read
+ * offline 2026-10-29).
+ *
+ * R1, refused when configured, planned with a value, or unknown until apply (CANARY_ATTRIBUTE_NOT_IN_CONTRACT):
+ * - `kms_key_name`: a customer-managed key, which is CMEK and names a key that may be in another project;
+ * - `schema_settings`: a schema, which may be in another project, and only matters to published messages;
+ * - `ingestion_data_source_settings`: an import source (Kinesis, MSK, Event Hubs, Cloud Storage, Confluent Cloud) that publishes
+ *   messages into the topic as a Google service agent or another service account;
+ * - `message_transforms`: JavaScript UDFs and AI inference run on every published message, possibly as another service account;
+ * - `message_retention_duration`: decided as **refused at any value**. With it unset (the default) the topic itself keeps no
+ *   message; with it set, the topic stores every published message for up to 31 days, which is storage the canary never needs (it
+ *   publishes nothing) and message data the owner's "no messages" excludes. No value is "default" except unset;
+ * - `tags`: Resource Manager tag bindings, which name organization-level tag values and can switch on conditional IAM grants;
+ * - `project_number`: not an attribute of the topic in 8.9.0; refused on sight, because the contract names a project id only, so a
+ *   project number cannot be compared with it.
+ * `deletion_policy` must be unset or "DELETE" (the provider's default, planned as "DELETE"): "ABANDON" would let a cleanup's
+ * destroy drop the topic from the state and leave it in the project, and "PREVENT" would make the cleanup fail. Otherwise
+ * CANARY_ATTRIBUTE_NOT_IN_CONTRACT.
+ *
+ * R2 (LOCATION_NOT_IN_CONTRACT): the topic's `message_storage_policy` must be one block whose `allowed_persistence_regions` is
+ * exactly `[<contract region>]`, configured as that constant or as an expression, and planned as exactly that one region; a policy
+ * that is absent, empty, names another or a second region, or is unknown until apply is refused. `enforce_in_transit` may be set
+ * either way (it only narrows where messages travel). This binds one Pub/Sub property. It is not a data-residency claim for the
+ * topic, the project or Google's processing (D11).
+ */
+const CANARY_TOPIC = "google_pubsub_topic";
+const CANARY_TOPIC_REFUSED: readonly string[] = [
+  "kms_key_name", "schema_settings", "ingestion_data_source_settings", "message_transforms", "message_retention_duration", "tags", "project_number",
+];
+const STORAGE_POLICY = "message_storage_policy";
+const REGIONS = "allowed_persistence_regions";
+
+/** Whether a planned value says something: not absent, not null, not an empty list or object (how the plan shows an unset block). */
+const hasValue = (value: unknown): boolean =>
+  value !== undefined && value !== null && !(Array.isArray(value) && value.length === 0) && !(isRecord(value) && Object.keys(value).length === 0);
+/** Whether an `after_unknown` entry marks anything unknown: `true` itself, or anywhere inside a nested list or object. */
+const anyUnknown = (value: unknown): boolean =>
+  value === true || (Array.isArray(value) && value.some(anyUnknown)) || (isRecord(value) && Object.values(value).some(anyUnknown));
+const constantOf = (expression: unknown): unknown => (isRecord(expression) && Object.keys(expression).length === 1 ? expression.constant_value : undefined);
+const onlyRegion = (regions: unknown, region: string): boolean => Array.isArray(regions) && regions.length === 1 && regions[0] === region;
+
+function assertCanaryTopics(uses: readonly ProviderUse[], target: GcpTarget): void {
+  for (const use of uses) {
+    if (use.type !== CANARY_TOPIC || isDataUse(use) || providerIdOf(use.provider) !== GOOGLE_PROVIDER) continue;
+    const expressions = use.expressions ?? {};
+    for (const attribute of CANARY_TOPIC_REFUSED) {
+      if ((Object.hasOwn(expressions, attribute) && isSet(expressions[attribute])) || hasValue(use.values?.[attribute]) || anyUnknown(use.unknown?.[attribute])) {
+        stop("CANARY_ATTRIBUTE_NOT_IN_CONTRACT");
+      }
+    }
+    const deletion = expressions.deletion_policy;
+    if ((deletion !== undefined && isSet(deletion) && constantOf(deletion) !== "DELETE") || anyUnknown(use.unknown?.deletion_policy) ||
+      (use.values !== undefined && use.values.deletion_policy !== undefined && use.values.deletion_policy !== null && use.values.deletion_policy !== "DELETE")) {
+      stop("CANARY_ATTRIBUTE_NOT_IN_CONTRACT");
+    }
+    // R2, the configuration: when the tree shows the topic, it shows exactly one storage-policy block, and a constant region list in it is the contract's.
+    if (use.expressions !== undefined) {
+      const blocks = expressions[STORAGE_POLICY];
+      if (!Array.isArray(blocks) || blocks.length !== 1 || !isRecord(blocks[0]) || !Object.hasOwn(blocks[0], REGIONS)) stop("LOCATION_NOT_IN_CONTRACT");
+      const regions = (blocks as Record<string, unknown>[])[0][REGIONS];
+      const constant = constantOf(regions);
+      if (constant !== undefined && !onlyRegion(constant, target.region)) stop("LOCATION_NOT_IN_CONTRACT");
+      if (constant === undefined && !(isRecord(regions) && Array.isArray(regions.references))) stop("LOCATION_NOT_IN_CONTRACT");
+    }
+    // R2, the plan: never unknown, and every planned value is exactly one block naming exactly the contract's region.
+    if (anyUnknown(use.unknown?.[STORAGE_POLICY])) stop("LOCATION_NOT_IN_CONTRACT");
+    if (use.values !== undefined) {
+      const planned = use.values[STORAGE_POLICY];
+      if (!Array.isArray(planned) || planned.length !== 1 || !isRecord(planned[0]) || !onlyRegion(planned[0][REGIONS], target.region)) stop("LOCATION_NOT_IN_CONTRACT");
+    }
+  }
+}
+
 
 /**
  * The attributes that name the project a managed google resource lives in (review N1 of #339). Every google resource carries its
@@ -289,7 +378,8 @@ function assertDataSourceProjects(uses: readonly ProviderUse[], target: GcpTarge
  * contract's constant) or a plain constant equal to the contract's project; a planned value of either must be the contract's
  * project; and one the plan leaves unknown until apply is refused. Another project is PROVIDER_ACCOUNT_NOT_IN_CONTRACT; an
  * expression, a value that is not text or an unknown one is PROVIDER_CONFIG_NOT_IN_CONTRACT, because it cannot be judged before the
- * apply runs. Region and location are not judged here (the canary topic is global; a later reviewed type with a location adds it).
+ * apply runs. The canary topic's only location, its storage policy, is judged by `assertCanaryTopics` (R2); a later reviewed type with a
+ * location of its own adds its own rule.
  */
 const RESOURCE_PROJECT_ATTRIBUTES: readonly string[] = ["project", "project_id"];
 
@@ -364,7 +454,8 @@ export const GCP_DENIED_TYPES_REVIEWED_AGAINST = "hashicorp/google 8.9.0";
  * provider only `terraform_data` resources; no managed use of a denied type (`GCP_DENIED_TYPES`, PROVIDER_TYPE_NOT_ALLOWED); only the
  * reviewed data sources (`GCP_DATA_SOURCES`, PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT), each naming the contract's project
  * (`assertDataSourceProjects`); every managed google resource's project, configured or planned, is the contract's
- * (`assertResourceProjects`); and a google use needs a google provider block. In every google block no attribute of `DENIED_ATTRIBUTE`
+ * (`assertResourceProjects`); the canary topic carries none of R1's attributes and the contract region's storage policy
+ * (`assertCanaryTopics`); and a google use needs a google provider block. In every google block no attribute of `DENIED_ATTRIBUTE`
  * is set, `default_labels` is set (the unit labels come from it), and `project` is a plain constant equal to the contract's project
  * (review N1 of #339: an absent project or an expression is refused). `region` and `zone` are not judged.
  */
@@ -378,6 +469,7 @@ function assertProviderConfig(blocks: readonly ProviderBlock[], target: GcpTarge
   }
   assertDataSourceProjects(uses, target);
   assertResourceProjects(uses, target);
+  assertCanaryTopics(uses, target);
   // A google use needs a google provider block, whose project and default_labels are judged below (review N1 of #339): with none,
   // the provider would take its project from the environment and its labels from nowhere the plan shows.
   if (uses.some((use) => providerIdOf(use.provider) === GOOGLE_PROVIDER) && !blocks.some((block) => providerIdOf(block ?? {}) === GOOGLE_PROVIDER)) {

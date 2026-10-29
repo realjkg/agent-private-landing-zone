@@ -18,18 +18,36 @@ import type { ResourceCheck, ResourceReader, VerifierId } from "./verify.js";
  * so this module never imports the apply path) (an external_account file source, no
  * key, no impersonation URL of its own). Its OIDC token file is read once and exchanged, in the body of one HTTPS POST to Google's
  * security token service, for a federated token; that token, in one HTTPS POST to the IAM Credentials API, is exchanged for a
- * short-lived access token of DISCOVERY's service account (`ALZ_DISCOVERY_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT`), with the
- * read-only cloud-platform scope. All three live in this module's memory for one observation and are dropped with it. They never
- * appear in a record, a message or an error: failures are recorded as classes.
+ * short-lived access token of DISCOVERY's service account (`ALZ_DISCOVERY_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT`). D15 (G1): one
+ * federated exchange, then one access token per read host, each with that host's own scope (`READ_SCOPES`) and used on that host
+ * only. All of them live in this module's memory for one observation and are dropped with it. They never appear in a record, a
+ * message or an error: failures are recorded as classes.
+ *
+ * Scopes (D15, part of owner decision D12, 6483366237). Pub/Sub gets `https://www.googleapis.com/auth/pubsub`: the Pub/Sub v1
+ * discovery document (revision 20261006, read offline) lists only `cloud-platform` and `pubsub` on `topics.get`, so the read-only
+ * cloud-platform scope this reader used to request would have been refused and every topic check would have read UNKNOWN (GF2).
+ * The pubsub scope is not read-only: DISCOVERY's read-only property rests on its IAM grant (`pubsub.topics.get` only,
+ * bootstrap/gcp), not on the OAuth scope. Cloud Asset gets `cloud-platform`: whether `searchAllResources` accepts the narrower
+ * `cloud-platform.read-only` is UNVERIFIED (GF3), so the scope that certainly works is requested and DISCOVERY's grant
+ * (`cloudasset.assets.searchAllResources` on the project only) is what keeps it read-only; once GF3 is verified, the narrower scope
+ * is one constant below. The exchange itself asks for `cloud-platform`, the scope Google's own Go auth library sends there (seen in
+ * the EMULATED run of test/apply-emulated-gcp.test.ts; what Google accepts is GF8, UNVERIFIED).
+ *
+ * D11 read-back (G1): for `google_pubsub_topic`, when the reader is given the contract's region (`storagePolicyRegion`), the
+ * topic's `messageStoragePolicy.allowedPersistenceRegions` must be exactly that one region. `openReader` (src/apply/observe.ts)
+ * passes the contract target's region. A different value is PRESENT and `misplaced` (the shared check of #343): the observation
+ * FAILS and the resource is DIFFERENT_FROM_DESIRED, so no cleanup is proposed. A missing or unreadable policy is UNKNOWN
+ * (STORAGE_POLICY_NOT_READ), never assumed. This names one Pub/Sub property; it is not a data-residency claim.
  *
  * Requests: the two POSTs above, each to its one exact URL, and GETs over https to the read hosts only (`READ_HOSTS`). Nothing
  * else is sent: another host, scheme, port or userinfo, or a path the URL parser would rewrite, is refused before a request exists,
  * so a token never travels in cleartext, to the wrong service, or about a different resource. Only existence and identifiers are
  * kept from an answer.
  *
- * UNVERIFIED (from memory, as the PLAN marks them): the token-exchange and generateAccessToken request shapes; that Pub/Sub's
- * `topics.get` accepts the cloud-platform.read-only scope (if it does not, every check reads UNKNOWN, which fails closed); and Cloud
- * Asset Inventory's `searchAllResources` query syntax `labels.<key>=<value>` and its eventual consistency (minutes). A resource the
+ * UNVERIFIED (from memory, as the PLAN marks them): the token-exchange and generateAccessToken request shapes against Google's
+ * reference (GF1; the exchange is form-encoded, as Google's Go auth library sends it in the EMULATED run); the scopes Cloud Asset
+ * accepts (GF3); and Cloud Asset Inventory's `searchAllResources` query syntax `labels.<key>=<value>` and its eventual consistency
+ * (minutes, GF5). A resource the
  * state names that the sweep does not yet list is no failure; a listed resource the state does not name is one, as on AWS and Azure.
  */
 export type GcpRequest = { method: "GET" | "POST"; url: string; headers: Readonly<Record<string, string>>; body?: string };
@@ -47,7 +65,13 @@ const PUBSUB_HOST = "pubsub.googleapis.com";
 const ASSET_HOST = "cloudasset.googleapis.com";
 /** Where a GET with DISCOVERY's access token may go. Each host is one the reader has a use for, and nothing else. */
 const READ_HOSTS: ReadonlySet<string> = new Set([PUBSUB_HOST, ASSET_HOST]);
-const SCOPE = "https://www.googleapis.com/auth/cloud-platform.read-only";
+/** The one scope each read host's token carries (D15). A token is minted per host and sent to that host only. */
+export const READ_SCOPES: Readonly<Record<string, string>> = {
+  [PUBSUB_HOST]: "https://www.googleapis.com/auth/pubsub",
+  [ASSET_HOST]: "https://www.googleapis.com/auth/cloud-platform",
+};
+/** The scope the federated exchange asks for (GF8, UNVERIFIED): what Google's Go auth library sends. */
+const EXCHANGE_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
 const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 const MAX_PAGES = 50;
 
@@ -105,6 +129,11 @@ export type DiscoveryGcpOptions = {
   env?: NodeJS.ProcessEnv;
   /** The project the contract's target names; every read is scoped to it, and DISCOVERY's service account must be of it. */
   projectId: string;
+  /**
+   * The contract's region, when the topic's storage policy is to be read back (D11, R2): every `google_pubsub_topic` checked must
+   * report exactly `[region]` as its `messageStoragePolicy.allowedPersistenceRegions`. Unset, the policy is not read.
+   */
+  storagePolicyRegion?: string;
   http?: GcpHttp;
 };
 
@@ -114,7 +143,12 @@ export function createDiscoveryGcpReader(options: DiscoveryGcpOptions): { reader
   const env = options.env ?? process.env;
   if (!PROJECT_ID.test(options.projectId)) throw new Error("GCP_PROJECT_INVALID");
   const project = options.projectId;
-  let access: { token: string } | { failed: GcpErrorClass } | undefined;
+  const region = options.storagePolicyRegion;
+  if (region !== undefined && !/^[a-z]+-[a-z]+[0-9]{1,2}$/.test(region)) throw new Error("GCP_REGION_INVALID");
+  type Access = { token: string } | { failed: GcpErrorClass };
+  /** The federated token, once per observation; then one access token per read host, each minted with that host's scope. */
+  let federation: Access | undefined;
+  const access = new Map<string, Access>();
   let closed = false;
 
   /** The one gate every request passes. `allowedPost` is the one URL a POST may go to; a GET goes to a read host only. */
@@ -133,36 +167,53 @@ export function createDiscoveryGcpReader(options: DiscoveryGcpOptions): { reader
     } catch { return undefined; }
   };
 
-  /** DISCOVERY's access token: OIDC token, then federated token, then the service account's token. None leaves this closure. */
-  const bearer = async (): Promise<{ token: string } | { failed: GcpErrorClass }> => {
-    if (closed) return { failed: "READER_CLOSED" };
-    if (access) return access;
+  /** The federated token: DISCOVERY's OIDC token exchanged once at the security token service. It never leaves this closure. */
+  const federated = async (): Promise<Access> => {
+    if (federation) return federation;
     const identity = discoveryIdentity(env, project);
-    if (!identity.ok) return (access = { failed: "CREDENTIALS" });
+    if (!identity.ok) return (federation = { failed: "CREDENTIALS" });
     const subjectToken = readTokenFile(identity.tokenFile);
-    if (subjectToken === undefined) return (access = { failed: "CREDENTIALS" });
+    if (subjectToken === undefined) return (federation = { failed: "CREDENTIALS" });
     const exchange = await send({
       method: "POST", url: STS_TOKEN_URL, headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:token-exchange", audience: identity.audience, scope: "https://www.googleapis.com/auth/cloud-platform",
+        grant_type: "urn:ietf:params:oauth:grant-type:token-exchange", audience: identity.audience, scope: EXCHANGE_SCOPE,
         requested_token_type: "urn:ietf:params:oauth:token-type:access_token", subject_token: subjectToken, subject_token_type: identity.subjectTokenType,
       }).toString(),
     }, STS_TOKEN_URL);
-    if (exchange.status !== 200) return (access = { failed: exchange.status === 400 || exchange.status === 401 ? "CREDENTIALS" : exchange.status === 0 ? "HOST_REFUSED" : classOf(exchange.status) });
-    const federated = tokenFrom(exchange.body, "access_token");
-    if (federated === undefined) return (access = { failed: "UNEXPECTED_RESPONSE" });
+    if (exchange.status !== 200) return (federation = { failed: exchange.status === 400 || exchange.status === 401 ? "CREDENTIALS" : exchange.status === 0 ? "HOST_REFUSED" : classOf(exchange.status) });
+    const token = tokenFrom(exchange.body, "access_token");
+    return (federation = token === undefined ? { failed: "UNEXPECTED_RESPONSE" } : { token });
+  };
+
+  /** DISCOVERY's access token for one read host, with that host's scope only: OIDC token, federated token, then the service account's token. */
+  const bearer = async (host: string): Promise<Access> => {
+    if (closed) return { failed: "READER_CLOSED" };
+    const minted = access.get(host);
+    if (minted) return minted;
+    const scope = Object.hasOwn(READ_SCOPES, host) ? READ_SCOPES[host] : undefined;
+    if (scope === undefined) return { failed: "HOST_REFUSED" };
+    const identity = discoveryIdentity(env, project);
+    if (!identity.ok) return { failed: "CREDENTIALS" };
+    const exchanged = await federated();
+    if ("failed" in exchanged) { access.set(host, exchanged); return exchanged; }
     const impersonate = "https://" + IAM_CREDENTIALS_HOST + "/v1/projects/-/serviceAccounts/" + identity.serviceAccount + ":generateAccessToken";
     const generated = await send({
-      method: "POST", url: impersonate, headers: { authorization: "Bearer " + federated, "content-type": "application/json" },
-      body: JSON.stringify({ scope: [SCOPE], lifetime: "900s" }),
+      method: "POST", url: impersonate, headers: { authorization: "Bearer " + exchanged.token, "content-type": "application/json" },
+      body: JSON.stringify({ scope: [scope], lifetime: "900s" }),
     }, impersonate);
-    if (generated.status !== 200) return (access = { failed: generated.status === 0 ? "HOST_REFUSED" : classOf(generated.status) });
-    const token = tokenFrom(generated.body, "accessToken");
-    return (access = token === undefined ? { failed: "UNEXPECTED_RESPONSE" } : { token });
+    const token = generated.status === 200 ? tokenFrom(generated.body, "accessToken") : undefined;
+    const result: Access = generated.status !== 200 ? { failed: generated.status === 0 ? "HOST_REFUSED" : classOf(generated.status) }
+      : token === undefined ? { failed: "UNEXPECTED_RESPONSE" } : { token };
+    access.set(host, result);
+    return result;
   };
 
   const get = async (url: string): Promise<GcpResponse | { failed: GcpErrorClass }> => {
-    const auth = await bearer();
+    let host: string;
+    try { host = new URL(url).hostname; } catch { return { failed: "HOST_REFUSED" }; }
+    if (!READ_HOSTS.has(host)) return { failed: "HOST_REFUSED" };
+    const auth = await bearer(host);
     if ("failed" in auth) return auth;
     const response = await send({ method: "GET", url, headers: { authorization: "Bearer " + auth.token, accept: "application/json" } });
     if (response.status === 0) return { failed: response.body === "HOST_REFUSED" ? "HOST_REFUSED" : "HTTP_ERROR" };
@@ -184,11 +235,17 @@ export function createDiscoveryGcpReader(options: DiscoveryGcpOptions): { reader
     if ("failed" in response) return { ...base, identifier, existence: "UNKNOWN", reason: response.failed };
     if (response.status === 404) return { ...base, identifier, existence: "ABSENT" };
     if (response.status !== 200) return { ...base, identifier, existence: "UNKNOWN", reason: classOf(response.status) };
-    try {
-      // The one fact ever read from the answer: that it names the resource that was asked about.
-      if ((JSON.parse(response.body) as { name?: unknown }).name === identifier) return { ...base, identifier, existence: "PRESENT" };
-    } catch { /* falls through */ }
-    return { ...base, identifier, existence: "UNKNOWN", reason: "UNEXPECTED_RESPONSE" };
+    let body: { name?: unknown; messageStoragePolicy?: unknown };
+    try { body = JSON.parse(response.body) as typeof body; } catch { return { ...base, identifier, existence: "UNKNOWN", reason: "UNEXPECTED_RESPONSE" }; }
+    // The facts ever read from the answer: that it names the resource that was asked about and, for a topic when a region is
+    // given, the regions its storage policy allows (D11). Nothing else is kept.
+    if (typeof body !== "object" || body === null || body.name !== identifier) return { ...base, identifier, existence: "UNKNOWN", reason: "UNEXPECTED_RESPONSE" };
+    if (region === undefined || entry.type !== "google_pubsub_topic") return { ...base, identifier, existence: "PRESENT" };
+    const policy = body.messageStoragePolicy;
+    const regions = typeof policy === "object" && policy !== null ? (policy as { allowedPersistenceRegions?: unknown }).allowedPersistenceRegions : undefined;
+    if (!Array.isArray(regions) || !regions.every((item) => typeof item === "string")) return { ...base, identifier, existence: "UNKNOWN", reason: "STORAGE_POLICY_NOT_READ" };
+    return regions.length === 1 && regions[0] === region ? { ...base, identifier, existence: "PRESENT" }
+      : { ...base, identifier, existence: "PRESENT", misplaced: true };
   };
 
   /**
@@ -228,6 +285,6 @@ export function createDiscoveryGcpReader(options: DiscoveryGcpOptions): { reader
 
   return {
     reader: { verifier: GCP_VERIFIER, check, listTagged },
-    close: () => { closed = true; access = undefined; },
+    close: () => { closed = true; federation = undefined; access.clear(); },
   };
 }

@@ -2,9 +2,11 @@
 
 Status: **offline-validated only; unverified until a project owner runs it.**
 
-On 2026-10-27, `bootstrap/gcp` was checked with Terraform 1.16.4 (binary sha256 `44d3683c2ac9d72b6ca8ad880a2df8dd956dd5e019b1d111cb6a5d914d576b73`), `hashicorp/google` 8.8.1 and no cloud credentials:
-- `terraform fmt -check -recursive`, `init -backend=false` and `validate` passed, with no warnings;
-- `terraform test` passed all 28 runs against a **mocked** `google` provider (`bootstrap/gcp/tests/bootstrap.tftest.hcl`).
+On 2026-10-29 (lane G1, after the D12 review below), `bootstrap/gcp` was checked with Terraform 1.16.4 (binary sha256 `44d3683c2ac9d72b6ca8ad880a2df8dd956dd5e019b1d111cb6a5d914d576b73`), `hashicorp/google` **8.9.0** and no cloud credentials, inside a network namespace with loopback only. The provider came from a local filesystem mirror holding the release zip, which matched HashiCorp's signed `SHA256SUMS` (good signature, key `C874 011F 0AB4 0511 0D02 1055 3436 5D94 72D7 468F`):
+- `terraform fmt -check -recursive`, `init -backend=false` and `validate` passed;
+- `terraform test` passed all 36 runs against a **mocked** `google` provider (`bootstrap/gcp/tests/bootstrap.tftest.hcl`).
+
+(The first check, on 2026-10-27, used 8.8.1 and 28 runs.)
 
 That confirms the resource and attribute names against that provider schema, and this package's own logic: names, grants, conditions, validations and outputs. Nothing more. No `plan` or `apply` has run against Google, no resource has been created, and the IAM, workload identity federation, Cloud Storage and deny-policy behavior is untested.
 
@@ -20,21 +22,26 @@ GCP Terraform is admitted in code for DEV only (owner decision 6481421924 on iss
 
 ## What it creates
 
-One run per project and engine. Pick the engine with `engine`.
+One run per engine, in the DEV project only. Pick the engine with `engine`. Both GCP paths are admitted for DEV only (#339; owner decision 6481421924), so `environment` accepts `DEV` and nothing else.
 
 | | TERRAFORM (path 5) | GCP_API (path 6) |
 | --- | --- | --- |
-| Environments | DEV, QA and PROD, one project each | DEV only |
+| Environments | DEV only | DEV only |
 | Service accounts | `<prefix>-<env>-discovery`, `-state`, `-state-write`, `-apply` | `<prefix>-dev-api-discovery`, `<prefix>-dev-api-apply` |
 | Workload identity pool | `<prefix>-<env>`, provider `oidc` | `<prefix>-dev-api`, provider `oidc` |
-| APPLY workload grant (custom role on the project) | `pubsub.topics.create`, `.delete`, `.get`, `.update` | `pubsub.topics.create`, `pubsub.topics.delete` |
-| DISCOVERY workload grant | `pubsub.topics.get`, `cloudasset.assets.searchAllResources` | `pubsub.topics.get` |
+| APPLY workload grant (custom role on the project) | `pubsub.topics.create`, `.delete`, `.get` | `pubsub.topics.create`, `pubsub.topics.delete` |
+| DISCOVERY workload grant (custom role on the project) | `pubsub.topics.get`, `cloudasset.assets.searchAllResources` | `pubsub.topics.get`, `cloudasset.assets.searchAllResources` (D12) |
+| APIs the bootstrap enables (never a runtime identity) | `iam`, `iamcredentials`, `sts`, `pubsub`, `cloudasset`, `storage` | `iam`, `iamcredentials`, `sts`, `pubsub`, `cloudasset` |
+| `contract_target` output | `projectId`, `region`, `backend`, `workspace`, `canary` (and `parent` when set) | D9's shape: the same, with `backend = GCP_API_NO_STATE` and `topicPrefix` |
+| `contract_settings` output | `embedStateWrite = true`, `enabledEnvironments = ["DEV"]` | `enabledEnvironments = ["DEV"]` |
 | State bucket | yes, in the environment's project | none, and no bucket grant |
 | STATE | bucket only: read the state prefix; create and delete the `.tflock` object only | n/a |
 | STATE_WRITE | bucket only: read and write the state prefix | n/a |
 | Project guardrails | org policy `iam.disableServiceAccountKeyCreation`; an IAM deny policy | the same, its own deny policy |
 
-The minimal workload is one labeled Pub/Sub topic in the DEV project. Terraform needs `get` and `update` on top of create and delete, because it reads the topic back after creating it and can change its labels. Path 6's engine needs exactly what it named in #303.
+The minimal workload is one labeled Pub/Sub topic in the DEV project. Terraform needs `get` on top of create and delete, because the google provider reads the topic back after creating it and before deleting it (seen in the EMULATED run, `test/apply-emulated-gcp.test.ts`). It does **not** get `update` any more: the canary is create only (owner decision E1), and a cleanup only deletes. Path 6's engine needs exactly what it named in #303. Both paths' DISCOVERY sweep the project's resources for the run's unit label through Cloud Asset Inventory (`listTagged` in `src/observe/gcp-rest.ts`). Without that grant the inventory is `INCOMPLETE` and an observation can never be better than `INCONCLUSIVE`.
+
+**The TERRAFORM contract must set `embedStateWrite: true`** (`contract_settings` output). Without it, `terraform apply <planfile>` fills the gcs backend's credentials from the apply process's own environment, which is APPLY's. The EMULATED run shows APPLY then holds the lock and writes the state. The deny policy below forbids APPLY every Cloud Storage object permission, so live such an apply could not even lock the state. With `embedStateWrite: true`, the seal-time backend names STATE_WRITE. The EMULATED run shows every state access during seal, apply and cleanup was STATE_WRITE's, and APPLY and DISCOVERY never touched the bucket. As on AWS, the seal-time plan then reads STATE_WRITE's credential configuration file for the backend.
 
 **Identities are engine-neutral.** Both engines use the same variables:
 - `ALZ_<IDENTITY>_GOOGLE_APPLICATION_CREDENTIALS`
@@ -63,9 +70,10 @@ Each engine still gets its own service accounts, pool, custom roles and deny pol
 - APPLY is also denied editing the pilot's service accounts, pool, custom roles and the project IAM policy. This is the GCP form of the AWS bucket policy's "deny everyone else" and of `DenyEditingBootstrapIdentity`.
 - If a reviewed blueprint must write objects or manage a bucket, turn it off for that project and say so in the change record.
 
-**APPLY's extra roles are an allowlist** (`apply_additional_roles`). Only these are accepted: `roles/pubsub.publisher`, `roles/pubsub.subscriber`, `roles/pubsub.viewer`, `roles/logging.viewer` and `roles/monitoring.viewer`.
-- A denylist cannot keep up with Google's roles. `roles/storage.admin` can re-grant the state bucket. `roles/deploymentmanager.editor` and `roles/cloudbuild.builds.editor` run deployments as a service agent that may hold project editor.
-- A role joins the allowlist only by a reviewed change to this package, after checking that it cannot change IAM or the state bucket and cannot act as another identity.
+**No predefined role, for any identity** (owner decision D12, #39 6483366237). Every grant is a custom role that lists exactly the permissions in the table above. The only predefined role the package names is each service account's own `roles/iam.workloadIdentityUser` binding, which lets one subject impersonate it.
+- `apply_additional_roles` must stay empty. Its old allowlist is gone: `roles/pubsub.publisher` and `roles/pubsub.subscriber` publish and consume messages, `roles/pubsub.viewer` reads more than topic metadata, and the logging and monitoring viewers are broad predefined roles. D12 forbids all of these.
+- No Viewer, Editor or Owner role, no `roles/cloudasset.viewer`, and no Service Account Token Creator.
+- A role could only come back through a reviewed change to this package and a new owner decision.
 
 **DISCOVERY is deliberately narrower than the G0 table.**
 - The G0 identity table gives DISCOVERY `roles/cloudasset.viewer`, `roles/browser` and `roles/storage.objectViewer` on the state bucket.
@@ -81,7 +89,7 @@ Each engine still gets its own service accounts, pool, custom roles and deny pol
 
 ## Prerequisites: what the project owner needs
 
-- One project per environment: DEV, QA and PROD for TERRAFORM. Path 6 uses the DEV project only.
+- The DEV project only, for both engines.
 - On each project: `roles/owner`, or the narrower set needed here:
   - Workload Identity Pool Admin, Service Account Admin, Role Administrator and Project IAM Admin;
   - Storage Admin;
@@ -94,7 +102,7 @@ Each engine still gets its own service accounts, pool, custom roles and deny pol
 
 ## Step 1: TERRAFORM (path 5)
 
-For each of DEV, QA and PROD, in a separate workspace or directory copy:
+In the DEV project, in its own workspace or directory copy:
 
 ```sh
 cd bootstrap/gcp
@@ -139,7 +147,8 @@ Set no other `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*` or `GCE_*` variable, and never
 ## Step 4: Fill the configuration
 
 `bootstrap/config.gcp.template.json` shows where each output goes:
-- `contract_target` goes into the contract's `targets`;
+- `contract_target` goes into the contract's `targets.DEV`;
+- `contract_settings` goes into the contract itself: `"enabledEnvironments": ["DEV"]`, and for TERRAFORM `"embedStateWrite": true`;
 - the service account emails and file paths go into the `ALZ_<IDENTITY>_*` variables.
 
 Identifiers and paths only. Leave `enabled: false` and add no `authorize` entry.
@@ -181,13 +190,42 @@ Then check the separation:
 
 Custom roles are soft-deleted for about 7 days, and a pool for about 30. Recreating one with the same id inside that window fails; undelete it or choose another `name_prefix`.
 
+## Before bootstrap: the D12 checklist
+
+Owner decision D12 (#39 6483366237) requires every supporting permission and token scope to be verified **before** bootstrap. Check them against Google's published IAM permissions reference, the custom-role supported-permissions list and the API discovery documents, with no live call. Lane G1 reviewed the package against the eight items on 2026-10-29. Status is one of:
+- **VERIFIED IN CODE**: this package, or the product, does what the item says, and a test pins it.
+- **SUPPORTED OFFLINE**: a pinned or recorded Google document agrees, but Google's acceptance is not proven.
+- **UNVERIFIED, MUST CHECK**: the owner checks it against Google's reference before bootstrap.
+
+| # | Item (`docs/act-pilot-gcp-api-driver.md`, D12) | Status |
+| --- | --- | --- |
+| 1 | `pubsub.topics.get` is the only permission `topics.get` needs, and it is supported in custom roles. | **UNVERIFIED, MUST CHECK.** Used by both paths' DISCOVERY and path 5's APPLY. |
+| 2 | `pubsub.topics.create` alone permits `topics.create` with `labels` and `messageStoragePolicy` (GF4, GF9). | **UNVERIFIED, MUST CHECK.** The Pub/Sub v1 discovery document (revision 20261006) shows `create` is `PUT v1/{+name}` and that `Topic` carries `messageStoragePolicy`. It does not name permissions. |
+| 3 | `pubsub.topics.delete` alone permits `topics.delete`. | **UNVERIFIED, MUST CHECK.** |
+| 4 | `cloudasset.assets.searchAllResources` at project scope is the only permission `searchAllResources` needs, and it is supported in custom roles at project level (GF10). | **UNVERIFIED, MUST CHECK.** Path 5 needs it too, for the unit sweep. |
+| 5 | No custom role holds `pubsub.topics.publish`, `.update`, `.setIamPolicy`, any `pubsub.subscriptions.*`, any `*.setIamPolicy`, any `serviceusage.*`, or `iam.serviceAccounts.getAccessToken` beyond the `roles/iam.workloadIdentityUser` binding. | **VERIFIED IN CODE** (`test/bootstrap-gcp.test.ts`, `terraform test`). `pubsub.topics.update` was removed from path 5's APPLY. Subject to GF7. |
+| 6 | The APIs the path calls (`pubsub`, `sts`, `iamcredentials`, `cloudasset`) are enabled by the owner's bootstrap, and no runtime identity can enable a service. | **VERIFIED IN CODE.** `google_project_service.required`, and no identity holds `serviceusage.services.enable`. |
+| 7 | The token scopes: what the STS exchange requests (GF8), `pubsub` for Pub/Sub `get`, `create` and `delete` (GF2), and the narrowest scope Cloud Asset accepts (GF3). | **PARTLY.** The reader now mints one token per host (D15, `src/observe/gcp-rest.ts`): `https://www.googleapis.com/auth/pubsub` for Pub/Sub, which the discovery document lists on `get`, `create` and `delete` (GF2, SUPPORTED OFFLINE), and `https://www.googleapis.com/auth/cloud-platform` for Cloud Asset (GF3, **UNVERIFIED, MUST CHECK** whether `cloud-platform.read-only` would do). The exchange asks for `cloud-platform`, as Google's own Go auth library does in the EMULATED run (GF8, **UNVERIFIED, MUST CHECK**). Read-only rests on IAM, never on a scope. |
+| 8 | The contract-target output for GCP_API matches D9's shape. | **VERIFIED IN CODE** (`contract_target`, the template, and both test suites). |
+
+The Google facts behind those items:
+
+| Fact | Status |
+| --- | --- |
+| **GF7**: whether a call (most likely Cloud Asset `searchAllResources`) needs a quota project or `serviceusage.services.use` when the impersonated service account makes it. | **UNVERIFIED, MUST CHECK.** If it does, it conflicts with item 5, and the conflict goes back to the owner before bootstrap. It is never resolved by widening a grant. |
+| **GF8**: the scope the STS exchange must request. | **UNVERIFIED, MUST CHECK.** EMULATED: the reader, the google provider and the gcs backend all send `cloud-platform` to `sts.googleapis.com/v1/token` (form-encoded). That shows what Google's own client sends, not what Google accepts. |
+| **GF9**: `pubsub.topics.create` alone covers a create carrying `messageStoragePolicy`. | **UNVERIFIED, MUST CHECK.** |
+| **GF10**: `cloudasset.assets.searchAllResources` is supported in custom roles at project level. | **UNVERIFIED, MUST CHECK.** |
+| **GF11**: `roles/iam.workloadIdentityUser` carries `iam.serviceAccounts.getAccessToken` for federated principals, so no Token Creator role is needed. | **UNVERIFIED, MUST CHECK.** The package relies on it (no Token Creator anywhere). The EMULATED run emulates that binding; it cannot prove Google's behavior. |
+
+**DISCOVERY sees more than the code asks for.** `searchAllResources` on the project returns the metadata (names, types, labels, locations and similar fields) of every indexed resource in the DEV project, not only Pub/Sub topics. The code filters on the unit label; IAM does not. That is why the grant is a custom role on the DEV project only.
+
 ## Assumptions not verified
 
-- **Provider schema.** Checked offline only, against `hashicorp/google` 8.8.1. Other versions inside `>= 8.0, < 9.0` may differ.
+- **Provider schema.** Checked offline only, against `hashicorp/google` 8.9.0 (the product's reviewed version). Other versions inside `>= 8.0, < 9.0` may differ.
 - **G-1.** The `google` provider and the `gcs` backend honor an `external_account` file-source configuration through `GOOGLE_APPLICATION_CREDENTIALS`, with impersonation from `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT` and the backend's `impersonate_service_account`.
-- **`roles/iam.workloadIdentityUser`** is sufficient for a federated principal to impersonate the account through `generateAccessToken`, without `roles/iam.serviceAccountTokenCreator`.
+- **`roles/iam.workloadIdentityUser`** is sufficient for a federated principal to impersonate the account through `generateAccessToken`, without `roles/iam.serviceAccountTokenCreator` (GF11).
 - **G-4.** IAM Conditions on `resource.name` for Cloud Storage objects hold under uniform bucket-level access. A list call is judged against the bucket, which the conditions admit.
 - **Deny policies.** The `storage.googleapis.com/objects.*`, `storage.googleapis.com/buckets.setIamPolicy`, `.update` and `.delete`, `iam.googleapis.com/...` and `cloudresourcemanager.googleapis.com/projects.setIamPolicy` permission names are supported in deny policies.
-- **The APPLY role allowlist.** None of its five predefined roles can change IAM or the state bucket, or act as another identity (from memory; a wrong entry is removed by review, never widened).
-- **Permissions.** `pubsub.topics.create`, `.delete`, `.get` and `.update` are enough for the Pub/Sub topic workload, and `cloudasset.assets.searchAllResources` for the unit sweep.
+- **Permissions.** `pubsub.topics.create`, `.delete` and `.get` are enough for the Pub/Sub topic workload, and `cloudasset.assets.searchAllResources` for the unit sweep (D12 items 1 to 4).
 - **Billing budget.** The budget API may require a quota project for the owner's login (`gcloud auth application-default set-quota-project`).

@@ -30,11 +30,21 @@ output "identity_variables" {
 }
 
 output "contract_target" {
-  description = "This environment's entry in the contract's targets block. GCP_API keeps no state, so its target is the project alone."
-  value = { for key, value in {
-    projectId = var.project_id
-    region    = var.region
-    backend   = "${coalesce(var.state_bucket_name, "unused")}/${local.state_prefix}"
-    workspace = "default"
-  } : key => value if local.terraform || key == "projectId" }
+  description = "This environment's entry in the contract's targets block, in decision D9's shape. TERRAFORM: the project, region, state bucket and prefix, workspace and the one-topic canary. GCP_API: the same with the no-state sentinel backend and the topic prefix. parent appears only when set, and is owner-declared, not observed."
+  value = merge(
+    {
+      projectId = var.project_id
+      region    = var.region
+      backend   = local.api ? "GCP_API_NO_STATE" : "${coalesce(var.state_bucket_name, "unused")}/${local.state_prefix}"
+      workspace = "default"
+      canary    = { resources = [{ type = "google_pubsub_topic", count = 1 }] }
+    },
+    var.parent == null ? {} : { parent = var.parent },
+    local.api ? { topicPrefix = var.topic_prefix } : {},
+  )
+}
+
+output "contract_settings" {
+  description = "Contract settings this bootstrap requires besides the target. TERRAFORM: embedStateWrite = true, or the plan leaves the gcs backend's credentials to the APPLY process, which the deny policy here forbids every Cloud Storage object (EMULATED finding, test/apply-emulated-gcp.test.ts)."
+  value       = merge({ enabledEnvironments = ["DEV"] }, local.terraform ? { embedStateWrite = true } : {})
 }
