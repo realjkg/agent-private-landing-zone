@@ -23,7 +23,7 @@ The PLAN is on the coordination ledger (issue #39, 6433527942). It follows the o
 | `azure-readonly` | S3 | Verifies the tenant and subscription, then runs `./alz qualify provider-azure` | Default run |
 | `gcp-readonly` | S4 | Verifies the project, then stops `NO_PRODUCER`: no read-only GCP inventory producer exists on main | Default run |
 | `act:<path>` | S5 | Guided: `./alz apply` contract-check → identity-check `--phase delivered` → prepare → qualify → preflight → seal → approve → apply → observe | Only with `--stage` |
-| `cleanup:<path>` | S5 | Guided: observe → propose-cleanup → approve → cleanup → verify-cleanup → report → record-live | Only with `--stage` |
+| `cleanup:<path>` | S5 | Guided: contract-check → identity-check → preflight (again, now) → observe → propose-cleanup → approve → cleanup → verify-cleanup → report → record-live | Only with `--stage` |
 | `recovery` | S5 | Guided: `./alz apply record-recovery` for an interrupted and a resumed sealed plan | Only with `--stage` |
 | `summary` | S6 | Indexes the evidence, runs `./alz qualify admission` (read-only), and prints every gate with how a missing one is produced | Default run |
 
@@ -106,14 +106,26 @@ Delegated decision 2 (#39, 6433391052) allows the operator's own CLI login (`aws
 - **Every read and every producer runs under the pilot's federated identities**, delivered by D4 (`docs/act-pilot-identity-delivery.md`).
   - When those identities are not set, the stage is BLOCKED (`FEDERATED_IDENTITY_MISSING`) and names the missing variables.
   - The runner never substitutes the operator's login.
-- **Account verification happens in this process, before any read, from the federated identity's own identifiers** (`src/evidence-runner/identity.ts`):
-  - AWS: the account and region in `ALZ_DISCOVERY_AWS_ROLE_ARN` and `ALZ_DISCOVERY_AWS_REGION`.
-  - Azure: `ALZ_DISCOVERY_ARM_TENANT_ID` and `ALZ_DISCOVERY_ARM_SUBSCRIPTION_ID`.
-  - GCP: `ALZ_DISCOVERY_GOOGLE_PROJECT` and `ALZ_DISCOVERY_GOOGLE_REGION`.
-  - Each token or credential-configuration file is checked with `lstat` only: absolute, a regular file of this user, mode `0600` or tighter, not a link. It is never opened.
-  - A wrong account, tenant, subscription, project or region refuses the run before anything is written (`WRONG_ACCOUNT`).
-- **What this proves.** The identity the producer will present names the expected account, so its reads cannot land in another one.
-- **What it does not prove.** That the cloud accepts the token. Only the producer's own token exchange shows that, and its document is the evidence.
+- **Account verification happens in this process, before any read, on what the producer's tools will actually sign in with** (`src/evidence-runner/identity.ts`):
+  - **AWS.** The `aws` CLI takes its DISCOVERY identity from `ALZ_DISCOVERY_AWS_ROLE_ARN` with a web identity token file. The runner checks the account in the role ARN, and the region in `ALZ_DISCOVERY_AWS_REGION`.
+    - A profile, config file or shared-credentials file under any identity (`ALZ_*_AWS_PROFILE`, `_AWS_DEFAULT_PROFILE`, `_AWS_CONFIG_FILE`, `_AWS_SHARED_CREDENTIALS_FILE`) refuses the stage (`IDENTITY_NOT_FEDERATED`). It would outrank or replace the web identity in the CLI's credential chain.
+  - **Azure.** `az` signs in only from `ALZ_DISCOVERY_AZURE_CONFIG_DIR`; it ignores `ARM_*`. That folder must:
+    - be your dedicated folder, signed in as the federated DISCOVERY service principal (`az login --service-principal --federated-token …` into it);
+    - be owned by you, mode `0700`, not a link, and its own real path;
+    - sit outside your home folder and outside the checkout, so it can never be your own `~/.azure`.
+
+    The runner reads only that folder's `azureProfile.json`, which lists subscriptions and holds no token (az keeps tokens in `msal_token_cache.*`, which is never opened). The default subscription and its tenant must be the expected ones, and the signed-in principal must be a service principal, never a user.
+
+    **Why the runner does not create and sign in to a fresh folder itself:** doing so would mean reading the delivered token and handing it to `az` as an argument. The runner never reads or forwards a credential.
+  - **GCP.** `ALZ_DISCOVERY_GOOGLE_PROJECT` and `ALZ_DISCOVERY_GOOGLE_REGION`.
+  - **Token files.** Each token or credential-configuration file is checked with `lstat` only: absolute, a regular file of this user, mode `0600` or tighter, not a link. It is never opened.
+  - **Wrong account.** A wrong account, tenant, subscription, project or region refuses the run before anything is written (`WRONG_ACCOUNT`).
+- **After the run, the producer's own observation.** The provider qualification document records `observedIdentity`: the account, or the tenant and subscription, its own discovery read (`sts get-caller-identity`, `az account show`). The stage takes the document as evidence only when that observation is the expected one.
+  - A different one gives FAIL `WRONG_ACCOUNT`.
+  - A missing one gives FAIL `IDENTITY_NOT_OBSERVED`.
+  - Either way the document is kept for you to read, and is not evidence.
+- **What this proves.** The tools were pointed at the expected account, and the producer actually read there.
+- **What it does not prove.** That the identity is the federated one and not some other service principal signed in to that folder. The folder is yours to keep dedicated.
 
 Every runner document records the identity kind (`FEDERATED`) and the ids, never token material. If the owner later chooses to allow the operator's login for account observation, that is a separate, reviewed change to `identity.ts` only.
 
@@ -123,7 +135,7 @@ Every producer runs as a child of the runner (`src/evidence-runner/child.ts`). T
 
 - **Allowlisted terminal and locale variables, and `PATH`**, so `./alz` can find `node` and `git`.
 - **`HOME` replaced** by the run's private, empty folder (`<run>/home`). No child can read `~/.aws`, `~/.azure`, `~/.config/gcloud` or `~/.terraformrc`.
-- **The pilot's identity channel, `ALZ_*`.** A variable whose name says it holds a static secret (`…_SECRET_ACCESS_KEY`, `…_SESSION_TOKEN`, `…_CLIENT_SECRET`, `…_PASSWORD`, …) refuses the step by name (`STATIC_SECRET_REFUSED`) and is never forwarded.
+- **The pilot's identity channel, `ALZ_*`.** A variable whose name, in any letter case, says it holds a static secret refuses the step by name (`STATIC_SECRET_REFUSED`) and is never forwarded. This covers `…_SECRET…`, `…_SESSION_TOKEN`, `…_PASSWORD`, `…_TOKEN`, `…_KEY`, `TF_TOKEN_*`, `GOOGLE_CREDENTIALS` and Terraform inputs such as `…_TF_VAR_db_password`. A file path such as `…_TOKEN_FILE` or `GOOGLE_APPLICATION_CREDENTIALS` is a reference and is forwarded.
 - **`AGENTIC_EVIDENCE_KEY_FILE`**: the path of the local evidence key, as the console's job environment does. `AGENTIC_EVIDENCE_KEY` itself is never passed.
 - **`AZURE_FEDERATED_TOKEN_FILE`**, for the read-only provider producers only. It is the federated marker `./alz qualify provider-azure` checks.
 
@@ -179,6 +191,11 @@ Before the first child, the runner checks four things. Each child checks them ag
   - `3`: spent.
 - These steps can change the account, consume approvals or write a one-time record: **seal, apply, cleanup, record-live and record-recovery**. Once one has started, the runner never starts it again, whatever its result. A rerun stops with `EVIDENCE_STEP_NOT_REPEATED`. Continue by hand, as `docs/act-pilot-apply.md` "When an apply fails" says, or start a new run folder.
 - Any other step that did not pass runs again on the next run, and steps that passed are reused.
+- **The read-only gates are never reused.** `contract-check`, `identity-check --phase delivered` and `preflight` run again on every invocation of an `act:` or `cleanup:` stage, so a resumed stage is gated on the contract, the delivered tokens and readiness as they are now. The cleanup stage starts with them too.
+- **Ctrl-C at an `./alz apply` prompt** stops both that command and the runner, because the signal goes to the whole foreground group.
+  - The product's own prompt answers nothing, so the step ends without acting.
+  - The runner's journal keeps the step as started and never finished (`INTERRUPTED`).
+  - A read-only step runs again on the next run. A step that can change the account (seal, apply, cleanup, record-live, record-recovery) is never started again by the runner. Check `./alz apply status`, then continue by hand or start a new run folder.
 
 ## The summary
 
@@ -189,6 +206,10 @@ Before the first child, the runner checks four things. Each child checks them ag
    It writes `summary/evidence-index.json` (what was found, and each missing gate with how it is produced) and `summary/admission-manifest.json`.
 
    Each ACT path with a live record adds an `actPilots` entry: its provider, engine, the contract hash from the live record, and the commit that carried that contract. This is the six-path form of #344.
+
+   **How records are bound.** Every manifest record names the **candidate** as its `sourceCommit`. A live or recovery record keeps its own binding to the path's contract commit inside the document, and admission checks it against that path's `actPilots` entry (the same rule as #344 N1).
+
+   **Hash check.** A document is submitted only while it still hashes to what the journal recorded when its step finished. A document changed since then fails the index (`EVIDENCE_DOCUMENT_CHANGED`), and nothing is submitted.
 2. **Review.** `./alz qualify admission --manifest <run>/summary/admission-manifest.json` runs as a quiet child. It reads files only and writes `.runs/release/admission-<uuid>.json`.
 3. **Print.** Every gate is printed with its status. A BLOCKED gate also shows how it is produced and the owner input it waits for.
 
@@ -230,7 +251,9 @@ Every block below is run by the owner at their own terminal, on the MBP. None of
 
 - **Expected:** `aws-readonly` and `azure-readonly` PASS, each with `<run>/<stage>/provider-<cloud>.json`. `gcp-readonly` is BLOCKED `NO_PRODUCER`. `summary` is BLOCKED `RELEASE_BLOCKED` until every gate has evidence.
 - **AWS producer.** It needs the no-op stack and a DISCOVERY role that may read the account and preview a change set against that stack. When it may not, the producer reports BLOCKED with its blockers in its document. The runner never widens DISCOVERY.
-- **Azure producer.** It runs `az` as DISCOVERY (`ALZ_DISCOVERY_AZURE_CONFIG_DIR`, a folder signed in as the federated DISCOVERY identity, never your own `az login`; `docs/runner-hardening.md`). How the token reaches that folder is UNVERIFIED on a live tenant.
+- **Azure producer.** It runs `az` as DISCOVERY from `ALZ_DISCOVERY_AZURE_CONFIG_DIR` (`docs/runner-hardening.md`, "Giving a tool an identity").
+  - Before the read-only run, sign the federated DISCOVERY service principal in to a dedicated folder (mode `0700`, outside your home and the checkout). Select the expected subscription there as its default. Never use your own `az login` folder.
+  - Whether `az` keeps that sign-in fresh for the life of a delivered token is UNVERIFIED on a live tenant.
 
 ### One ACT path
 

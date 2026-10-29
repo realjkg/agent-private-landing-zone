@@ -1,5 +1,6 @@
-import { lstatSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 import { identityVariables } from "../tools/identity.js";
 import type { IdentityObservation, IdentityProbe } from "./preflight.js";
@@ -9,28 +10,37 @@ import type { Provider } from "./types.js";
  * The read-only stages' identity check, in this process, before any read (delegated decision 2, #39 6433391052, applied in
  * its most restrictive form; docs/evidence-runner.md, "Identities").
  *
- * The runner verifies the federated DISCOVERY identity the producer will run under, from that identity's own identifiers:
- * the AWS role ARN's account and region, the Azure tenant and subscription, the GCP project and region. It reads variable
- * values that are identifiers, and checks with `lstat` that each token or credential-configuration file is a private regular
- * file of this user. It never opens a token, never calls a cloud, never starts a CLI, and never uses the operator's own CLI
- * login: that login is not needed and so is not touched (the open owner question A/B/C on #39 is answered here with the most
- * restrictive option; nothing in this runner reads it).
+ * The runner verifies what the producer's tools will actually sign in with, never the operator's own CLI login:
  *
- * What this proves: the identity the producer will present names the expected account, tenant or project, so its reads
- * cannot land elsewhere. What it does not prove: that the cloud accepts the token. Only the producer's own exchange shows
- * that, and its document is the evidence.
+ *  - AWS: the `aws` CLI as DISCOVERY takes its identity from `ALZ_DISCOVERY_AWS_ROLE_ARN` with a web identity token file. The
+ *    role ARN names the account (and `ALZ_DISCOVERY_AWS_REGION` the region). A profile, config file or shared-credentials
+ *    file under any identity would outrank or replace that web identity in the CLI's credential chain, so it refuses the
+ *    stage (review B1 on #349).
+ *  - Azure: `az` as DISCOVERY signs in only from `ALZ_DISCOVERY_AZURE_CONFIG_DIR`; it ignores `ARM_*`. That folder must be a
+ *    private (0700) folder of this user, its own real path, outside the real home and the checkout, so it can never be the
+ *    operator's `~/.azure`. Its `azureProfile.json` (subscriptions, tenant and the signed-in principal's type; it holds no
+ *    token, which az keeps in `msal_token_cache.*`) names the default subscription and tenant az will use, and the principal
+ *    must be a service principal (the federated identity signed in with `az login --service-principal --federated-token`),
+ *    never a user. The runner does not create or sign in to that folder itself: that would mean reading the delivered token
+ *    and handing it to `az` as an argument.
+ *  - GCP: the project and region of the DISCOVERY identity's variables.
+ *
+ * Each token or credential-configuration file is checked with `lstat` only and never opened. Nothing here calls a cloud or
+ * starts a CLI. After the producer ran, the read-only stage compares the account the producer itself observed with the
+ * configuration again (readonly.ts), so a document produced elsewhere is never taken as evidence.
  */
 type Requirement = { variable: string; kind: "value" | "file" };
 const REQUIRED: Readonly<Record<Provider, readonly Requirement[]>> = {
   aws: [{ variable: "AWS_ROLE_ARN", kind: "value" }, { variable: "AWS_WEB_IDENTITY_TOKEN_FILE", kind: "file" }],
-  azure: [
-    { variable: "ARM_TENANT_ID", kind: "value" }, { variable: "ARM_SUBSCRIPTION_ID", kind: "value" }, { variable: "ARM_CLIENT_ID", kind: "value" },
-    { variable: "ARM_OIDC_TOKEN_FILE", kind: "file" },
-  ],
+  azure: [{ variable: "AZURE_CONFIG_DIR", kind: "value" }],
   gcp: [{ variable: "GOOGLE_PROJECT", kind: "value" }, { variable: "GOOGLE_APPLICATION_CREDENTIALS", kind: "file" }],
 };
 /** The unprefixed federated marker the Azure provider producer checks (src/qualification/identity.ts): a token file path. */
 const AZURE_MARKER = "AZURE_FEDERATED_TOKEN_FILE";
+
+/** AWS variables that would replace or outrank the verified web identity in the CLI's credential chain (any identity prefix). */
+const AWS_CHAIN_OVERRIDE = /^ALZ_[A-Z_]+_AWS_(PROFILE|DEFAULT_PROFILE|CONFIG_FILE|SHARED_CREDENTIALS_FILE)$/;
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const ROLE_ARN = /^arn:aws(?:-[a-z]+)*:iam::(\d{12}):role\/[A-Za-z0-9+=,.@_\/-]{1,512}$/;
 
@@ -46,10 +56,72 @@ export function privateFileProblem(path: string, uid: number | undefined): strin
   return undefined;
 }
 
+const within = (parent: string, child: string): boolean => {
+  const rel = relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel) && !rel.split(sep).includes(".."));
+};
+
+/** Why `path` cannot be az's DISCOVERY configuration folder, or undefined. `lstat` and `realpath` only. */
+export function azureConfigDirProblem(path: string, options: { uid?: number; realHome?: string; root?: string }): string | undefined {
+  if (!isAbsolute(path)) return "is not an absolute path";
+  let stat;
+  try { stat = lstatSync(path); } catch { return "does not exist"; }
+  if (stat.isSymbolicLink()) return "is a symbolic link";
+  if (!stat.isDirectory()) return "is not a folder";
+  if (options.uid !== undefined && stat.uid !== options.uid) return "is not owned by the user running this command";
+  if ((stat.mode & 0o077) !== 0) return "is open to group or others (mode 0" + (stat.mode & 0o777).toString(8) + "; it must be 0700)";
+  let real: string;
+  try { real = realpathSync(path); } catch { return "cannot be resolved"; }
+  if (real !== path.replace(/\/+$/, "")) return "is not its own real path (a parent is a symbolic link)";
+  for (const [name, base] of [["your home folder", options.realHome], ["this checkout", options.root]] as const) {
+    if (!base) continue;
+    let baseReal = base;
+    try { baseReal = realpathSync(base); } catch { /* compare as given */ }
+    if (within(baseReal, real)) return "is inside " + name + "; it must be a dedicated folder elsewhere, never your own ~/.azure";
+  }
+  return undefined;
+}
+
+/**
+ * The default subscription az will use from `<dir>/azureProfile.json`: its id, its tenant and the signed-in principal's type.
+ * That file lists subscriptions and holds no token. Anything unreadable or ambiguous is refused, never guessed.
+ */
+export function azureDefaultAccount(dir: string): { ok: true; tenantId: string; subscriptionId: string; principalType: string } | { ok: false; detail: string } {
+  const file = join(dir, "azureProfile.json");
+  let text: string;
+  try {
+    const stat = lstatSync(file);
+    if (!stat.isFile() || stat.size > 1024 * 1024) return { ok: false, detail: "azureProfile.json in ALZ_DISCOVERY_AZURE_CONFIG_DIR is not a plain file; sign the federated identity in there first" };
+    text = readFileSync(file, "utf8").replace(/^\uFEFF/, "");
+  } catch { return { ok: false, detail: "ALZ_DISCOVERY_AZURE_CONFIG_DIR has no azureProfile.json; sign the federated DISCOVERY identity in there first" }; }
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { return { ok: false, detail: "azureProfile.json in ALZ_DISCOVERY_AZURE_CONFIG_DIR is not JSON" }; }
+  const subscriptions = typeof parsed === "object" && parsed !== null && Array.isArray((parsed as { subscriptions?: unknown }).subscriptions) ? (parsed as { subscriptions: unknown[] }).subscriptions : [];
+  const defaults = subscriptions.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null && (item as Record<string, unknown>).isDefault === true);
+  if (defaults.length !== 1) return { ok: false, detail: "azureProfile.json in ALZ_DISCOVERY_AZURE_CONFIG_DIR names " + defaults.length + " default subscriptions; exactly one is needed" };
+  const chosen = defaults[0];
+  const subscriptionId = typeof chosen.id === "string" ? chosen.id.toLowerCase() : "";
+  const tenantId = typeof chosen.tenantId === "string" ? chosen.tenantId.toLowerCase() : "";
+  const user = typeof chosen.user === "object" && chosen.user !== null ? chosen.user as Record<string, unknown> : {};
+  const principalType = typeof user.type === "string" ? user.type : "";
+  if (!GUID.test(subscriptionId) || !GUID.test(tenantId)) return { ok: false, detail: "the default subscription in azureProfile.json has no well-formed id or tenant" };
+  return { ok: true, tenantId, subscriptionId, principalType };
+}
+
+export type ProbeOptions = { uid?: number; realHome?: string; root?: string };
+
 /** The federated DISCOVERY identity's identifiers, compared by `compareIdentity` in the preflight. Never a token. */
-export function federatedProbe(env: NodeJS.ProcessEnv, uid: number | undefined = process.getuid?.()): IdentityProbe {
+export function federatedProbe(env: NodeJS.ProcessEnv, options: ProbeOptions = {}): IdentityProbe {
+  const uid = "uid" in options ? options.uid : process.getuid?.();
+  const realHome = options.realHome ?? homedir();
   return async (provider: Provider): Promise<IdentityObservation> => {
     const variables = identityVariables(env, "DISCOVERY");
+    if (provider === "aws") {
+      const overrides = Object.keys(env).filter((name) => AWS_CHAIN_OVERRIDE.test(name) && env[name]).sort();
+      if (overrides.length > 0) {
+        return { status: "REFUSED", detail: "Unset " + overrides.join(", ") + ": a profile, config file or shared-credentials file would outrank or replace the verified web identity in the aws CLI's credential chain." };
+      }
+    }
     const missing = REQUIRED[provider].filter((need) => !variables.has(need.variable)).map((need) => "ALZ_DISCOVERY_" + need.variable);
     if (provider === "azure" && !env[AZURE_MARKER]) missing.push(AZURE_MARKER);
     if (missing.length > 0) {
@@ -66,7 +138,15 @@ export function federatedProbe(env: NodeJS.ProcessEnv, uid: number | undefined =
       return { status: "OBSERVED", kind: "FEDERATED", accountId: match[1], ...(region ? { region } : {}) };
     }
     if (provider === "azure") {
-      return { status: "OBSERVED", kind: "FEDERATED", tenantId: variables.get("ARM_TENANT_ID"), subscriptionId: variables.get("ARM_SUBSCRIPTION_ID") };
+      const dir = variables.get("AZURE_CONFIG_DIR")!;
+      const problem = azureConfigDirProblem(dir, { uid, realHome, root: options.root });
+      if (problem) return { status: "REFUSED", detail: "ALZ_DISCOVERY_AZURE_CONFIG_DIR " + problem + "." };
+      const account = azureDefaultAccount(dir);
+      if (!account.ok) return { status: "MISSING", detail: account.detail + "." };
+      if (account.principalType !== "servicePrincipal") {
+        return { status: "REFUSED", detail: "ALZ_DISCOVERY_AZURE_CONFIG_DIR is signed in as a " + (account.principalType || "principal of unknown type") + ", not the federated service principal; the runner never uses a person's own login." };
+      }
+      return { status: "OBSERVED", kind: "FEDERATED", tenantId: account.tenantId, subscriptionId: account.subscriptionId };
     }
     const region = variables.get("GOOGLE_REGION");
     return { status: "OBSERVED", kind: "FEDERATED", projectId: variables.get("GOOGLE_PROJECT"), ...(region ? { region } : {}) };

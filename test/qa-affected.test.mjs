@@ -422,6 +422,16 @@ test("the ./alz dispatcher, which no test can import, is owned by the guards tha
   assert.match(planChanged(["src/cli/orphan.ts"], files).gaps.join(" "), /src\/cli\/orphan\.ts has no importing test/);
 });
 
+test("the provider qualification producer, unimportable, is owned by the focused test that reads its text", () => {
+  const files = fixture();
+  files.set("src/cli/provider-qualification.ts", "console.log(1);");
+  files.set("test/provider-qualification-observed.test.ts", "test()");
+  const plan = planChanged(["src/cli/provider-qualification.ts"], files);
+  assert.deepEqual(plan.gaps, []);
+  assert.deepEqual(UNIMPORTABLE_OWNERS["src/cli/provider-qualification.ts"], ["test/provider-qualification-observed.test.ts"]);
+  assert.ok(plan.nodeTests.includes("test/provider-qualification-observed.test.ts"));
+});
+
 test("the console launcher is owned by the console tests that read it, and the bootstrap templates by the test that reads them; an unowned template is still a gap", () => {
   const files = fixture();
   files.set("src/cli/operator-web.ts", "console.log(1);");

@@ -139,7 +139,7 @@ export function parseConfig(value: unknown): ConfigResult {
 
 type FieldCheck = (name: string, text: unknown, pattern: RegExp, rule: string) => void;
 
-/** The `act` block: the repository and, per path, a project folder inside the repository and the people's ids. */
+/** The `act` block: the repository and, per path, the absolute path of the project folder (the canary copied outside the checkout) and the people's ids. */
 function actProblems(act: unknown): string[] {
   if (!isRecord(act)) return ["config.act: must be an object"];
   const local: string[] = [];

@@ -34,14 +34,30 @@ const PRODUCER: Readonly<Record<"aws" | "azure", { cloud: string; output: string
 };
 
 /** Whether a provider qualification document is the ready, non-mock evidence of this candidate and cloud (what admission checks first). */
-function producerVerdict(path: string, cloud: string, candidate: string): { ready: boolean; detail: string } {
+/**
+ * Whether the account the producer itself observed (its document's `observedIdentity`, from its own discovery) is the expected
+ * one. Checked after the run and before the document is taken as evidence (review B1 on #349): the identity check before the
+ * run proves what the tool was pointed at; this proves where it actually read. Unobserved is never a match.
+ */
+function observedMatches(value: Record<string, unknown>, provider: "aws" | "azure", config: StageContext["config"]): { ok: true } | { ok: false; code: string; detail: string } {
+  const observed = typeof value.observedIdentity === "object" && value.observedIdentity !== null ? value.observedIdentity as Record<string, unknown> : {};
+  const expected: [string, string][] = provider === "aws" ? [["accountId", config.aws!.expectedAccountId]]
+    : [["tenantId", config.azure!.expectedTenantId], ["subscriptionId", config.azure!.expectedSubscriptionId]];
+  const missing = expected.filter(([key]) => typeof observed[key] !== "string").map(([key]) => key);
+  if (missing.length > 0) return { ok: false, code: "IDENTITY_NOT_OBSERVED", detail: "the producer's document records no observed " + missing.join(" or ") + ", so where it read cannot be confirmed" };
+  const wrong = expected.filter(([key, want]) => observed[key] !== want).map(([key, want]) => key + " " + String(observed[key]) + " (expected " + want + ")");
+  if (wrong.length > 0) return { ok: false, code: "WRONG_ACCOUNT", detail: "the producer read the wrong " + wrong.join(" and ") };
+  return { ok: true };
+}
+
+function producerVerdict(path: string, cloud: string, candidate: string): { ready: boolean; detail: string; value?: Record<string, unknown> } {
   let value: Record<string, unknown>;
   try { value = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>; } catch { return { ready: false, detail: "its document is not JSON" }; }
   const blockers = Array.isArray(value.blockers) ? value.blockers.length : -1;
   if (value.provider !== cloud) return { ready: false, detail: "its document names provider " + String(value.provider) };
   if (value.sourceCommit !== candidate) return { ready: false, detail: "its document names another source commit" };
   if (value.ready !== true || blockers !== 0) return { ready: false, detail: "the producer reported BLOCKED with " + Math.max(blockers, 0) + " blocker(s); read them in its document" };
-  return { ready: true, detail: "the producer reported READY" };
+  return { ready: true, detail: "the producer reported READY", value };
 }
 
 export async function readonlyStage(ctx: StageContext, provider: Provider): Promise<StageResult> {
@@ -68,7 +84,11 @@ export async function readonlyStage(ctx: StageContext, provider: Provider): Prom
     if (after === undefined || after === "not-a-file" || after === before) return result.outcome === "PASS" ? { ...result, outcome: "BLOCKED", code: "EVIDENCE_DOCUMENT_NOT_FOUND", detail: "The producer passed but wrote no " + output + "." } : result;
     const documents: JournalDocument[] = [{ name: "provider-" + provider, path: output, sha256: sha256File(file) }];
     const verdict = producerVerdict(file, producer.cloud, ctx.config.candidateCommit);
-    if (result.outcome === "PASS" && verdict.ready) return { ...result, documents, detail: "./alz qualify provider-" + provider + ": " + verdict.detail + "." };
+    if (result.outcome === "PASS" && verdict.ready) {
+      const where = observedMatches(verdict.value!, provider, ctx.config);
+      if (!where.ok) return { outcome: "FAIL", code: where.code, exitCode: result.exitCode, documents, detail: "./alz qualify provider-" + provider + ": " + where.detail + "; the document is kept but is not evidence." };
+      return { ...result, documents, detail: "./alz qualify provider-" + provider + ": " + verdict.detail + ", in the expected account." };
+    }
     return { outcome: "FAIL", code: "PRODUCER_NOT_READY", exitCode: result.exitCode, documents, detail: "./alz qualify provider-" + provider + ": " + verdict.detail + ". " + result.detail };
   });
   return { outcome: ran.outcome, code: ran.outcome === "PASS" ? "PRODUCED" : ran.code ?? "PRODUCER", detail: ran.detail, documents: ran.documents };

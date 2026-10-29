@@ -26,8 +26,13 @@ import { openLogNoFollow } from "./safe-write.js";
 const PASSTHROUGH = ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TERM", "COLORTERM", "TZ", "COLUMNS", "LINES", "NO_COLOR", "USER", "LOGNAME", "TMPDIR"];
 /** Federated markers a read-only producer checks for by presence (src/qualification/identity.ts). A path, not a credential. */
 export const READONLY_FEDERATED_MARKERS = ["AZURE_FEDERATED_TOKEN_FILE"];
-/** `ALZ_*` names that would carry a static secret, not a reference: never forwarded; the step is refused naming them. */
-const STATIC_SECRET = /(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|CLIENT_SECRET|CLIENT_CERTIFICATE|CERTIFICATE_PASSWORD|PASSWORD|PASSPHRASE|PRIVATE_KEY|_TOKEN$|_KEY$)/;
+/**
+ * `ALZ_*` names that would carry a static secret, not a reference: never forwarded; the step is refused naming them. Matched
+ * without regard to case, so a Terraform input such as `ALZ_DISCOVERY_TF_VAR_db_password` is caught too (review N1 on #349),
+ * as are Terraform registry tokens (`TF_TOKEN_*`) and inline Google credentials (`GOOGLE_CREDENTIALS`). A file path such as
+ * `GOOGLE_APPLICATION_CREDENTIALS` or a `*_TOKEN_FILE` is a reference and is forwarded.
+ */
+const STATIC_SECRET = /(ACCESS_KEY_ID|SECRET|SESSION_TOKEN|CLIENT_CERTIFICATE|PASSWORD|PASSPHRASE|PRIVATE_KEY|(^|_)TF_TOKEN_|(^|_)GOOGLE_CREDENTIALS$|_TOKEN$|_KEY$)/i;
 /** The evidence key's default path, as the vault and the console compute it (src/evidence/vault.ts, src/operator-ui/server.ts). */
 const EVIDENCE_KEY_DEFAULT = [".config", "agentic-landing-zone", "evidence.key"];
 

@@ -27,6 +27,7 @@ export type IdentityObservation =
   | { status: "OBSERVED"; kind: IdentityKind; accountId?: string; tenantId?: string; subscriptionId?: string; projectId?: string; region?: string }
   | { status: "NOT_SIGNED_IN"; detail: string }
   | { status: "MISSING"; detail: string }
+  | { status: "REFUSED"; detail: string }
   | { status: "PROBE_NOT_BUILT" };
 /** Reads who the provider identity is. Must not return or log token material: ids only. */
 export type IdentityProbe = (provider: Provider, config: EvidenceRunnerConfig) => Promise<IdentityObservation>;
@@ -50,6 +51,7 @@ export function compareIdentity(provider: Provider, config: EvidenceRunnerConfig
   }
   if (observed.status === "NOT_SIGNED_IN") return { id, provider, status: "BLOCKED", code: "NOT_SIGNED_IN", detail: observed.detail };
   if (observed.status === "MISSING") return { id, provider, status: "BLOCKED", code: "FEDERATED_IDENTITY_MISSING", detail: observed.detail };
+  if (observed.status === "REFUSED") return { id, provider, status: "BLOCKED", code: "IDENTITY_NOT_FEDERATED", detail: observed.detail };
   const mismatches: string[] = [];
   const differs = (what: string, seen: string | undefined, expected: string) => { if (seen !== expected) mismatches.push(what + " " + String(seen ?? "unknown") + " (expected " + expected + ")"); };
   if (provider === "aws") {

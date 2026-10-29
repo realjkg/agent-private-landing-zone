@@ -19,6 +19,11 @@ import {
   qualifyProductionIdentity,
 } from "../qualification/identity.js";
 import {
+  awsObservedIdentity,
+  azureObservedIdentity,
+  type ObservedIdentity,
+} from "../qualification/observed-identity.js";
+import {
   qualifyProviderProduction,
 } from "../qualification/provider-production.js";
 import {
@@ -144,6 +149,8 @@ const readContext:
   };
 
 let identity;
+// The account this run actually read (ids only), for the evidence runner's after-the-fact comparison.
+let observedIdentity: ObservedIdentity = {};
 let validationResults:
   ToolResult[];
 let preview: ToolResult;
@@ -163,6 +170,8 @@ if (
       ? account.metadata.callerArn
       : undefined;
 
+  observedIdentity =
+    awsObservedIdentity(callerArn);
   identity =
     qualifyProductionIdentity({
       provider: "AWS",
@@ -256,6 +265,10 @@ if (
     string | undefined;
 
   if (accountResult.ok) {
+    observedIdentity =
+      azureObservedIdentity(
+        accountResult.stdout,
+      );
     try {
       const account =
         JSON.parse(
@@ -424,7 +437,10 @@ mkdirSync(
 writeFileSync(
   output,
   JSON.stringify(
-    qualification,
+    {
+      ...qualification,
+      observedIdentity,
+    },
     null,
     2,
   ) + "\n",

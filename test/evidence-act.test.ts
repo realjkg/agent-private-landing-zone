@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, fstatSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -26,6 +27,8 @@ function actDeps(root: string, script: Record<string, FakeChild | number>, answe
   return { deps, spawn, answers };
 }
 
+const PROPOSAL12 = createHash("sha256").update("proposal aws-terraform").digest("hex").slice(0, 12);
+const GATES = ["apply contract-check", "apply identity-check", "apply preflight"];
 const sub = (call: ChildRequest) => call.args.slice(0, 2).join(" ");
 const journalOf = (root: string) => readJournal(join(root, ".runs/evidence/synthetic", C12, "journal.jsonl"));
 
@@ -42,7 +45,7 @@ test("act:aws-terraform runs the documented ./alz apply steps in order, each at 
   const args = Object.fromEntries(spawn.calls.map((call) => [sub(call), call.args.slice(2)]));
   assert.deepEqual(args["apply identity-check"], ["--path", "aws-terraform", "--repository", "owner/repo", "--phase", "delivered"]);
   assert.deepEqual(args["apply prepare"], ["--environment", "DEV", "--project", "/srv/canary/aws"]);
-  const request = [".runs/pilot/DEV/request-0123456789abcdef.json", ".runs/pilot/DEV/manifest-0123456789abcdef.json"];
+  const request = [".runs/pilot/DEV/request-aaaaaaaaaaaaaaaa.json", ".runs/pilot/DEV/manifest-aaaaaaaaaaaaaaaa.json"];
   assert.deepEqual(args["apply qualify"], ["--request", request[0], "--manifest", request[1]]);
   assert.deepEqual(args["apply seal"], ["--request", request[0], "--manifest", request[1], "--requester", "owner", "--key", join(root, ".runs/keys/requester.pem")]);
   assert.deepEqual(args["apply apply"], ["--request", request[0], "--manifest", request[1], "--sealed", ".runs/apply/evidence/" + ARTIFACT + ".sealed", "--approval", ".runs/approvals/apply-1.json"]);
@@ -108,7 +111,7 @@ test("resume skips passed steps and never repeats a step that can change the acc
   assert.equal(first.spawn.calls.filter((call) => sub(call) === "apply apply").length, 1);
   const second = actDeps(root, applyScript());
   assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:aws-terraform"], second.deps), 2);
-  assert.deepEqual(second.spawn.calls, [], "passed steps are reused and the spent apply is never started again");
+  assert.deepEqual(second.spawn.calls.map(sub), GATES, "only the read-only gates run again (review N3); passed steps are reused and the spent apply is never started again");
   assert.deepEqual(second.answers.asked, [], "nothing is asked for a step that will not run");
   assert.match(second.deps.lines.join("\n"), /EVIDENCE_STEP_NOT_REPEATED — apply ended FAIL CHILD_SPENT earlier in this run/);
   // An apply that was started and never finished (the runner was killed) is not started again either.
@@ -137,7 +140,8 @@ test("an empty answer for the key file leaves the seal unstarted, so it can stil
   assert.equal(journalOf(root).some((line) => line.step === "seal"), false, "the seal was never journaled as started");
   const second = actDeps(root, applyScript());
   assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:aws-terraform"], second.deps), 0, second.deps.lines.join("\n"));
-  assert.deepEqual(second.spawn.calls.map(sub), ["apply seal", "apply apply", "apply observe"], "passed steps are not repeated");
+  assert.deepEqual(second.spawn.calls.map(sub), ["apply contract-check", "apply identity-check", "apply preflight", "apply seal", "apply apply", "apply observe"],
+    "the read-only gates run again; prepare, qualify and the other passed steps are not repeated");
 });
 
 test("cleanup:aws-terraform needs the act stage done, then runs the cleanup sequence and moves the live record out of the checkout unchanged", async () => {
@@ -150,10 +154,10 @@ test("cleanup:aws-terraform needs the act stage done, then runs the cleanup sequ
   const answers = scriptedTerminal([join(root, ".runs/keys/requester.pem"), ".runs/approvals/cleanup-1.json", ""]);
   const cleanup = actDeps(root, applyScript(), answers);
   assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "cleanup:aws-terraform"], cleanup.deps), 0, cleanup.deps.lines.join("\n"));
-  assert.deepEqual(cleanup.spawn.calls.map(sub), ["apply observe", "apply propose-cleanup", "apply cleanup", "apply verify-cleanup", "apply report", "apply record-live"]);
+  assert.deepEqual(cleanup.spawn.calls.map(sub), [...GATES, "apply observe", "apply propose-cleanup", "apply cleanup", "apply verify-cleanup", "apply report", "apply record-live"]);
   const args = Object.fromEntries(cleanup.spawn.calls.map((call) => [sub(call), call.args.slice(2)]));
-  assert.deepEqual(args["apply cleanup"], ["--proposal", ".runs/apply/cleanup/bbbbbbbbbbbb.cleanup-proposal.json", "--request", ".runs/pilot/DEV/request-0123456789abcdef.json",
-    "--manifest", ".runs/pilot/DEV/manifest-0123456789abcdef.json", "--sealed", ".runs/apply/evidence/" + ARTIFACT + ".sealed", "--approval", ".runs/approvals/cleanup-1.json"]);
+  assert.deepEqual(args["apply cleanup"], ["--proposal", ".runs/apply/cleanup/" + PROPOSAL12 + ".cleanup-proposal.json", "--request", ".runs/pilot/DEV/request-aaaaaaaaaaaaaaaa.json",
+    "--manifest", ".runs/pilot/DEV/manifest-aaaaaaaaaaaaaaaa.json", "--sealed", ".runs/apply/evidence/" + ARTIFACT + ".sealed", "--approval", ".runs/approvals/cleanup-1.json"]);
   assert.equal(existsSync(join(root, "config/acceptance/evidence/aws-terraform-execute-dev-aaaaaaaaaaaa.json")), false, "the checkout is left clean");
   const record = journalOf(root).find((line) => line.step === "record-live" && line.event === "finish")!;
   assert.equal(record.documents?.[0].path, ".runs/evidence/synthetic/" + C12 + "/cleanup-aws-terraform/aws-terraform-execute-dev-aaaaaaaaaaaa.json");
@@ -187,4 +191,19 @@ test("GCP API-native is NOT_AVAILABLE; recovery asks for both sealed plans and r
   const again = actDeps(root, applyScript());
   assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "recovery"], again.deps), 0);
   assert.deepEqual(again.spawn.calls, [], "a recorded recovery is never recorded twice");
+});
+
+test("on resume the read-only gates run again: identities that are no longer delivered stop the stage before anything else (review N3)", async () => {
+  const root = actRoot();
+  // The first run stops at the approval (no approval file named), after prepare, qualify and seal passed.
+  const first = actDeps(root, applyScript(), scriptedTerminal([join(root, ".runs/keys/requester.pem"), ""]));
+  assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:aws-terraform"], first.deps), 2);
+  assert.ok(first.spawn.calls.some((call) => sub(call) === "apply seal"));
+  // Hours later the delivery has ended: identity-check --phase delivered refuses, and nothing after it starts.
+  const later = actDeps(root, applyScript({ "apply identity-check": 2 }));
+  assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:aws-terraform"], later.deps), 2);
+  assert.deepEqual(later.spawn.calls.map(sub), ["apply contract-check", "apply identity-check"]);
+  assert.deepEqual(later.answers.asked, [], "no approval is asked for while the identities are not delivered");
+  const identity = journalOf(root).filter((line) => line.step === "identity-check" && line.event === "finish").map((line) => line.outcome);
+  assert.deepEqual(identity, ["PASS", "BLOCKED"], "each invocation journals its own identity check");
 });

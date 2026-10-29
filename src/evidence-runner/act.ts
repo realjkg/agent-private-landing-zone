@@ -7,7 +7,7 @@ import { contractEnablesPath, contractScope } from "./preflight.js";
 import type { StageResult } from "./readonly.js";
 import { CONTRACT_PATH } from "./source.js";
 import { assertRealFolder, ensureRealFolder } from "./safe-write.js";
-import { documentOf, runChild, sha256File, stageFolder, step, type Collector, type StageContext, type StepResult } from "./steps.js";
+import { documentOf, freshStep, runChild, sha256File, stageFolder, step, type Collector, type StageContext, type StepResult } from "./steps.js";
 import { ACT_PATH_NOT_AVAILABLE, type ActPathId, type StageId } from "./types.js";
 
 /**
@@ -19,7 +19,8 @@ import { ACT_PATH_NOT_AVAILABLE, type ActPathId, type StageId } from "./types.js
  * not pass. A step that can change the account, consume approvals or write a one-time record is never started twice.
  *
  * `act:<path>`: contract-check, identity-check --phase delivered, prepare, qualify, preflight, seal, approve, apply, observe.
- * `cleanup:<path>`: observe, propose-cleanup, approve (cleanup), cleanup, verify-cleanup, report, record-live. The live record
+ * `cleanup:<path>`: contract-check, identity-check, preflight, observe, propose-cleanup, approve (cleanup), cleanup, verify-cleanup,
+ * report, record-live. The live record
  * comes last because it is written into config/acceptance/evidence, which would make the checkout dirty for every later step;
  * the runner moves it, byte for byte, into the stage's folder under .runs/evidence so the checkout stays clean.
  * `recovery`: record-recovery for an interrupted and a resumed sealed plan the person names.
@@ -77,8 +78,11 @@ async function askFile(ctx: StageContext, question: string): Promise<string | un
 /**
  * One guided step. `ask` names the files the person must point to before it starts; it is asked only when the step will
  * really run, before its journal `start`, so an empty answer leaves the step unstarted (and a no-repeat step repeatable).
+ * A `fresh` step is a read-only gate (contract-check, identity-check, preflight): it runs again on every invocation of the
+ * stage, never reused from an earlier one, so a resumed stage is gated on the contract, tokens and readiness of now
+ * (review N3 on #349).
  */
-type GuidedStep = { name: string; once?: boolean; ask?: readonly string[]; run: (files: string[]) => Promise<StepResult> };
+type GuidedStep = { name: string; once?: boolean; fresh?: boolean; ask?: readonly string[]; run: (files: string[]) => Promise<StepResult> };
 
 async function runSteps(ctx: StageContext, stage: StageId, steps: readonly GuidedStep[]): Promise<StepResult | undefined> {
   for (const item of steps) {
@@ -92,7 +96,7 @@ async function runSteps(ctx: StageContext, stage: StageId, steps: readonly Guide
         files.push(file);
       }
     }
-    const result = await step(ctx, stage, item.name, { once: item.once }, () => item.run(files));
+    const result = item.fresh ? await freshStep(ctx, stage, item.name, () => item.run(files)) : await step(ctx, stage, item.name, { once: item.once }, () => item.run(files));
     if (result.outcome !== "PASS") return result;
   }
   return undefined;
@@ -132,11 +136,11 @@ export async function actStage(ctx: StageContext, path: ActPathId): Promise<Stag
   if (gate) return gate;
   const target = ctx.config.act!.paths[path]!;
   const steps: GuidedStep[] = [
-    { name: "contract-check", run: () => runChild(ctx, stage, { args: ["apply", "contract-check", "--file", CONTRACT_PATH], io: "TERMINAL" }) },
-    { name: "identity-check", run: () => runChild(ctx, stage, { args: ["apply", "identity-check", "--path", path, "--repository", ctx.config.act!.repository, "--phase", "delivered"], io: "TERMINAL", collectors: [WRITES.identity(path)] }) },
+    { name: "contract-check", fresh: true, run: () => runChild(ctx, stage, { args: ["apply", "contract-check", "--file", CONTRACT_PATH], io: "TERMINAL" }) },
+    { name: "identity-check", fresh: true, run: () => runChild(ctx, stage, { args: ["apply", "identity-check", "--path", path, "--repository", ctx.config.act!.repository, "--phase", "delivered"], io: "TERMINAL", collectors: [WRITES.identity(path)] }) },
     { name: "prepare", run: () => runChild(ctx, stage, { args: ["apply", "prepare", "--environment", ENV, "--project", target.project], io: "TERMINAL", collectors: [WRITES.request, WRITES.manifest] }) },
     { name: "qualify", run: () => runChild(ctx, stage, { args: ["apply", "qualify", ...requestArgs(ctx, stage)], io: "TERMINAL" }) },
-    { name: "preflight", run: () => runChild(ctx, stage, { args: ["apply", "preflight", "--environment", ENV, "--contract", CONTRACT_PATH], io: "TERMINAL" }) },
+    { name: "preflight", fresh: true, run: () => runChild(ctx, stage, { args: ["apply", "preflight", "--environment", ENV, "--contract", CONTRACT_PATH], io: "TERMINAL" }) },
     {
       name: "seal", once: true, ask: ["Requester key file for " + target.requesterId], run: async ([key]) => {
         const sealed = await runChild(ctx, stage, { args: ["apply", "seal", ...requestArgs(ctx, stage), "--requester", target.requesterId, "--key", key], io: "TERMINAL", collectors: [WRITES.reviewBundle] });
@@ -207,6 +211,10 @@ export async function cleanupStage(ctx: StageContext, path: ActPathId): Promise<
   const sealed = documentPath(ctx, actStageId, "seal", "sealed-plan")!;
   const proposal = () => documentPath(ctx, stage, "propose-cleanup", "cleanup-proposal")!;
   const steps: GuidedStep[] = [
+    // The same read-only gates as the act stage, again now: the contract, the delivered identities and readiness.
+    { name: "contract-check", fresh: true, run: () => runChild(ctx, stage, { args: ["apply", "contract-check", "--file", CONTRACT_PATH], io: "TERMINAL" }) },
+    { name: "identity-check", fresh: true, run: () => runChild(ctx, stage, { args: ["apply", "identity-check", "--path", path, "--repository", ctx.config.act!.repository, "--phase", "delivered"], io: "TERMINAL", collectors: [WRITES.identity(path)] }) },
+    { name: "preflight", fresh: true, run: () => runChild(ctx, stage, { args: ["apply", "preflight", "--environment", ENV, "--contract", CONTRACT_PATH], io: "TERMINAL" }) },
     { name: "observe", run: () => runChild(ctx, stage, { args: ["apply", "observe", "--sealed", sealed], io: "TERMINAL" }) },
     {
       name: "propose-cleanup", ask: ["Cleanup requester key file for " + target.requesterId],

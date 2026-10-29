@@ -72,7 +72,7 @@ export async function runEvidenceCommand(argv: readonly string[], overrides: Par
   const env = overrides.env ?? process.env;
   const git = gitReader(base, env);
   const deps: RunnerDeps = {
-    root, env: process.env, terminal: processTerminal(), host: hostname(), now: () => new Date(), probe: federatedProbe(env),
+    root, env: process.env, terminal: processTerminal(), host: hostname(), now: () => new Date(), probe: federatedProbe(env, { root: base }),
     source: () => sourceCommitOf(base, git, env), changedPaths: (from, to) => changedPathsOf(git, from, to), out: (line) => console.log(line),
     ...overrides,
   };

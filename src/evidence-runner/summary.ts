@@ -54,22 +54,40 @@ function ownerEvidence(root: string, dir: string, accept: (value: Record<string,
   return undefined;
 }
 
-export type SummaryIndex = { records: Submission[]; actPilots: Pilot[]; found: { gate: string; path: string; sha256: string; producer: string }[] };
+export type SummaryIndex = {
+  records: Submission[]; actPilots: Pilot[]; found: { gate: string; path: string; sha256: string; producer: string }[];
+  /** Documents whose bytes no longer hash to what the journal recorded when their step finished (review N2 on #349). */
+  changed: { gate: string; path: string }[];
+};
 
-/** What the run and the owner-run producers have written for this candidate, as admission records. Reads files only. */
+/**
+ * What the run and the owner-run producers have written for this candidate, as admission records. Reads files only.
+ *
+ * Every record names the **candidate** as its `sourceCommit`: admission requires each submission to name the release it is for.
+ * An ACT path's live record and a recovery record keep their own binding inside the document (they were written at the commit
+ * that carries the path's contract), and `actPilots` declares that contract and commit per path, which admission verifies
+ * against the document (review B2 on #349; the same rule as #344 N1 for the recovery producer's manifest entry).
+ *
+ * A document the journal recorded is submitted only while its bytes still hash to what the journal recorded when its step
+ * finished; one changed since is listed in `changed` and the index step fails.
+ */
 export function indexEvidence(ctx: StageContext): SummaryIndex {
   const { config } = ctx;
   const found: SummaryIndex["found"] = [];
   const records: Submission[] = [];
   const actPilots: Pilot[] = [];
-  const add = (gate: string, mode: string, sourceCommit: string, targetHardwareId: string, path: string, producer: string) => {
-    const sha256 = sha256File(join(ctx.root, path));
+  const changed: SummaryIndex["changed"] = [];
+  const add = (gate: string, mode: string, targetHardwareId: string, path: string, producer: string, journaled?: string): boolean => {
+    let sha256: string;
+    try { sha256 = sha256File(join(ctx.root, path)); } catch { changed.push({ gate, path }); return false; }
+    if (journaled !== undefined && sha256 !== journaled) { changed.push({ gate, path }); return false; }
     found.push({ gate, path, sha256, producer });
-    records.push({ id: gate, mode, sourceCommit, targetHardwareId, evidencePath: path, evidenceSha256: sha256 });
+    records.push({ id: gate, mode, sourceCommit: config.candidateCommit, targetHardwareId, evidencePath: path, evidenceSha256: sha256 });
+    return true;
   };
   for (const [provider, gate] of [["aws", "aws-provider"], ["azure", "azure-provider"]] as const) {
     const document = stageDocument(ctx, `${provider}-readonly`, "provider-qualification", "provider-" + provider);
-    if (document) add(gate, "LIVE_PROVIDER", config.candidateCommit, config.targetHardwareId, document.path, "./alz qualify provider-" + provider);
+    if (document) add(gate, "LIVE_PROVIDER", config.targetHardwareId, document.path, "./alz qualify provider-" + provider, document.sha256);
   }
   for (const path of ACT_PATHS) {
     const document = stageDocument(ctx, `cleanup:${path}`, "record-live", "live-record");
@@ -77,19 +95,21 @@ export function indexEvidence(ctx: StageContext): SummaryIndex {
     const record = readJson(join(ctx.root, document.path));
     const spec = ACT_PATH_SPEC[path];
     if (!record || typeof record.sourceCommit !== "string" || !sha40.test(record.sourceCommit) || typeof record.contractSha256 !== "string" || !sha64.test(record.contractSha256)) continue;
-    add("act:" + spec.provider.toLowerCase() + "-" + spec.engine.toLowerCase(), "LIVE_ACT", record.sourceCommit, config.targetHardwareId, document.path, "./alz apply record-live");
-    actPilots.push({ provider: spec.provider, engine: spec.engine, contractSha256: record.contractSha256, contractCommit: record.sourceCommit });
+    // The submission names the candidate; the record's own commit is the path's contract commit, declared in actPilots.
+    if (add("act:" + spec.provider.toLowerCase() + "-" + spec.engine.toLowerCase(), "LIVE_ACT", config.targetHardwareId, document.path, "./alz apply record-live", document.sha256)) {
+      actPilots.push({ provider: spec.provider, engine: spec.engine, contractSha256: record.contractSha256, contractCommit: record.sourceCommit });
+    }
   }
   const recovery = stageDocument(ctx, "recovery", "record-recovery", "recovery-record");
   if (recovery) {
     const value = readJson(join(ctx.root, recovery.path));
-    if (value && typeof value.sourceCommit === "string") add("act-run-recovery", "ACT_RECOVERY", value.sourceCommit, String(value.targetHardwareId ?? config.targetHardwareId), recovery.path, "./alz apply record-recovery");
+    if (value && typeof value.sourceCommit === "string") add("act-run-recovery", "ACT_RECOVERY", String(value.targetHardwareId ?? config.targetHardwareId), recovery.path, "./alz apply record-recovery", recovery.sha256);
   }
   for (const gate of ["source-ci", "release-archive"]) {
     const file = ".runs/release/ci/" + gate + "-" + config.candidateCommit.slice(0, 12) + ".json";
     const value = readJson(join(ctx.root, file));
     if (value && value.gateId === gate && value.sourceCommit === config.candidateCommit && typeof value.targetHardwareId === "string") {
-      add(gate, "CI", config.candidateCommit, value.targetHardwareId, file, "./alz qualify ci-evidence");
+      add(gate, "CI", value.targetHardwareId, file, "./alz qualify ci-evidence");
     }
   }
   const model = ownerEvidence(ctx.root, ".runs/model-qualification", (value) => {
@@ -97,11 +117,11 @@ export function indexEvidence(ctx: StageContext): SummaryIndex {
     return isRecord(production) && production.passed === true && isRecord(production.context) && production.context.sourceCommit === config.candidateCommit &&
       isRecord(production.context.host) && production.context.host.targetHardwareId === config.targetHardwareId;
   });
-  if (model) add("private-model-runtime", "PRIVATE_MODEL", config.candidateCommit, config.targetHardwareId, model.path, "./alz models verify --production");
+  if (model) add("private-model-runtime", "PRIVATE_MODEL", config.targetHardwareId, model.path, "./alz models verify --production");
   // One record per gate: the first found wins, so a gate is never submitted twice.
   const seen = new Set<string>();
   const unique = records.filter((record) => !seen.has(record.id) && seen.add(record.id));
-  return { records: unique, actPilots, found };
+  return { records: unique, actPilots, found, changed };
 }
 
 type AdmissionReport = { gates: { id: string; status: string; blockers: string[] }[]; ready: boolean };
@@ -120,6 +140,10 @@ export async function summaryStage(ctx: StageContext, plan: readonly GatePlan[],
   const dirRel = ctx.runDirRel + "/summary";
   const indexed = await freshStep(ctx, stage, "index", async () => {
     const index = indexEvidence(ctx);
+    if (index.changed.length > 0) {
+      return { outcome: "FAIL", code: "EVIDENCE_DOCUMENT_CHANGED",
+        detail: "These documents no longer match the hash journaled when their step finished, so nothing was submitted: " + index.changed.map((entry) => entry.gate + " " + entry.path).join(", ") + "." };
+    }
     ensureRealFolder(dir);
     let records = index.records;
     if (ctx.label === "SYNTHETIC") {
