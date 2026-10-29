@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -38,7 +38,8 @@ export type Delivered = { root: string; sessionDir: string; env: Record<string, 
 export function deliverSession(path: DeliveryPathId, now: Date, options: {
   parent?: string; claims?: Partial<Record<ExecutionIdentity, Record<string, unknown>>>; meta?: Partial<Record<ExecutionIdentity, Partial<DeliveryMetadata>>>;
 } = {}): Delivered {
-  const root = mkdtempSync(join(options.parent ?? tmpdir(), "alz-delivery-"));
+  // The real temporary directory: on macOS tmpdir() is under /var, a symbolic link, and a delivery root must be its own real path.
+  const root = mkdtempSync(join(options.parent ?? realpathSync(tmpdir()), "alz-delivery-"));
   const sessionDir = join(root, path);
   mkdirSync(sessionDir, { mode: 0o700 });
   const spec = DELIVERY_PATHS[path];

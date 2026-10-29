@@ -46,8 +46,9 @@ COPY .github/workflows/pr-validation.yml ./.github/workflows/pr-validation.yml
 COPY .github/workflows/supply-chain.yml ./.github/workflows/supply-chain.yml
 COPY .github/workflows/container-release.yml ./.github/workflows/container-release.yml
 COPY .github/workflows/container-hardening.yml ./.github/workflows/container-hardening.yml
-# test/act-identity-delivery-workflow.test.ts reads the identity delivery workflow and runs its scripts. Test stage only.
+# test/act-identity-delivery-workflow.test.ts reads the identity delivery and macOS test workflows and runs the delivery scripts. Test stage only.
 COPY .github/workflows/act-identity-delivery.yml ./.github/workflows/act-identity-delivery.yml
+COPY .github/workflows/act-identity-macos.yml ./.github/workflows/act-identity-macos.yml
 COPY compose.production.yaml ./compose.production.yaml
 
 RUN chmod +x ./alz

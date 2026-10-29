@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -144,6 +144,22 @@ test("each identity runs in its own environment, named exactly as the driver exp
   }
 });
 
+test("the macOS test workflow runs on a GitHub-hosted macOS image with no authority: never self-hosted, no token, no secret, no environment", () => {
+  const mac = readFileSync(".github/workflows/act-identity-macos.yml", "utf8");
+  const macCode = mac.split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
+  const runsOn = [...macCode.matchAll(/^\s*runs-on:\s*(.+)$/gm)].map((m) => m[1].trim());
+  assert.deepEqual(runsOn, ["macos-15"]);
+  assert.doesNotMatch(macCode, /self-hosted|alz-identity-delivery|id-token|secrets\.|environment:|pull_request_target|issue_comment|workflow_run/);
+  assert.match(macCode, /^permissions: \{\}$/m);
+  assert.match(macCode, /^ {4}permissions: \{\}$/m);
+  assert.deepEqual([...macCode.matchAll(/^ {2}([a-z_]+):/gm)].map((m) => m[1]).filter((t) => ["pull_request", "workflow_dispatch", "push", "schedule"].includes(t)), ["pull_request", "workflow_dispatch"]);
+  for (const line of macCode.split("\n").filter((l) => /uses:/.test(l))) assert.match(line, /@[0-9a-f]{40} # v[0-9]+$/, "pinned by commit: " + line);
+  assert.match(macCode, /persist-credentials: false/);
+  // It runs exactly the three test files these tests live in, against Apple's bash 3.2 and BSD find, and records the platform.
+  assert.match(macCode, /npx tsx --test test\/act-identity-runner-hook\.test\.ts test\/act-identity-delivery-workflow\.test\.ts test\/apply-token-delivery\.test\.ts$/m);
+  for (const record of ["sw_vers", "/bin/bash --version", "BASH_VERSINFO[0]}\" = 3", "/usr/bin/find --version"]) assert.ok(macCode.includes(record), record);
+});
+
 // --- executable: the workflow's own scripts against a fake token service ---------------------------------------------------
 
 type Mode = "ok" | "wrong-sub" | "wrong-aud" | "expired" | "error";
@@ -173,7 +189,8 @@ async function tokenService(path: DeliveryPathId): Promise<Service> {
   return { url: "http://127.0.0.1:" + port + "/token?api-version=2.0", requests, mode, close: () => new Promise((resolve) => server.close(() => resolve())) };
 }
 
-const scratch = mkdtempSync(join(tmpdir(), "alz-delivery-wf-"));
+// The real temporary directory (on macOS tmpdir() is under the /var symbolic link), and /bin/bash (Apple's 3.2 on macOS).
+const scratch = mkdtempSync(join(realpathSync(tmpdir()), "alz-delivery-wf-"));
 test.after(() => rmSync(scratch, { recursive: true, force: true }));
 const holderFile = join(scratch, "holder");
 writeFileSync(holderFile, stepScript("Hold a refreshed identity token"));
@@ -355,10 +372,10 @@ test("an interrupted job deletes its token; a killed one is cleaned by the alway
     await killed.exit;
     assert.deepEqual(readdirSync(session).sort(), ["STATE_WRITE.json", "STATE_WRITE.jwt"], "a killed process cannot clean up");
     writeFileSync(join(session, "STATE_WRITE.jwt.tmp-12345"), "partial", { mode: 0o600 });
-    const removed = spawnSync("bash", [removeFile], { env: { PATH: "/usr/bin:/bin", ALZ_DELIVERY_PATH: "aws-terraform", ALZ_DELIVERY_IDENTITY: "STATE_WRITE", ALZ_IDENTITY_DELIVERY_ROOT: root }, encoding: "utf8" });
+    const removed = spawnSync("/bin/bash", [removeFile], { env: { PATH: "/usr/bin:/bin", ALZ_DELIVERY_PATH: "aws-terraform", ALZ_DELIVERY_IDENTITY: "STATE_WRITE", ALZ_IDENTITY_DELIVERY_ROOT: root }, encoding: "utf8" });
     assert.equal(removed.status, 0, removed.stderr);
     assert.deepEqual(readdirSync(session), []);
-    assert.equal(spawnSync("bash", [removeFile], { env: { PATH: "/usr/bin:/bin", ALZ_DELIVERY_PATH: "../etc", ALZ_DELIVERY_IDENTITY: "APPLY", ALZ_IDENTITY_DELIVERY_ROOT: root } }).status, 1);
+    assert.equal(spawnSync("/bin/bash", [removeFile], { env: { PATH: "/usr/bin:/bin", ALZ_DELIVERY_PATH: "../etc", ALZ_DELIVERY_IDENTITY: "APPLY", ALZ_IDENTITY_DELIVERY_ROOT: root } }).status, 1);
     // The cleanup job removes what the workflow writes and refuses to touch anything else.
     writeFileSync(join(session, "APPLY.json"), "{}", { mode: 0o600 });
     writeFileSync(join(session, "notes.txt"), "the owner's", { mode: 0o600 });
