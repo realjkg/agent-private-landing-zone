@@ -363,16 +363,22 @@ test("./alz apply contract-check reads one draft file offline: exit 0 complete, 
   assert.match(piped.stderr, /HUMAN_TERMINAL_REQUIRED/);
 });
 
-test("the command enables nothing: the repository still ships no contract and no pin, no file is written beside the draft, and the draft is unchanged", async () => {
+test("the command enables nothing: the repository's contract (present or not) and config/ are unchanged, no pin appears, no file is written beside the draft, and the draft is unchanged", async () => {
   const path = file(completeDraft());
   const before = readFileSync(path, "utf8");
   const dir = join(path, "..");
   const listing = () => readFileSync(path, "utf8") + JSON.stringify(readdirSync(dir));
+  // The repository may hold the owner's reviewed contract; the check must leave it, and the rest of config/, exactly as found.
+  const contract = join(ROOT, "config", "act-pilot-contract.json");
+  const repository = () => ({ contract: existsSync(contract) ? readFileSync(contract, "utf8") : null, config: readdirSync(join(ROOT, "config")).sort() });
   const first = listing();
+  const repoBefore = repository();
   await cli(["contract-check", "--file", path]);
+  // The check run on the repository's own contract path writes nothing either, whether a contract is there or not.
+  await cli(["contract-check", "--file", contract]);
   assert.equal(listing(), first, "nothing written in the draft's folder");
   assert.equal(readFileSync(path, "utf8"), before);
-  assert.equal(existsSync(join(ROOT, "config", "act-pilot-contract.json")), false, "the check never writes the contract");
+  assert.deepEqual(repository(), repoBefore, "the check never writes, creates or changes the contract or anything else in config/");
   assert.equal(existsSync(join(ROOT, "config", "act-pilot-contract.sha256")), false, "the retired pin is never recreated");
 });
 

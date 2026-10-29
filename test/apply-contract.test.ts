@@ -31,6 +31,7 @@ import type { ApplyEvidence, PilotContract } from "../src/apply/types.js";
 import { canonicalJson } from "../src/teardown/manifest.js";
 import { recordApplied } from "./helpers/apply-fixtures.js";
 import { AZURE } from "../src/apply/providers/azure.js";
+import { contentExclusions, pathExclusions } from "../src/release/package-exclusions.js";
 
 // Explicit fixtures only: no real tenant, subscription or backend values.
 const scratch = mkdtempSync(join(tmpdir(), "apply-contract-"));
@@ -364,13 +365,40 @@ test("any edit to the contract changes its hash, so a plan sealed before the edi
   }
 });
 
-test("the repository ships no contract and no pin file: ACT is disabled and no product code reads or writes a pin or the contract", () => {
-  const root = resolve(import.meta.dirname, "..");
-  assert.equal(existsSync(join(root, "config/act-pilot-contract.sha256")), false, "the old pin is removed, not left as a second switch");
-  assert.equal(existsSync(repoPaths().contract), false, "the shipped default is no contract");
-  const loaded = loadPilotContract();
+// The owner's reviewed commit of config/act-pilot-contract.json is the authorization (AGENTS.md), so a checkout may hold one.
+// No test here depends on whether it does: "no contract" is judged on an isolated empty root, and "the product ships no
+// contract" is judged on the field package (test/release-package-exclusions.test.ts: the stage leaves it out, the build
+// guard refuses it, .dockerignore keeps it out of the image, and ACT reads DISABLED in the package).
+
+test("with no contract present ACT is DISABLED: an empty root loads ACT_DISABLED and authorizes no operation in any environment", () => {
+  const empty = mkdtempSync(join(scratch, "empty-root-"));
+  mkdirSync(join(empty, "config"));
+  const path = join(empty, "config/act-pilot-contract.json");
+  const loaded = loadPilotContract(path);
   assert.equal(loaded.enabled, false);
   assert.equal((loaded as { code: string }).code, "ACT_DISABLED");
+  for (const env of ["DEV", "QA", "PROD"] as const) {
+    for (const operation of ["APPLY", "CLEANUP", "REMOVE"] as const) {
+      const refused = requireActAuthorized(operation, env, path);
+      assert.equal(refused.ok, false, operation + " " + env);
+      assert.equal((refused as { code: string }).code, "ACT_DISABLED", operation + " " + env);
+    }
+  }
+  assert.deepEqual(readdirSync(join(empty, "config")), [], "loading writes nothing");
+});
+
+test("the distributed product carries no contract: the field-package guard refuses the owner's contract by name and an enabled one by content", () => {
+  const root = resolve(import.meta.dirname, "..");
+  assert.ok(pathExclusions("config/act-pilot-contract.json").some((x) => x.code === "PILOT_CONTRACT"));
+  const enabled = Buffer.from(JSON.stringify(fixtureContract()));
+  assert.ok(contentExclusions("dist/anything.json", enabled).some((x) => x.code === "ENABLED_CONTRACT"));
+  // The stage the release archive is built from leaves out every act-pilot-contract* file but the disabled examples.
+  assert.match(readFileSync(join(root, "scripts/release-stage.sh"), "utf8"), /-name 'act-pilot-contract\*' ! -name '\*\.example\.json'/);
+});
+
+test("the retired pin never exists and is never named, and no product code path writes the contract", () => {
+  const root = resolve(import.meta.dirname, "..");
+  assert.equal(existsSync(join(root, "config/act-pilot-contract.sha256")), false, "the old pin is removed, not left as a second switch");
   for (const file of sourceFiles(join(root, "src"))) {
     const text = readFileSync(file, "utf8");
     assert.doesNotMatch(text, /act-pilot-contract\.sha256/, file + " still names the retired pin");
@@ -404,18 +432,23 @@ test("repoPaths and the defaults resolve from the module location, not process.c
     evidence: join(root, ".runs/apply/evidence"), qualifications: join(root, ".runs/apply/qualification"), nonces: join(root, ".runs/apply"),
   });
   const cwd = process.cwd();
-  // A hostile working directory with its own contract and kill switch changes nothing.
+  // A hostile working directory with its own contract and kill switch changes nothing. The default contract is whatever the
+  // repository root holds (none, or the owner's reviewed commit); the hostile one is an enabled fixture with fresh keys.
   const hostile = mkdtempSync(join(scratch, "cwd-"));
   mkdirSync(join(hostile, "config"), { recursive: true });
   const contract = fixtureContract();
   writeFileSync(join(hostile, "config/act-pilot-contract.json"), JSON.stringify(contract));
   mkdirSync(join(hostile, ".runs/apply"), { recursive: true });
   writeFileSync(join(hostile, ".runs/apply/KILL-anchor-test"), "");
+  const hostileLoaded = loadPilotContract(join(hostile, "config/act-pilot-contract.json"));
+  assert.equal(hostileLoaded.enabled, true, "the hostile contract would enable ACT if it were read");
+  const fromRoot = loadPilotContract(here.contract);
   process.chdir(hostile);
   try {
     assert.deepEqual(repoPaths(), here);
     const loaded = loadPilotContract();
-    assert.equal(loaded.enabled, false, "the contract in the working directory is not read");
+    assert.deepEqual(loaded, fromRoot, "the default is the repository root's contract");
+    if (loaded.enabled) assert.notEqual(pilotContractSha256(loaded), pilotContractSha256(hostileLoaded as PilotContract), "the contract in the working directory is not read");
     assert.equal(isKillSwitchActive({ killSwitchPath: ".runs/apply/KILL-anchor-test" }), false, "a relative kill switch path is under the repository root");
     assert.equal(isKillSwitchActive({ killSwitchPath: join(hostile, ".runs/apply/KILL-anchor-test") }), true, "an absolute one is used as given");
   } finally { process.chdir(cwd); }
