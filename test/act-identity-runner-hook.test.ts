@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -136,4 +136,54 @@ test("a missing, open or incomplete configuration fails closed", () => {
   const other = install();
   const wrongWork = install(dispatch, "REPOSITORY=" + REPO + "\nRUNNER_WORK=" + other.work + "/elsewhere\nNODE=" + process.execPath + "\n");
   refused(wrongWork, jobEnv(wrongWork, { GITHUB_EVENT_PATH: "" }), /event payload is missing/, "wrong work directory");
+});
+
+test("a job environment that reaches the hook is made visible: the owner's canary, BASH_ENV or ENV is refused with ALZ_IDENTITY_HOOK_ENV_LEAK (review round 2)", () => {
+  const at = install({ ...dispatch, ref: "refs/heads/feature" });
+  const marker = join(scratch, "alz-hook-env-reached");
+  for (const [over, label] of [
+    [{ ALZ_HOOK_ENV_CANARY: "instance-1" }, "the canary"],
+    [{ ALZ_HOOK_ENV_CANARY: "" }, "an empty canary"],
+    [{ ENV: "/nonexistent" }, "ENV"],
+    // bash expands BASH_ENV and sources the result before the first line: the code runs (the marker appears), then the leak is reported.
+    [{ BASH_ENV: "$(touch " + marker + ")" }, "BASH_ENV"],
+    [{ ALZ_HOOK_ENV_CANARY: "instance-1", "BASH_FUNC_unset%%": "() { exit 0; }", "BASH_FUNC_exit%%": "() { builtin exit 0; }" }, "canary with function overrides"],
+  ] as const) {
+    rmSync(marker, { force: true });
+    const result = run(at, jobEnv(at, over as Record<string, string>));
+    assert.equal(result.status, 1, label + ": " + result.stdout + result.stderr);
+    assert.match(result.stderr, /^ALZ_IDENTITY_HOOK_ENV_LEAK: /, label);
+    assert.equal(result.stdout, "", label);
+    if (label === "BASH_ENV") assert.ok(existsSync(marker), "the owner's probe marker shows the code ran");
+  }
+});
+
+test("exported functions cannot hijack the hook: it calls no builtin by name, and Node, the last command, decides (review round 2)", () => {
+  const branch = install({ ...dispatch, ref: "refs/heads/feature" });
+  for (const name of ["unset", "exit", "set", "printf", "read", "refuse", "[", "test", "env", "find", "false", "command", "builtin", "true"]) {
+    const result = run(branch, jobEnv(branch, { ["BASH_FUNC_" + name + "%%"]: "() { builtin exit 0; }" }));
+    assert.equal(result.status, 1, name + ": " + result.stdout + result.stderr);
+    assert.match(result.stderr, /ALZ_IDENTITY_RUNNER_REFUSED: the event payload is not a dispatch/, name);
+  }
+  // And the admitted case still admits with them present: they change nothing either way.
+  const good = install();
+  assert.equal(run(good, jobEnv(good, { "BASH_FUNC_unset%%": "() { builtin exit 1; }" })).status, 0);
+});
+
+test("the configured Node binary must be owned by root or this user and not writable by others; the configuration is checked before it is read (review N8)", () => {
+  const fakeDir = join(scratch, "fake-node");
+  mkdirSync(fakeDir, { recursive: true });
+  const fake = join(fakeDir, "node");
+  writeFileSync(fake, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  // An open configuration naming an admit-everything binary: refused before the binary runs.
+  const open = install({ ...dispatch, ref: "refs/heads/feature" }, "REPOSITORY=" + REPO + "\nRUNNER_WORK=/x/_work\nNODE=" + fake + "\n");
+  chmodSync(open.conf, 0o666);
+  refused(open, jobEnv(open, { GITHUB_EVENT_PATH: "" }), /act-identity-runner-hook\.conf is not owner-only/, "open configuration");
+  for (const mode of [0o777, 0o775, 0o757]) {
+    chmodSync(fake, mode);
+    const writable = install({ ...dispatch, ref: "refs/heads/feature" }, "REPOSITORY=" + REPO + "\nRUNNER_WORK=/x/_work\nNODE=" + fake + "\n");
+    refused(writable, jobEnv(writable, { GITHUB_EVENT_PATH: "" }), /NODE binary is writable by group or others/, "mode " + mode.toString(8));
+  }
+  const notExecutable = install(dispatch, "REPOSITORY=" + REPO + "\nRUNNER_WORK=/x/_work\nNODE=" + join(fakeDir, "absent") + "\n");
+  refused(notExecutable, jobEnv(notExecutable, { GITHUB_EVENT_PATH: "" }), /names no absolute NODE binary/, "missing binary");
 });

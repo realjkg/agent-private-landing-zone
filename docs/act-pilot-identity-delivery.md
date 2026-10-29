@@ -155,11 +155,19 @@ The repository belongs to a user account and is public. **Failed assumption:** t
    | The job id, and agreeing copies of the event, ref, workflow ref and repository | `GITHUB_JOB`, `GITHUB_EVENT_NAME`, `GITHUB_REF`, `GITHUB_WORKFLOW_REF`, `GITHUB_REPOSITORY` | Possibly, if a job's `env:` reaches the hook. They can only add refusals: the payload must agree. The job id alone comes from here, and every admitted job is one of this reviewed workflow's two. |
 
    **Hardening.** The hook:
-   - unsets `NODE_OPTIONS`, `NODE_PATH`, `BASH_ENV`, `ENV` and the like, and pins `PATH` and `IFS`;
-   - judges the payload with the configured absolute Node binary under `env -i`, so no job-provided variable reaches it;
-   - refuses on anything unexpected: a missing, open, repeated or unknown configuration line, a symbolic link, or an unreadable payload.
+   - calls no builtin or outside function by name. It uses only keywords (`[[ ]]`, `if`), expansions, assignments, its own function and programs by absolute path. An exported function in the environment (`BASH_FUNC_<name>%%`, which bash looks up before builtins) therefore cannot replace anything it calls. A test overrides `unset`, `exit`, `set`, `printf`, `read`, `[`, `test`, `env`, `find`, `false`, `command`, `builtin` and `true`, and the hook still refuses a branch payload;
+   - checks, in bash, that the configuration is owner-only, and that the `NODE` binary is owned by root or the runner user and not writable by group or others, **before** it runs that binary (review N8). Node checks both again;
+   - judges everything with that Node binary under `env -i` as its last command, so no job-provided variable (`NODE_OPTIONS`, `NODE_PATH` and the rest) reaches the judge, and the judge's verdict is the hook's exit status;
+   - pins `PATH` and `IFS`;
+   - refuses anything unexpected: a missing, open, repeated or unknown configuration line, a symbolic link, or an unreadable payload.
 
-   **Limit:** bash reads `BASH_ENV` before a script's first line, so if a job's environment did reach the hook, a job-chosen `BASH_ENV` file could run first. The owner's proof (section 11, step 7) shows whether job environment reaches the hook.
+   **The class it cannot defend, and how a leak is made visible.** Bash acts on four variables before the first line of any script runs:
+   - `BASH_ENV` is expanded and sourced, so `BASH_ENV='$(…)'` runs code with no file at all;
+   - `ENV` does the same in POSIX mode;
+   - `SHELLOPTS` and `BASHOPTS` set options. `SHELLOPTS=noexec` makes bash read the hook without running it and exit 0, which admits the job; this was checked with bash 5.2;
+   - exported functions (`BASH_FUNC_*%%`) are imported as functions. The hook calls none of them, but any program it ran through bash could.
+
+   **If a job's environment reaches the job-started hook, this whole class is a full bypass, and no script can prevent it.** The hook's first check makes a leak visible: if `ALZ_HOOK_ENV_CANARY`, `BASH_ENV` or `ENV` is set, it refuses with the distinct code `ALZ_IDENTITY_HOOK_ENV_LEAK`. The owner's proof (section 11, step 7) sets the canary, a `BASH_ENV` marker and function overrides on every instance, so a leak cannot pass unseen. If it ever shows a leak, option A as designed fails the owner's requirement that no untrusted PR code runs on the credential-bearing runner. Section 12 gives the smallest alternative.
 
    **The delivery job checks the hook.** Before minting anything, the delivery job refuses unless all of these hold:
    - `ACTIONS_RUNNER_HOOK_JOB_STARTED` names an owner-only regular file whose SHA-256 equals the reviewed script's hash, which is pinned in the workflow as `ALZ_RUNNER_HOOK_SHA256` (a test keeps the two equal);
@@ -179,7 +187,7 @@ The repository belongs to a user account and is public. **Failed assumption:** t
 | Threat | Control | Residual risk |
 |---|---|---|
 | A fork or branch PR runs code on the runner by naming its label, or just `self-hosted` | The hook (8.1) refuses the job before any step, deciding from its owner-only configuration and the runner's payload. Fork approval (8.7). The runner is offline outside the window (8.6). | One instance without the hook would run anything. The delivery job refuses to deliver on such an instance, but it cannot stop another job there. The owner's negative test runs on every instance (section 11, step 7). |
-| A job's own `env:` steers the hook (`NODE_OPTIONS`, `GITHUB_*`) | The hook ignores job-settable values for every decision, runs Node under `env -i` with an absolute binary, and pins `PATH`. A test reproduces the reviewer's `NODE_OPTIONS` probe and shows it now refuses. | `BASH_ENV` runs before any script line. Section 11, step 7 shows whether job environment reaches the hook at all. |
+| A job's own `env:` steers the hook (`NODE_OPTIONS`, `GITHUB_*`, `BASH_FUNC_*%%`) | The hook ignores job-settable values for every decision. It calls no builtin by name, and runs Node under `env -i` with an absolute, owner-checked binary as its last command. Tests reproduce the `NODE_OPTIONS` and `BASH_FUNC_unset%%` probes and show both refuse. | If job environment reaches the hook, `BASH_ENV`, `ENV`, `SHELLOPTS` (for example `noexec`) and `BASHOPTS` act before any line runs: a **full bypass**. The hook's canary check (`ALZ_IDENTITY_HOOK_ENV_LEAK`) and section 11, step 7 make that visible on every instance. If it is seen, option A fails, and section 12 gives the fallback. |
 | A modified workflow on a branch is dispatched to mint an environment token | The environment's branch policy is `main` only. The required reviewer. The hook refuses non-main refs. The driver refuses tokens whose `ref` or `workflow_ref` is not main. | Anyone who can merge to `main` can change the workflow. Main's review and the pending `release-freeze-main` ruleset govern that. |
 | A token for identity A is used as identity B | Each cloud trusts exactly one subject per principal. The driver binds file name, metadata, `sub`, `environment` and audience per identity, and refuses the same token, subject or `jti` twice. | None known. |
 | A stale or expired token is used | The 60-second validity floor, a heartbeat within 180 seconds, and the hold window. Nothing is extended. | A step that runs longer than its cloud session (one hour) fails rather than continue on an old token. |
@@ -206,7 +214,7 @@ Agents cannot apply any of these, and none has been applied. Each item is the ow
    - Beside it, write `act-identity-runner-hook.conf`, mode 0600, with exactly three lines:
      - `REPOSITORY=realjkg/agent-private-landing-zone`
      - `RUNNER_WORK=<that instance's _work directory, absolute>`
-     - `NODE=<absolute path of Node 26>`
+     - `NODE=<absolute path of Node 26>`. The binary must be owned by root or that user and not writable by group or others; the hook refuses it otherwise.
    - In that instance's `.env`, set two variables, then restart the instance:
      - `ACTIONS_RUNNER_HOOK_JOB_STARTED=<the copy's path>`
      - `ALZ_IDENTITY_DELIVERY_ROOT=/Users/alzpilot/.alz-identity`
@@ -249,12 +257,23 @@ Labels:
    - **Setup.** On a throwaway branch that is never merged, add a probe workflow with two jobs:
      - one with `runs-on: [self-hosted, alz-identity-delivery]`;
      - one with only `runs-on: self-hosted`.
-   - **Overrides.** Give both jobs a job-level `env:` that sets `GITHUB_EVENT_NAME: workflow_dispatch`, `GITHUB_REF: refs/heads/main`, `GITHUB_WORKFLOW_REF: realjkg/agent-private-landing-zone/.github/workflows/act-identity-delivery.yml@refs/heads/main`, `GITHUB_EVENT_PATH: /tmp/forged.json`, `NODE_OPTIONS: --require=/tmp/forged.js` and `BASH_ENV: /tmp/forged.sh`.
-   - **Marker.** Each job's only step writes a marker file under `/tmp`.
+   - **Overrides.** Give both jobs a job-level `env:` that sets all of these. `<N>` is the instance number.
+     - `ALZ_HOOK_ENV_CANARY: instance-<N>`: the canary;
+     - `BASH_ENV: '$(touch /tmp/alz-hook-env-reached-<N>)'`: an observable marker that needs no file;
+     - `BASH_FUNC_unset%%: '() { builtin exit 0; }'` and `BASH_FUNC_exit%%: '() { builtin exit 0; }'`: these would make an exposed hook exit 0 if they were honored;
+     - `GITHUB_EVENT_NAME: workflow_dispatch`, `GITHUB_REF: refs/heads/main`, `GITHUB_WORKFLOW_REF: realjkg/agent-private-landing-zone/.github/workflows/act-identity-delivery.yml@refs/heads/main`, `GITHUB_EVENT_PATH: /tmp/forged.json`;
+     - `NODE_OPTIONS: --require=/tmp/forged.js`.
+   - **Marker.** Each job's only step writes `/tmp/alz-hook-step-ran-<N>`.
    - **Run.** Dispatch the probe from that branch.
-   - **Pass.** Both jobs must fail at "Set up runner" with `ALZ_IDENTITY_RUNNER_REFUSED`, and no marker may appear.
+   - **Pass, for each instance:**
+     - both jobs fail at "Set up runner" with `ALZ_IDENTITY_RUNNER_REFUSED`;
+     - the log never shows `ALZ_IDENTITY_HOOK_ENV_LEAK`;
+     - neither `/tmp/alz-hook-env-reached-<N>` nor `/tmp/alz-hook-step-ran-<N>` exists on the MBP;
+     - no step ran.
 
-   Repeat for each of the four instances, then delete the branch. Record each runner's name and the refusal line. If any instance runs a step, or if the forged values change the hook's verdict, stop: that runner must not be used.
+   Repeat for each of the four instances, then delete the branch. Record each runner's name, the refusal line and the absence of both markers.
+   - **If `ALZ_IDENTITY_HOOK_ENV_LEAK` appears, or the `env-reached` marker exists,** job environment reaches the hook. Option A as designed then fails the "no untrusted PR code" requirement. Do not deliver tokens; use the fallback in section 12.
+   - **If a step ran,** that instance has no working hook and must not be used.
 
 D4 is complete when the owner records steps 3 to 7 on #39 and accepts them.
 
@@ -266,7 +285,8 @@ The owner's proof settles each of these. Every one fails closed if it is wrong.
 |---|---|
 | A GitHub OIDC token lives for a few minutes, so a 60-second refresh keeps it fresh. GitHub's documented example shows five minutes. | A shorter life makes the job refuse to write the token (less than 60 seconds left), or makes the driver refuse it. Nothing runs on an expired token. |
 | The job's request token stays valid for the whole job, so re-minting keeps working. | The refresh fails, the job deletes its token and exits 1, and the driver refuses the stale delivery. |
-| The job-started hook runs before any step and fails the job on a non-zero exit, the runner has written the event payload at `<RUNNER_WORK>/_temp/_github_workflow/event.json` by then, and a job's `env:` does not reach the hook. Step 7 of the proof tests this on every instance. | If it does not, the runner must not be used. The smallest fallback is to keep the runner offline except while the owner's own dispatch is queued, and to treat any other job on it as an incident. |
+| The job-started hook runs before any step and fails the job on a non-zero exit, and the runner has written the event payload at `<RUNNER_WORK>/_temp/_github_workflow/event.json` by then. Step 7 of the proof tests this on every instance. | The runner must not be used for delivery. |
+| **A job's `env:` does not reach the job-started hook.** If it did, `BASH_ENV`, `ENV`, `SHELLOPTS`/`BASHOPTS` and exported `BASH_FUNC_*%%` would act before the hook's first line: a full bypass. Step 7's canary, `BASH_ENV` marker and function overrides make it observable on every instance. | **Option A as designed then fails the "no untrusted PR code" requirement.** The smallest alternative needs no new issuer and no new mechanism, just a narrower window. Run each instance as an **ephemeral** runner (`config.sh --ephemeral`, re-registered by the owner for each delivery), started only after the owner's own dispatch is queued and approved, and only once the owner has confirmed in Actions that no other job is queued for a self-hosted runner. Each instance takes exactly one job and deregisters. The owner checks in each run log that the one job it took was a `deliver` or `cleanup` job of this run. Any other job on it is an incident: its tokens are discarded, nothing is applied, and the instance is wiped. |
 | GitHub's environment `sub` ends with `:environment:<name>` in both the default and the immutable formats. | The job and the driver refuse the token, and nothing is delivered. |
 | Google accepts the `https:`-prefixed provider name as the token audience when `allowed_audiences` is empty. | The exchange fails at step 5 and nothing is delegated. Set `oidc_allowed_audiences` to that exact value in a reviewed bootstrap change; that is an exact value, not a broadening. |
 

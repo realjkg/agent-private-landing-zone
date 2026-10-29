@@ -71,7 +71,7 @@ jobs:
       ALZ_DELIVERY_GCP_AUDIENCE: ${{ vars.ALZ_GCP_WIF_AUDIENCE }}
       # SHA-256 of scripts/act-identity-runner-hook.sh as reviewed. A runner instance whose job-started hook is not this exact
       # file is refused before any token is minted (test/act-identity-delivery-workflow.test.ts keeps the two equal).
-      ALZ_RUNNER_HOOK_SHA256: "c34288aafc59bc0343571534df7c1827275b3251c8fb7a62c07c9b357551d1e8"
+      ALZ_RUNNER_HOOK_SHA256: "569a1d6fcf50fe01cb14175a05e3606c82d173e3d610d87c43cb88a64682ff22"
     steps:
       - name: Hold a refreshed identity token
         shell: node {0}
