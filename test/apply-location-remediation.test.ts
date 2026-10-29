@@ -448,6 +448,15 @@ test("at the terminal (SYNTHETIC): propose-remediation writes the remediation an
   assert.equal(ordinary.code, 2, ordinary.stdout);
   assert.match(ordinary.stderr, /BLOCKED LOCATION_MISMATCH: .*propose-remediation/);
 
+  // Like propose-cleanup, it runs only from a committed source: without one it is refused before anything is read or written.
+  const unverified: string[] = [];
+  const noSource = await runApplyCommand(["propose-remediation", "--sealed", sealedPlanPath, ...requesterArgs()], {
+    terminal: terminal([]), env: w.deps.env, now: () => NOW, contractPath: w.contractPath, evidenceDir: w.dirs.evidence, proposalsDir, sourceCommit: undefined,
+    sourceResolver: () => ({ ok: false as const, reason: "recorded by the test" }), stdout: () => undefined, stderr: (t) => { unverified.push(t); },
+  });
+  assert.equal(noSource, 2);
+  assert.match(unverified.join(""), /BLOCKED SOURCE_UNVERIFIED/);
+
   const proposed = await cli(["propose-remediation", "--sealed", sealedPlanPath, ...requesterArgs()]);
   assert.equal(proposed.code, 0, proposed.stderr);
   assert.deepEqual(proposed.term.asked, [], "a proposal authorizes nothing and asks no phrase");
