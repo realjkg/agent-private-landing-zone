@@ -157,7 +157,7 @@ const ZIP_LOCAL = 0x04034b50;
 const ZIP_CENTRAL = 0x02014b50;
 const ZIP_END = 0x06054b50;
 /** One central-directory record: where its entry is and how it is stored. Nothing is inflated here. */
-export type ZipRecord = { name: string; method: number; encrypted: boolean; compressed: number; declared: number; data: number };
+export type ZipRecord = { name: string; method: number; encrypted: boolean; compressed: number; declared: number; data: number; mismatch: boolean };
 /** The most bytes all entries of one zip may inflate to, together; past it the zip fails closed. One entry may inflate to 64 MB. */
 export const ZIP_INFLATE_BUDGET = 256 * 1024 * 1024;
 const ZIP_ENTRY_LIMIT = 64 * 1024 * 1024;
@@ -190,11 +190,20 @@ export function zipDirectory(bytes: Buffer): ZipRecord[] | string {
       locals.add(local);
       const name = bytes.subarray(offset + 46, offset + 46 + nameLength).toString("utf8");
       let data = -1;
+      let mismatch = false;
       if (local + 30 <= bytes.length && bytes.readUInt32LE(local) === ZIP_LOCAL) {
-        data = local + 30 + bytes.readUInt16LE(local + 26) + bytes.readUInt16LE(local + 28);
+        const localNameLength = bytes.readUInt16LE(local + 26);
+        data = local + 30 + localNameLength + bytes.readUInt16LE(local + 28);
         if (data + compressed > bytes.length) data = -1;
+        // Unzip tools follow the local header; the guard reads the directory. Any disagreement could show a tool one thing and
+        // the guard another, so it is refused. Sizes are compared unless a data descriptor (flag bit 3) carries them instead.
+        const localFlags = bytes.readUInt16LE(local + 6);
+        const localName = local + 30 + localNameLength <= bytes.length ? bytes.subarray(local + 30, local + 30 + localNameLength).toString("utf8") : undefined;
+        const descriptor = ((flags | localFlags) & 0x8) !== 0;
+        mismatch = localFlags !== flags || bytes.readUInt16LE(local + 8) !== method || localName !== name ||
+          (!descriptor && (bytes.readUInt32LE(local + 18) !== compressed || bytes.readUInt32LE(local + 22) !== declared));
       }
-      records.push({ name, method, encrypted: (flags & 1) === 1, compressed, declared, data });
+      records.push({ name, method, encrypted: (flags & 1) === 1, compressed, declared, data, mismatch });
       offset += 46 + nameLength + extra + comment;
     }
     return records;
@@ -209,6 +218,7 @@ export function zipDirectory(bytes: Buffer): ZipRecord[] | string {
 export function readZipEntry(bytes: Buffer, record: ZipRecord, limit: number): Buffer | { problem: string; overBudget?: true } {
   if (record.name.endsWith("/")) return Buffer.alloc(0);
   if (record.encrypted) return { problem: "an encrypted zip entry, which cannot be judged: " + record.name };
+  if (record.mismatch) return { problem: "a zip entry whose local header disagrees with its directory record: " + record.name };
   if (record.data < 0) return { problem: "a zip entry that cannot be read: " + record.name };
   const cap = Math.min(limit, ZIP_ENTRY_LIMIT);
   if (record.declared > cap) return { problem: "a zip entry larger than the inflation budget: " + record.name, overBudget: true };
@@ -231,33 +241,70 @@ export const zipEntryNames = (bytes: Buffer): string[] | undefined => {
 };
 const PLAN_ENTRY = /^(?:tfplan|tfstate|tfstate-prev|tfconfig\/.*)$/;
 
-/** The text forms of a file worth matching: as read, UTF-16 decoded, one gzip layer, and one base64 layer. Each is cheap to skip. */
-function views(bytes: Buffer): string[] {
-  const out: string[] = [];
+const GZIP_LAYER_LIMIT = 64 * 1024 * 1024;
+const BASE64_DECODE_LIMIT = 16 * 1024 * 1024;
+/** True when every byte is base64 or base64url text or white space, and there are at least 24 of them: a decodable candidate. */
+function base64Shaped(bytes: Buffer): boolean {
+  let significant = 0;
+  for (const byte of bytes) {
+    if (byte === 0x20 || byte === 0x09 || byte === 0x0a || byte === 0x0d) continue;
+    const ok = (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a) || (byte >= 0x30 && byte <= 0x39) ||
+      byte === 0x2b || byte === 0x2f || byte === 0x5f || byte === 0x2d || byte === 0x3d;
+    if (!ok) return false;
+    significant++;
+  }
+  return significant >= 24;
+}
+
+/**
+ * The text forms of a file worth matching: as read, UTF-16 decoded, one gzip layer, and one base64 layer (and gzip inside it).
+ * A layer the guard cannot read is a problem, never a pass: a gzip that is truncated, damaged or larger than its limit (64 MB,
+ * and never more than `limit`, what is left of an enclosing zip's budget), and a base64 file larger than the decode limit.
+ */
+function views(bytes: Buffer, limit: number): { texts: string[]; problems: string[]; inflated: number } {
+  const texts: string[] = [];
+  const problems: string[] = [];
+  let inflated = 0;
   const addText = (buffer: Buffer) => {
-    if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) { out.push(new TextDecoder("utf-16le").decode(buffer.subarray(2))); return; }
-    if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) { out.push(new TextDecoder("utf-16be").decode(buffer.subarray(2))); return; }
+    if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) { texts.push(new TextDecoder("utf-16le").decode(buffer.subarray(2))); return; }
+    if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) { texts.push(new TextDecoder("utf-16be").decode(buffer.subarray(2))); return; }
     const sample = buffer.subarray(0, 4096);
     const nul = sample.reduce((n, byte) => n + (byte === 0 ? 1 : 0), 0);
-    if (sample.length >= 8 && nul * 3 >= sample.length) out.push(new TextDecoder(sample[0] === 0 ? "utf-16be" : "utf-16le").decode(buffer));
+    if (sample.length >= 8 && nul * 3 >= sample.length) texts.push(new TextDecoder(sample[0] === 0 ? "utf-16be" : "utf-16le").decode(buffer));
     const text = buffer.toString("utf8");
-    out.push(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
+    texts.push(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
   };
-  const gunzip = (buffer: Buffer): Buffer | undefined => {
+  const gunzip = (buffer: Buffer, what: string): Buffer | undefined => {
     if (buffer.length < 2 || buffer[0] !== 0x1f || buffer[1] !== 0x8b) return undefined;
-    try { return gunzipSync(buffer, { maxOutputLength: 64 * 1024 * 1024 }); } catch { return undefined; }
+    const cap = Math.max(0, Math.min(GZIP_LAYER_LIMIT, limit - inflated));
+    try {
+      const out = gunzipSync(buffer, { maxOutputLength: Math.max(1, cap) });
+      if (out.length > cap) throw Object.assign(new RangeError("over"), { code: "ERR_BUFFER_TOO_LARGE" });
+      inflated += out.length;
+      return out;
+    } catch (error) {
+      problems.push((error as NodeJS.ErrnoException)?.code === "ERR_BUFFER_TOO_LARGE"
+        ? what + " gzip layer larger than the inflation limit, which cannot be judged"
+        : what + " gzip layer that is truncated or cannot be read");
+      return undefined;
+    }
   };
   addText(bytes);
-  const unzipped = gunzip(bytes);
+  const unzipped = gunzip(bytes, "a");
   if (unzipped) addText(unzipped);
-  const compact = bytes.length <= 16 * 1024 * 1024 ? bytes.toString("latin1").replace(/\s+/g, "") : "";
-  if (compact.length >= 24 && /^[A-Za-z0-9+/_-]+={0,2}$/.test(compact)) {
-    const decoded = Buffer.from(compact, compact.includes("-") || compact.includes("_") ? "base64url" : "base64");
-    addText(decoded);
-    const inner = gunzip(decoded);
-    if (inner) addText(inner);
+  if (base64Shaped(bytes)) {
+    if (bytes.length > BASE64_DECODE_LIMIT) problems.push("a base64 file larger than the decode limit, which cannot be judged");
+    else {
+      const compact = bytes.toString("latin1").replace(/\s+/g, "");
+      if (/^[A-Za-z0-9+/_-]+={0,2}$/.test(compact)) {
+        const decoded = Buffer.from(compact, compact.includes("-") || compact.includes("_") ? "base64url" : "base64");
+        addText(decoded);
+        const inner = gunzip(decoded, "a base64-wrapped");
+        if (inner) addText(inner);
+      }
+    }
   }
-  return out;
+  return { texts, problems, inflated };
 }
 
 /**
@@ -268,7 +315,13 @@ function views(bytes: Buffer): string[] {
  * entry, or a zip past the budget fails closed.
  */
 export function contentExclusions(path: string, bytes: Buffer, depth = 0, budget = ZIP_INFLATE_BUDGET): ExclusionFinding[] {
+  return judge(path, bytes, depth, budget).findings;
+}
+
+/** The findings for one file's bytes, and how many bytes judging it inflated (zip entries and gzip layers), within `budget`. */
+function judge(path: string, bytes: Buffer, depth: number, budget: number): { findings: ExclusionFinding[]; used: number } {
   const out: ExclusionFinding[] = [];
+  let used = 0;
   const add = (code: ExclusionCode, reason: string) => { if (!out.some((x) => x.code === code && x.reason === reason)) out.push(finding(path, code, reason)); };
   if (bytes.length >= 4 && bytes.readUInt32LE(0) === ZIP_LOCAL) {
     const directory = zipDirectory(bytes);
@@ -287,11 +340,17 @@ export function contentExclusions(path: string, bytes: Buffer, depth = 0, budget
           continue;
         }
         remaining -= entry.length;
-        for (const found of [...pathExclusions(record.name), ...contentExclusions(record.name, entry, depth + 1)]) add(found.code, "inside the zip, " + record.name + ": " + found.reason);
+        const inner = judge(record.name, entry, depth + 1, remaining);
+        remaining -= inner.used;
+        for (const found of [...pathExclusions(record.name), ...inner.findings]) add(found.code, "inside the zip, " + record.name + ": " + found.reason);
       }
+      used += budget - remaining;
     }
   }
-  for (const text of views(bytes)) {
+  const view = views(bytes, budget - used);
+  used += view.inflated;
+  for (const problem of view.problems) add("UNREADABLE", problem);
+  for (const text of view.texts) {
     if (PEM_PRIVATE_KEY.test(text) || PUTTY_KEY.test(text) || KUBE_CLIENT_KEY.test(text)) add("PRIVATE_KEY", "the file holds a private key");
     if (JWT.test(text)) add("TOKEN", "the file holds a JWT");
     if (GITHUB_TOKEN.test(text)) add("TOKEN", "the file holds a GitHub token");
@@ -309,7 +368,7 @@ export function contentExclusions(path: string, bytes: Buffer, depth = 0, budget
       for (const found of shapeFindings(path, value)) add(found.code, found.reason);
     }
   }
-  return out;
+  return { findings: out, used };
 }
 
 /**

@@ -19,14 +19,32 @@ if [[ -z "$STAGE" ]]; then
 fi
 # Refuse a stage the copy would land in, before anything is copied: the checkout itself, or a folder inside one of the copied
 # sources (cp would copy a folder into itself and leave a partial copy in the checkout).
+# Portable path resolution (Apple's bash 3.2 and BSD tools too; no GNU-only realpath -m or readlink -f): the longest existing
+# prefix is resolved with cd -P, and the part that does not exist yet is appended as written. That part may not hold . or ..,
+# which only the kernel could resolve once it exists.
+resolve() {
+  local path="$1" rest=""
+  case "$path" in /*) ;; *) path="$PWD/$path" ;; esac
+  while [[ ! -d "$path" ]]; do
+    local leaf
+    leaf="$(basename -- "$path")"
+    if [[ "$leaf" == "." || "$leaf" == ".." ]]; then
+      echo "release-stage: refusing a stage path with . or .. in a folder that does not exist yet: $1" >&2
+      return 1
+    fi
+    rest="/$leaf$rest"
+    path="$(dirname -- "$path")"
+  done
+  printf '%s%s\n' "$(cd -P -- "$path" && pwd -P)" "$rest"
+}
 ROOT="$(pwd -P)"
-TARGET="$(realpath -m -- "$STAGE")"
+TARGET="$(resolve "$STAGE")"
 if [[ "$TARGET" == "$ROOT" ]]; then
   echo "release-stage: refusing to stage into the checkout itself" >&2
   exit 1
 fi
 for source in dist policy config; do
-  source_abs="$(realpath -m -- "$source")"
+  source_abs="$(resolve "$source")"
   if [[ "$TARGET" == "$source_abs" || "$TARGET/" == "$source_abs"/* ]]; then
     echo "release-stage: refusing to stage inside $source/, which is copied into the stage" >&2
     exit 1
@@ -57,15 +75,15 @@ chmod +x -- "$STAGE_ABS/alz"
 # folder, so no character in a name or in STAGE can split a name or point the removal anywhere else; a path that does not
 # resolve inside the stage is refused, never removed.
 # The list is read completely before anything is removed, and a find that fails stops the script (a process substitution
-# would hide its exit status, so the list goes through a private temporary file).
+# would hide its exit status, so the list goes through a private temporary file, read NUL-separated; no mapfile, which
+# Apple's bash 3.2 lacks).
 owned_list="$(mktemp)"
 trap 'rm -f -- "$owned_list"' EXIT
 if ! (cd -- "$STAGE_ABS/config" && find . \( \( -name 'act-pilot-contract*' ! -name '*.example.json' \) -o -path './evidence-runner.json' \) -prune -print0) > "$owned_list"; then
   echo "release-stage: could not list the staged config/ folder; the stage is incomplete" >&2
   exit 1
 fi
-mapfile -d '' -t owned_files < "$owned_list"
-for owned in "${owned_files[@]}"; do
+while IFS= read -r -d '' owned; do
   relative="${owned#./}"
   target="$STAGE_ABS/config/$relative"
   parent="$(cd -- "$(dirname -- "$target")" && pwd -P)"
@@ -75,4 +93,4 @@ for owned in "${owned_files[@]}"; do
   esac
   printf "release-stage: left out the owner's config/%s\n" "$relative"
   rm -rf -- "$target"
-done
+done < "$owned_list"

@@ -21,6 +21,8 @@ import {
 const repository = fileURLToPath(new URL("../", import.meta.url));
 const tsx = resolve(repository, "node_modules/.bin/tsx");
 const cli = resolve(repository, "src/cli/release-package.ts");
+/** The shell the staging tests run the script with: bash on PATH, or Apple's /bin/bash 3.2 in the macOS job (ALZ_STAGE_SHELL). */
+const STAGE_SHELL = process.env.ALZ_STAGE_SHELL ?? "bash";
 const b64url = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
 const jwt = () => [b64url({ alg: "RS256", typ: "JWT" }), b64url({ sub: "repo:example/example:environment:act-dev", aud: "sts.amazonaws.com", exp: 1 }), "s".repeat(43)].join(".");
 const pem = (type: "pkcs8" | "pkcs1") => generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type, format: "pem" }).toString();
@@ -207,7 +209,7 @@ function checkout(): string {
 /** Stages exactly as supply-chain.yml does: scripts/release-stage.sh, run from the checkout's root. */
 function stage(source = checkout()): { root: string; stdout: string; source: string } {
   const root = join(mkdtempSync(join(tmpdir(), "alz-pkg-")), "stage");
-  const run = spawnSync("bash", [join(repository, "scripts/release-stage.sh"), root], { cwd: source, encoding: "utf8", timeout: 60000 });
+  const run = spawnSync(STAGE_SHELL, [join(repository, "scripts/release-stage.sh"), root], { cwd: source, encoding: "utf8", timeout: 60000 });
   assert.equal(run.status, 0, run.stderr);
   return { root, stdout: run.stdout, source };
 }
@@ -303,6 +305,57 @@ test("zip inflation is bounded: shared entries, a zip past its total budget and 
   }
 });
 
+test("a layer the guard cannot read fails closed: an oversized or damaged gzip, standalone or in a zip, and an oversized base64 file", () => {
+  const mb = 1024 * 1024;
+  const credentials = Buffer.from("[default]\naws_access_key_id = x\naws_secret_access_key = y\n");
+  // The review's probe: 70 MB of spaces, then credentials, gzipped to about 71 KB.
+  const padded = gzipSync(Buffer.concat([Buffer.alloc(70 * mb, 0x20), credentials]));
+  assert.ok(padded.length < 200 * 1024);
+  assert.match(reasons(contentExclusions("dist/big-gz-creds.gz", padded)), /UNREADABLE: a gzip layer larger than the inflation limit/);
+  assert.match(reasons(contentExclusions("work/zip-biggz-creds.zip", zipFiles([["creds.gz", padded]]))), /UNREADABLE: inside the zip, creds\.gz: a gzip layer larger than the inflation limit/);
+  // Inside a zip, a gzip layer counts against what is left of the zip's budget.
+  const small = gzipSync(Buffer.concat([Buffer.alloc(2 * mb, 0x20), credentials]));
+  assert.match(reasons(contentExclusions("work/budget.zip", zipFiles([["a.bin", Buffer.alloc(2 * mb)], ["creds.gz", small]], 8), 0, 3 * mb)), /creds\.gz: a gzip layer larger than the inflation limit/);
+  assert.match(reasons(contentExclusions("work/budget.zip", zipFiles([["a.bin", Buffer.alloc(2 * mb)], ["creds.gz", small]], 8), 0, 6 * mb)), /CLOUD_CREDENTIALS/, "within the budget the layer is read");
+  // The same credentials without padding are judged, and a truncated gzip fails closed.
+  assert.match(reasons(contentExclusions("dist/creds.gz", gzipSync(credentials))), /CLOUD_CREDENTIALS/);
+  const truncated = gzipSync(credentials).subarray(0, 20);
+  assert.match(reasons(contentExclusions("dist/cut.gz", truncated)), /UNREADABLE: a gzip layer that is truncated or cannot be read/);
+  // A base64 file past the decode limit is refused, not skipped; one under it is decoded and judged.
+  const big64 = Buffer.from(Buffer.concat([credentials, Buffer.alloc(13 * mb, 0x20)]).toString("base64"));
+  assert.ok(big64.length > 16 * mb);
+  assert.match(reasons(contentExclusions("dist/big.b64", big64)), /UNREADABLE: a base64 file larger than the decode limit/);
+  assert.match(reasons(contentExclusions("dist/small.b64", Buffer.from(credentials.toString("base64")))), /CLOUD_CREDENTIALS/);
+});
+
+test("a zip entry whose local header disagrees with its directory record is refused", () => {
+  const credentials = Buffer.from("[default]\naws_access_key_id = x\naws_secret_access_key = y\n");
+  const base = zipFiles([["creds.txt", credentials]], 8);
+  const centralAt = base.length - 22 - 46 - "creds.txt".length;
+  // The review's probe: the directory says stored, the local header says deflated (unzip follows the local header).
+  const method = Buffer.from(base); method.writeUInt16LE(0, centralAt + 10);
+  assert.match(reasons(contentExclusions("work/central-stored-local-deflate.zip", method)), /UNREADABLE: a zip entry whose local header disagrees with its directory record: creds\.txt/);
+  const flags = Buffer.from(base); flags.writeUInt16LE(1, 6);
+  assert.match(reasons(contentExclusions("work/local-encrypted.zip", flags)), /disagrees with its directory record/);
+  const name = Buffer.from(base); name.write("x", 30);
+  assert.match(reasons(contentExclusions("work/local-name.zip", name)), /disagrees with its directory record/);
+  const size = Buffer.from(base); size.writeUInt32LE(size.readUInt32LE(22) + 1, 22);
+  assert.match(reasons(contentExclusions("work/local-size.zip", size)), /disagrees with its directory record/);
+  assert.match(reasons(contentExclusions("work/agreeing.zip", base)), /CLOUD_CREDENTIALS/, "an agreeing zip is read");
+});
+
+test("the stage script stays portable to Apple's bash 3.2 and BSD tools, and the macOS job runs its tests there", () => {
+  const script = readFileSync(join(repository, "scripts/release-stage.sh"), "utf8").split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
+  for (const [pattern, what] of [
+    [/\brealpath\b/, "realpath (no -m on BSD)"], [/readlink -f/, "readlink -f"], [/\bmapfile\b|\breadarray\b/, "mapfile (bash 4)"],
+    [/declare -A|local -A/, "associative arrays (bash 4)"], [/\$\{[A-Za-z_]+(?:,,|\^\^)\}/, "case conversion (bash 4)"], [/\|&|&>>/, "bash 4 redirections"],
+    [/--sort|--mtime|-printf|sed -i|cp -a|stat -c|--null|xargs -r/, "GNU-only flags"],
+  ] as const) assert.doesNotMatch(script, pattern, what);
+  const mac = readFileSync(join(repository, ".github/workflows/act-identity-macos.yml"), "utf8");
+  assert.match(mac, /ALZ_STAGE_SHELL: \/bin\/bash\n\s+run: npx tsx --test --test-name-pattern "\^staging" test\/release-package-exclusions\.test\.ts$/m);
+  for (const path of ["scripts/release-stage.sh", "test/release-package-exclusions.test.ts"]) assert.ok(mac.includes("      - " + path + "\n"), path + " starts the macOS job");
+});
+
 test("an HTML-escaped SAS URL is found", () => {
   const sas = "https://acct.blob.example.net/c?sv=2022-11-02&amp;se=2030-01-01&amp;sig=" + "abcdEFGH1234abcd%3D";
   assert.deepEqual(contentExclusions("dist/page.html", Buffer.from('<a href="' + sas + '">x</a>')).map((x) => x.code), ["TOKEN"]);
@@ -313,8 +366,9 @@ test("staging refuses a stage inside the checkout or a copied source before anyt
   const source = checkout();
   const tools = mkdtempSync(join(tmpdir(), "alz-pkg-tools-"));
   try {
-    for (const [stagePath, message] of [[".", /into the checkout itself/], ["dist/stage", /inside dist\//], ["config/x/stage", /inside config\//], ["policy", /inside policy\//]] as const) {
-      const run = spawnSync("bash", [join(repository, "scripts/release-stage.sh"), stagePath], { cwd: source, encoding: "utf8" });
+    for (const [stagePath, message] of [[".", /into the checkout itself/], ["dist/stage", /inside dist\//], ["config/x/stage", /inside config\//], ["policy", /inside policy\//], ["config/../dist/stage", /inside dist\//],
+      ["missing/../dist/stage", /\. or \.\. in a folder that does not exist yet/]] as const) {
+      const run = spawnSync(STAGE_SHELL, [join(repository, "scripts/release-stage.sh"), stagePath], { cwd: source, encoding: "utf8" });
       assert.notEqual(run.status, 0, stagePath);
       assert.match(run.stderr, message, stagePath);
     }
@@ -323,7 +377,7 @@ test("staging refuses a stage inside the checkout or a copied source before anyt
     // A find that fails stops the script with a clear message, never a stage that silently kept the owner's files.
     writeFileSync(join(tools, "find"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
     const stage = join(tools, "stage");
-    const failed = spawnSync("bash", [join(repository, "scripts/release-stage.sh"), stage], { cwd: source, encoding: "utf8", env: { ...process.env, PATH: tools + ":" + process.env.PATH } });
+    const failed = spawnSync(STAGE_SHELL, [join(repository, "scripts/release-stage.sh"), stage], { cwd: source, encoding: "utf8", env: { ...process.env, PATH: tools + ":" + process.env.PATH } });
     assert.notEqual(failed.status, 0);
     assert.match(failed.stderr, /could not list the staged config\/ folder/);
   } finally {
@@ -336,11 +390,11 @@ test("staging refuses a folder that is not empty and a checkout that is not buil
   const busy = mkdtempSync(join(tmpdir(), "alz-pkg-busy-"));
   try {
     writeFileSync(join(busy, "left.txt"), "x");
-    const full = spawnSync("bash", [join(repository, "scripts/release-stage.sh"), busy], { cwd: source, encoding: "utf8" });
+    const full = spawnSync(STAGE_SHELL, [join(repository, "scripts/release-stage.sh"), busy], { cwd: source, encoding: "utf8" });
     assert.notEqual(full.status, 0);
     assert.match(full.stderr, /is not empty/);
     rmSync(join(source, "dist"), { recursive: true });
-    const unbuilt = spawnSync("bash", [join(repository, "scripts/release-stage.sh"), join(busy, "s")], { cwd: source, encoding: "utf8" });
+    const unbuilt = spawnSync(STAGE_SHELL, [join(repository, "scripts/release-stage.sh"), join(busy, "s")], { cwd: source, encoding: "utf8" });
     assert.notEqual(unbuilt.status, 0);
     assert.match(unbuilt.stderr, /dist is missing/);
   } finally {
@@ -357,10 +411,10 @@ test("staging names are read NUL-separated and removed only inside the stage: a 
     writeFileSync(join(source, ".json"), "checkout file\n");
     writeFileSync(join(source, "config", ".json"), "checkout file\n");
     for (const name of ["g[x]* stage", "-dash-stage"]) {
-      const run = spawnSync("bash", [join(repository, "scripts/release-stage.sh"), name], { cwd: parent, encoding: "utf8", timeout: 60000, env: { ...process.env } });
+      const run = spawnSync(STAGE_SHELL, [join(repository, "scripts/release-stage.sh"), name], { cwd: parent, encoding: "utf8", timeout: 60000, env: { ...process.env } });
       // The script stages from the checkout it runs in.
       assert.notEqual(run.status, 0, "a folder that is not a checkout is refused");
-      const staged = spawnSync("bash", ["-c", 'cd "$1" && "$2" "$3"', "stage", source, join(repository, "scripts/release-stage.sh"), join(parent, name)], { encoding: "utf8", timeout: 60000 });
+      const staged = spawnSync(STAGE_SHELL, [join(repository, "scripts/release-stage.sh"), join(parent, name)], { cwd: source, encoding: "utf8", timeout: 60000 });
       assert.equal(staged.status, 0, staged.stderr);
       const stageConfig = join(parent, name, "config");
       assert.equal(existsSync(join(stageConfig, "act-pilot-contract\n.json")), false, name + ": the newline name is left out");
