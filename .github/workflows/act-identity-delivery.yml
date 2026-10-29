@@ -1,0 +1,278 @@
+name: ACT identity delivery (DEV pilot)
+
+# Option A of D4 (owner decision of 2026-10-28): short-lived GitHub OIDC tokens for the DEV pilot identities, delivered to the
+# owner's own self-hosted runner and nowhere else. Design, threat analysis and the owner's settings checklist:
+# docs/act-pilot-identity-delivery.md.
+#
+# - Started only by a person (workflow_dispatch) from main. No pull_request, pull_request_target, push, schedule,
+#   issue_comment, workflow_run or workflow_call trigger, ever (test/act-identity-delivery-workflow.test.ts).
+# - One job per identity, each in its own protected environment (required reviewer: the owner; deployment branch: main only),
+#   so each token carries its own subject. Only the dedicated runner label runs them; the runner's job-started hook
+#   (scripts/act-identity-runner-hook.sh, installed by the owner) refuses every other workflow, ref and event.
+# - No checkout and no action: the jobs run only the reviewed scripts below. The token goes to a 0600 file in a 0700 directory
+#   on the runner host, is re-minted before it expires, and is deleted when the delivery ends, fails or is canceled.
+#   It never reaches a log, an artifact, an output, a cache or the repository.
+# - The jobs never run an engine and never exchange a token for a cloud credential. The person at the terminal runs the
+#   driver (./alz apply ...), which keeps every approval, phrase and gate. ACT stays DISABLED.
+
+on:
+  workflow_dispatch:
+    inputs:
+      path:
+        description: "Release path whose identities to deliver"
+        required: true
+        type: choice
+        options:
+          - aws-terraform
+          - aws-cdk
+          - azure-terraform
+          - azure-bicep
+          - gcp-terraform
+          - gcp-api
+      hold_minutes:
+        description: "Minutes to hold and refresh the tokens before they are deleted"
+        required: true
+        default: "30"
+        type: choice
+        options:
+          - "15"
+          - "30"
+          - "45"
+          - "60"
+
+permissions: {}
+
+concurrency:
+  group: act-identity-delivery
+  cancel-in-progress: false
+
+jobs:
+  deliver:
+    name: Deliver ${{ matrix.identity }}
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, alz-identity-delivery]
+    timeout-minutes: 75
+    environment: act-dev-${{ fromJSON('{"aws-terraform":"aws-terraform","aws-cdk":"aws-cdk","azure-terraform":"azure","azure-bicep":"azure","gcp-terraform":"gcp-terraform","gcp-api":"gcp-api"}')[inputs.path] }}-${{ fromJSON('{"DISCOVERY":"discovery","STATE":"state","STATE_WRITE":"state-write","APPLY":"apply","CHANGESET":"changeset"}')[matrix.identity] }}
+    permissions:
+      id-token: write
+    strategy:
+      fail-fast: true
+      max-parallel: 4
+      matrix:
+        identity: ${{ fromJSON('{"aws-terraform":["DISCOVERY","STATE","STATE_WRITE","APPLY"],"aws-cdk":["DISCOVERY","CHANGESET","APPLY"],"azure-terraform":["DISCOVERY","STATE","STATE_WRITE","APPLY"],"azure-bicep":["DISCOVERY","APPLY"],"gcp-terraform":["DISCOVERY","STATE","STATE_WRITE","APPLY"],"gcp-api":["DISCOVERY","APPLY"]}')[inputs.path] }}
+    env:
+      ALZ_DELIVERY_PATH: ${{ inputs.path }}
+      ALZ_DELIVERY_IDENTITY: ${{ matrix.identity }}
+      ALZ_DELIVERY_ENVIRONMENT: act-dev-${{ fromJSON('{"aws-terraform":"aws-terraform","aws-cdk":"aws-cdk","azure-terraform":"azure","azure-bicep":"azure","gcp-terraform":"gcp-terraform","gcp-api":"gcp-api"}')[inputs.path] }}-${{ fromJSON('{"DISCOVERY":"discovery","STATE":"state","STATE_WRITE":"state-write","APPLY":"apply","CHANGESET":"changeset"}')[matrix.identity] }}
+      ALZ_DELIVERY_REPOSITORY: ${{ github.repository }}
+      ALZ_DELIVERY_RUN_ID: ${{ github.run_id }}
+      ALZ_DELIVERY_HOLD_MINUTES: ${{ inputs.hold_minutes }}
+      ALZ_DELIVERY_REFRESH_SECONDS: "60"
+      ALZ_DELIVERY_GCP_AUDIENCE: ${{ vars.ALZ_GCP_WIF_AUDIENCE }}
+      # SHA-256 of scripts/act-identity-runner-hook.sh as reviewed. A runner instance whose job-started hook is not this exact
+      # file is refused before any token is minted (test/act-identity-delivery-workflow.test.ts keeps the two equal).
+      ALZ_RUNNER_HOOK_SHA256: "569a1d6fcf50fe01cb14175a05e3606c82d173e3d610d87c43cb88a64682ff22"
+    steps:
+      - name: Hold a refreshed identity token
+        shell: node {0}
+        run: |
+          "use strict";
+          // Mints this job's OIDC token, writes it privately, re-mints it until the hold ends or the person releases it, then
+          // deletes it. Prints names and times only, never a token. Exit 0 released or hold ended, 1 refused or failed.
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const crypto = require("node:crypto");
+          const PATHS = {
+            "aws-terraform": { scope: "aws-terraform", identities: ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"], audience: "sts.amazonaws.com" },
+            "aws-cdk": { scope: "aws-cdk", identities: ["DISCOVERY", "CHANGESET", "APPLY"], audience: "sts.amazonaws.com" },
+            "azure-terraform": { scope: "azure", identities: ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"], audience: "api://AzureADTokenExchange" },
+            "azure-bicep": { scope: "azure", identities: ["DISCOVERY", "APPLY"], audience: "api://AzureADTokenExchange" },
+            "gcp-terraform": { scope: "gcp-terraform", identities: ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"], audience: null },
+            "gcp-api": { scope: "gcp-api", identities: ["DISCOVERY", "APPLY"], audience: null },
+          };
+          const SLUG = { DISCOVERY: "discovery", STATE: "state", STATE_WRITE: "state-write", APPLY: "apply", CHANGESET: "changeset" };
+          const WIF = /^\/\/iam\.googleapis\.com\/projects\/[0-9]{1,24}\/locations\/global\/workloadIdentityPools\/[a-z0-9-]{4,32}\/providers\/[a-z0-9-]{4,32}$/;
+          const PLAIN = /^\/[A-Za-z0-9._\/-]{1,400}$/;
+          const JWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/;
+          const MIN_REMAINING = 60;
+          const e = process.env;
+          const say = (text) => process.stdout.write(text + "\n");
+          const refuse = (text) => { throw new Error(text); };
+          const uid = process.getuid();
+          let tokenFile, metaFile, written = false;
+          const cleanup = () => {
+            if (!tokenFile) return;
+            for (const file of [tokenFile, metaFile, tokenFile + ".tmp-" + process.pid, metaFile + ".tmp-" + process.pid]) {
+              try { fs.unlinkSync(file); } catch {}
+            }
+            if (written) say("Deleted the " + e.ALZ_DELIVERY_IDENTITY + " token and its metadata.");
+          };
+          for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) {
+            process.on(signal, () => { cleanup(); process.exit(code); });
+          }
+          const privateDir = (dir, what) => {
+            const stat = fs.lstatSync(dir);
+            if (stat.isSymbolicLink() || !stat.isDirectory()) refuse(what + " is not a directory");
+            if (stat.uid !== uid || (stat.mode & 0o077) !== 0) refuse(what + " is not private to the runner user (owner only, mode 0700)");
+            if (fs.realpathSync(dir) !== dir) refuse(what + " is not its own real path");
+          };
+          const writePrivate = (file, text) => {
+            const temporary = file + ".tmp-" + process.pid;
+            const fd = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+            try { fs.writeSync(fd, text); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+            fs.renameSync(temporary, file);
+          };
+          const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          async function main() {
+            const spec = Object.hasOwn(PATHS, e.ALZ_DELIVERY_PATH ?? "") ? PATHS[e.ALZ_DELIVERY_PATH] : refuse("unknown path");
+            const identity = e.ALZ_DELIVERY_IDENTITY;
+            if (!spec.identities.includes(identity)) refuse("the identity is not one of the path's identities");
+            const environment = "act-dev-" + spec.scope + "-" + SLUG[identity];
+            if (e.ALZ_DELIVERY_ENVIRONMENT !== environment) refuse("the job's environment is not " + environment);
+            const repository = e.ALZ_DELIVERY_REPOSITORY ?? "";
+            if (!/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/.test(repository)) refuse("the repository is not OWNER/REPO");
+            const runId = e.ALZ_DELIVERY_RUN_ID ?? "";
+            if (!/^[0-9]{1,20}$/.test(runId)) refuse("the run id is not a number");
+            const holdMinutes = Number(e.ALZ_DELIVERY_HOLD_MINUTES);
+            if (![15, 30, 45, 60].includes(holdMinutes)) refuse("the hold is not 15, 30, 45 or 60 minutes");
+            const refreshSeconds = Number(e.ALZ_DELIVERY_REFRESH_SECONDS);
+            if (!Number.isInteger(refreshSeconds) || refreshSeconds < 5 || refreshSeconds > 120) refuse("the refresh interval is not 5 to 120 seconds");
+            let audience = spec.audience;
+            if (audience === null) {
+              if (!WIF.test(e.ALZ_DELIVERY_GCP_AUDIENCE ?? "")) refuse("the environment variable ALZ_GCP_WIF_AUDIENCE is not a workload identity pool provider name");
+              audience = "https:" + e.ALZ_DELIVERY_GCP_AUDIENCE;
+            }
+            const requestUrl = e.ACTIONS_ID_TOKEN_REQUEST_URL, requestToken = e.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+            if (!requestUrl || !requestToken) refuse("this job cannot request an OIDC token (id-token: write)");
+            const root = e.ALZ_IDENTITY_DELIVERY_ROOT ?? "";
+            if (!PLAIN.test(root)) refuse("ALZ_IDENTITY_DELIVERY_ROOT is not set to an absolute path in the runner's .env");
+            privateDir(root, "ALZ_IDENTITY_DELIVERY_ROOT");
+            // Defense in depth: this instance must run the reviewed job-started hook, configured for this repository and this
+            // instance's own work directory, or no token is minted here.
+            const hook = e.ACTIONS_RUNNER_HOOK_JOB_STARTED ?? "";
+            if (!PLAIN.test(hook)) refuse("this runner names no job-started hook (ACTIONS_RUNNER_HOOK_JOB_STARTED)");
+            const ownerFile = (file, what, mask) => {
+              let stat;
+              try { stat = fs.lstatSync(file); } catch { refuse(what + " is missing"); }
+              if (stat.isSymbolicLink() || !stat.isFile() || stat.uid !== uid || (stat.mode & mask) !== 0) refuse(what + " is not an owner-only regular file");
+            };
+            ownerFile(hook, "the job-started hook", 0o022);
+            if (!/^[0-9a-f]{64}$/.test(e.ALZ_RUNNER_HOOK_SHA256 ?? "") || crypto.createHash("sha256").update(fs.readFileSync(hook)).digest("hex") !== e.ALZ_RUNNER_HOOK_SHA256) {
+              refuse("this runner's job-started hook is not the reviewed script");
+            }
+            const conf = path.join(path.dirname(hook), "act-identity-runner-hook.conf");
+            ownerFile(conf, "the hook configuration", 0o077);
+            const settings = Object.fromEntries(fs.readFileSync(conf, "utf8").split("\n").map((line) => /^(REPOSITORY|RUNNER_WORK|NODE)=(.+)$/.exec(line)).filter(Boolean).map((m) => [m[1], m[2]]));
+            if (settings.REPOSITORY !== repository) refuse("the hook configuration names another repository");
+            if (typeof settings.RUNNER_WORK !== "string" || e.GITHUB_EVENT_PATH !== settings.RUNNER_WORK + "/_temp/_github_workflow/event.json") refuse("the hook configuration is not this runner instance's");
+            const session = path.join(root, e.ALZ_DELIVERY_PATH);
+            try { fs.mkdirSync(session, { mode: 0o700 }); } catch (error) { if (error.code !== "EEXIST") throw error; }
+            privateDir(session, "the session directory");
+            if (fs.existsSync(path.join(session, "RELEASE"))) refuse("a RELEASE marker from an earlier delivery is still in the session directory; run the cleanup first");
+            const target = path.join(session, identity + ".jwt"), meta = path.join(session, identity + ".json");
+            for (const file of [target, meta]) {
+              try { fs.lstatSync(file); refuse("a token or metadata file from an earlier delivery is still present; run the cleanup first"); } catch (error) { if (error.code !== "ENOENT") throw error; }
+            }
+            tokenFile = target; metaFile = meta;
+            const holdUntil = Date.now() + holdMinutes * 60 * 1000;
+            const mint = async () => {
+              const url = new URL(requestUrl);
+              url.searchParams.set("audience", audience);
+              const response = await fetch(url, { headers: { authorization: "bearer " + requestToken, accept: "application/json" }, redirect: "error", signal: AbortSignal.timeout(30000) });
+              if (!response.ok) refuse("the token service answered " + response.status);
+              const body = await response.json();
+              const token = body && body.value;
+              if (typeof token !== "string" || token.length > 16384 || !JWT.test(token)) refuse("the token service did not return a JWT");
+              const claims = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"));
+              const now = Date.now() / 1000;
+              if (claims.iss !== "https://token.actions.githubusercontent.com") refuse("the token's issuer is not GitHub Actions");
+              if (claims.aud !== audience) refuse("the token's audience is not " + audience);
+              if (typeof claims.sub !== "string" || !claims.sub.startsWith("repo:") || !claims.sub.endsWith(":environment:" + environment)) refuse("the token's subject is not bound to the environment " + environment);
+              if (claims.environment !== environment || claims.repository !== repository || String(claims.run_id) !== runId) refuse("the token names another environment, repository or run");
+              if (typeof claims.exp !== "number" || claims.exp - now < MIN_REMAINING) refuse("the token expires within " + MIN_REMAINING + " seconds of being minted");
+              return { token, claims };
+            };
+            const deliver = async () => {
+              const { token, claims } = await mint();
+              writePrivate(target, token);
+              written = true;
+              writePrivate(meta, JSON.stringify({
+                schemaVersion: 1, kind: "alz-identity-delivery", path: e.ALZ_DELIVERY_PATH, identity, environment, audience, repository, runId,
+                subject: claims.sub, refreshedAt: new Date().toISOString(), tokenExpiresAt: new Date(claims.exp * 1000).toISOString(),
+                holdUntil: new Date(holdUntil).toISOString(), refreshSeconds,
+              }) + "\n");
+              return claims;
+            };
+            const first = await deliver();
+            say("Delivered " + identity + " for " + environment + " (sub " + first.sub + ", aud " + audience + "), expiring in " + Math.round(first.exp - Date.now() / 1000) + " s.");
+            say("Re-minted every " + refreshSeconds + " s until " + new Date(holdUntil).toISOString() + ", or until <root>/" + e.ALZ_DELIVERY_PATH + "/RELEASE exists.");
+            let next = Date.now() + refreshSeconds * 1000;
+            for (;;) {
+              await sleep(1000);
+              if (fs.existsSync(path.join(session, "RELEASE"))) { say("Released by the person at the terminal."); return; }
+              if (Date.now() >= holdUntil) { say("The hold ended."); return; }
+              if (Date.now() >= next) { await deliver(); next = Date.now() + refreshSeconds * 1000; }
+            }
+          }
+          main().then(() => { cleanup(); process.exit(0); }, (error) => {
+            cleanup();
+            process.stderr.write("IDENTITY_DELIVERY_REFUSED: " + (error instanceof Error ? error.message : "unexpected failure") + "\n");
+            process.exit(1);
+          });
+
+      - name: Remove the identity token
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Runs after a failure or a cancellation too. Deletes only this job's own files.
+          case "$ALZ_DELIVERY_PATH" in aws-terraform|aws-cdk|azure-terraform|azure-bicep|gcp-terraform|gcp-api) ;; *) exit 1 ;; esac
+          case "$ALZ_DELIVERY_IDENTITY" in DISCOVERY|STATE|STATE_WRITE|APPLY|CHANGESET) ;; *) exit 1 ;; esac
+          root="${ALZ_IDENTITY_DELIVERY_ROOT:-}"
+          if [ -z "$root" ]; then exit 0; fi
+          dir="$root/$ALZ_DELIVERY_PATH"
+          rm -f -- "$dir/$ALZ_DELIVERY_IDENTITY.jwt" "$dir/$ALZ_DELIVERY_IDENTITY.json" "$dir/$ALZ_DELIVERY_IDENTITY".jwt.tmp-* "$dir/$ALZ_DELIVERY_IDENTITY".json.tmp-*
+          if [ -e "$dir/$ALZ_DELIVERY_IDENTITY.jwt" ] || [ -e "$dir/$ALZ_DELIVERY_IDENTITY.json" ]; then
+            echo "IDENTITY_DELIVERY_LEFTOVER: the $ALZ_DELIVERY_IDENTITY token or metadata file could not be removed" >&2
+            exit 1
+          fi
+
+  cleanup:
+    name: Remove the session directory
+    needs: deliver
+    if: always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, alz-identity-delivery]
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      ALZ_DELIVERY_PATH: ${{ inputs.path }}
+    steps:
+      - name: Remove the session directory and report leftovers
+        shell: node {0}
+        run: |
+          "use strict";
+          // Removes what the delivery jobs and the person may have left (tokens, metadata, partial writes, the RELEASE marker),
+          // then the session directory. Anything else is reported by name and left for the owner; the job then fails.
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const PATHS = ["aws-terraform", "aws-cdk", "azure-terraform", "azure-bicep", "gcp-terraform", "gcp-api"];
+          const OWN = /^(?:(?:DISCOVERY|STATE|STATE_WRITE|APPLY|CHANGESET)\.(?:jwt|json)(?:\.tmp-[0-9]+)?|RELEASE)$/;
+          const fail = (text) => { process.stderr.write("IDENTITY_DELIVERY_LEFTOVER: " + text + "\n"); process.exit(1); };
+          if (!PATHS.includes(process.env.ALZ_DELIVERY_PATH ?? "")) fail("unknown path");
+          const root = process.env.ALZ_IDENTITY_DELIVERY_ROOT ?? "";
+          if (root === "") process.exit(0);
+          const session = path.join(root, process.env.ALZ_DELIVERY_PATH);
+          let entries;
+          try {
+            const stat = fs.lstatSync(session);
+            if (stat.isSymbolicLink() || !stat.isDirectory()) fail("the session directory is not a directory; it was left as it is");
+            entries = fs.readdirSync(session);
+          } catch (error) {
+            if (error.code === "ENOENT") { process.stdout.write("No session directory is left.\n"); process.exit(0); }
+            throw error;
+          }
+          for (const name of entries.filter((entry) => OWN.test(entry))) fs.rmSync(path.join(session, name), { force: true });
+          const left = fs.readdirSync(session);
+          if (left.length > 0) fail("the session directory holds entries this workflow did not write: " + left.join(", "));
+          fs.rmdirSync(session);
+          process.stdout.write("Removed the session directory.\n");

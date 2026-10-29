@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,6 +13,7 @@ import type { PilotContract } from "../src/apply/types.js";
 import { pilotUnitOf } from "../src/apply/unit.js";
 import { openNonceStore } from "../src/apply/nonces.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
+import { deliverSession } from "./helpers/token-delivery-fixtures.js";
 import {
   AWS_DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, VALUE_CANARY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf,
   installFakeAwsReads, installFakeTerraform, keys, stateResource, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type Behavior, type Project,
@@ -181,6 +182,13 @@ test("observe, propose-cleanup, approve of the proposal, cleanup and verify-clea
   const leftovers = verified.data as { disposition: string; cleanupRan: boolean; resources: { address: string; disposition: string }[] };
   assert.equal(leftovers.disposition, "COMPLETE");
   assert.equal(leftovers.cleanupRan, true);
+  // Delivered identity tokens (docs/act-pilot-identity-delivery.md) are judged before verify-cleanup reads as DISCOVERY (review N4). SYNTHETIC.
+  const delivered = deliverSession("aws-terraform", NOW, { meta: { DISCOVERY: { refreshedAt: new Date(NOW.getTime() - 10 * 60 * 1000).toISOString() } } });
+  try {
+    const stale = await cli(w, ["verify-cleanup", "--proposal", proposalPath], [], { env: { ...awsIdentityEnv("DEV"), ...delivered.env } });
+    assert.equal(stale.code, 2, stale.stderr);
+    assert.match(stale.stderr, /IDENTITY_NOT_CONFIGURED: .*DISCOVERY token is stale/);
+  } finally { rmSync(delivered.root, { recursive: true, force: true }); }
 
   const reported = await cli(w, ["report", "--sealed", run.sealedPlanPath, "--proposal", proposalPath]);
   assert.equal(reported.code, 0, reported.stderr);

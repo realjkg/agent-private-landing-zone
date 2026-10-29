@@ -10,6 +10,7 @@ import {
 } from "./contract.js";
 import { engineOf } from "./engine-spec.js";
 import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from "./identities.js";
+import { checkDeliveredTokens, deliveryPathOf } from "./token-delivery.js";
 import type { PrepareBlocker } from "./prepare.js";
 import { specOf } from "./provider.js";
 import type { ActOperation, ApplyEnvironment, PilotContract } from "./types.js";
@@ -122,7 +123,11 @@ export async function assessReadiness(input: ReadinessInput): Promise<ReadinessR
   add("pilot contract enabled and authorizes APPLY in " + environment + " (required before seal)",
     authorized?.ok ? "READY" : "reason" in loaded && loaded.code === "CONTRACT_INVALID" ? "INVALID" : "MISSING",
     "OWNER", "reason" in loaded ? loaded.reason : authorized && !authorized.ok ? authorized.message : undefined);
-  const identities = checkApplyIdentities(env, spec, engine.identities);
+  const configured = checkApplyIdentities(env, spec, engine.identities);
+  // Token files the identity delivery runner wrote are judged as seal and apply judge them (docs/act-pilot-identity-delivery.md).
+  const deliveryPath = deliveryPathOf(spec.id, engine.id);
+  const delivered = configured.ok && deliveryPath ? checkDeliveredTokens({ env, path: deliveryPath, now: (input.now ?? (() => new Date()))(), repoRoot: repoPaths().root }) : configured;
+  const identities = delivered.ok ? configured : delivered;
   add("identities configured, distinct, no fallback (" + engine.identities.join(", ") + ")",
     identities.ok ? "READY" : identities.code === "IDENTITY_NOT_CONFIGURED" ? "MISSING" : "INVALID", "OPERATOR", identities.ok ? undefined : identities.message);
   const targets = verifyIdentityTargets(contract, environment, env, spec, engine.identities);
