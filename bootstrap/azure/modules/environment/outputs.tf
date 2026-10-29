@@ -20,7 +20,17 @@ output "controls" {
       STATE       = azurerm_role_assignment.state.role_definition_name
       STATE_WRITE = azurerm_role_assignment.state_write.role_definition_name
       DISCOVERY   = azurerm_role_assignment.discovery.role_definition_name
-      APPLY       = azurerm_role_assignment.apply.role_definition_name
+      APPLY       = azurerm_role_definition.apply.name
+    }
+    # APPLY's custom role (owner decision of 2026-10-28): where it is defined, where it may be assigned, where it is assigned, to
+    # whom, and exactly its actions.
+    apply_role = {
+      scope             = azurerm_role_definition.apply.scope
+      assignable_scopes = azurerm_role_definition.apply.assignable_scopes
+      actions           = azurerm_role_definition.apply.permissions[0].actions
+      not_actions       = azurerm_role_definition.apply.permissions[0].not_actions
+      assigned_scope    = azurerm_role_assignment.apply.scope
+      assigned_to       = azurerm_role_assignment.apply.principal_id
     }
     # The Bicep path's custom role (owner decision E2): where it is defined, where it may be assigned, where it is assigned, and
     # exactly its actions. Empty when the Bicep path is off.

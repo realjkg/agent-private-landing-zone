@@ -1,3 +1,4 @@
+import { AZURE_LOCATION, normalizeAzureLocation } from "../../observe/arm-id.js";
 import { identityVariables } from "../../tools/identity.js";
 import { SAFE_VALUE, TOKEN_FILE } from "../constants.js";
 import { stop } from "../engine.js";
@@ -16,6 +17,12 @@ export type AzureTarget = {
   /** The azurerm backend, written as `<storage-account>/<container>/<key>`. */
   backend: string;
   workspace: string;
+  /**
+   * The authorized region of the run's resources, as ARM's programmatic name (`eastus2`), owner decision of 2026-10-28. Optional in
+   * the contract's shape, so a target that never names one hashes as it always did; when stated it joins the target hash. The Azure
+   * Terraform judge refuses every APPLY plan of a target without one (`assertPlannedLocations`); Bicep requires it as a location field.
+   */
+  location?: string;
 };
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -222,9 +229,47 @@ function assertProviderConfig(blocks: readonly ProviderBlock[], pinned: AzureTar
   }
 }
 
+/**
+ * The Azure Terraform location binding (owner decision of 2026-10-28, "Azure Terraform location"), on an APPLY plan only: the seal,
+ * the qualification plan and the apply's re-derivation, each from the plan's own `terraform show -json`. The contract target must
+ * name its `location`; every managed azurerm resource the plan would place is judged by its resolved planned values (a change's
+ * `after` and the plan's `planned_values`), as `normalizeAzureLocation` reads them (`East US 2` is `eastus2`):
+ *
+ * - a planned `location` the plan leaves unknown until apply (`after_unknown`) is refused, because it cannot be judged before the
+ *   apply runs (for example one taken from a resource group the same plan creates);
+ * - a planned `location` that is not the contract's, or is empty, not text or not a region name, is refused;
+ * - a type that must carry a location (`AZURE_LOCATED_TYPES`: the canary's virtual network) whose planned values omit it is refused.
+ *
+ * Every refusal is LOCATION_NOT_IN_CONTRACT (at apply, `TARGET_NOT_IN_CONTRACT` before any approval is consumed). Nothing is
+ * inferred from a resource group: a data source's read values (a resource group's metadata among them) are never consulted, and the
+ * configuration's expressions are not judged, only the value the plan resolved. A cleanup's destroy plan places nothing and is not
+ * judged here. The independent check of where the resource really is follows the apply (src/observe/azure-rest.ts).
+ */
+export const AZURE_LOCATED_TYPES: ReadonlySet<string> = new Set(["azurerm_virtual_network"]);
+function assertPlannedLocations(uses: readonly ProviderUse[], target: AzureTarget): void {
+  const want = normalizeAzureLocation(target.location);
+  if (want === undefined || want !== target.location) stop("LOCATION_NOT_IN_CONTRACT");
+  for (const use of uses) {
+    if (use.mode !== "managed" || DATA_ADDRESS.test(use.address) || providerIdOf(use.provider) !== AZURERM_PROVIDER) continue;
+    // Only a change's or a planned use's values: a configured use's expressions and the prior state are not a placement.
+    if (use.values === undefined && use.unknown === undefined) continue;
+    if (use.unknown !== undefined && use.unknown.location !== undefined && use.unknown.location !== false) stop("LOCATION_NOT_IN_CONTRACT");
+    const planned = use.values?.location;
+    if (planned === undefined || planned === null) {
+      // On an APPLY plan every managed change is a create (the canary allowlist), so its planned values exist and must say where.
+      if (AZURE_LOCATED_TYPES.has(use.type)) stop("LOCATION_NOT_IN_CONTRACT");
+      continue;
+    }
+    if (normalizeAzureLocation(planned) !== want) stop("LOCATION_NOT_IN_CONTRACT");
+  }
+}
+
 export const AZURE: ProviderSpec = {
   id: "AZURE",
   accountFields: { tenantId: (v) => GUID.test(v), subscriptionId: (v) => GUID.test(v) },
+  // The authorized location (owner decision of 2026-10-28): when stated, part of the reviewed contract and of the target hash.
+  optionalTargetFields: { location: (v) => AZURE_LOCATION.test(v) },
+  boundTargetFields: ["location"],
   backendOk,
   account: (target) => (target as AzureTarget).subscriptionId,
   accountNoun: "subscription",
@@ -250,4 +295,5 @@ export const AZURE: ProviderSpec = {
   // Every use is judged: an allowed provider (`ALLOWED_PROVIDERS`), of the built-in one `terraform_data` only, and only the reviewed
   // data sources (`AZURE_DATA_SOURCES`).
   assertProviderConfig: (blocks, target, _env, uses) => assertProviderConfig(blocks, target as AzureTarget, uses),
+  assertPlannedLocations: (uses, target) => assertPlannedLocations(uses, target as AzureTarget),
 };

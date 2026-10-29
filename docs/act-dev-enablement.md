@@ -198,7 +198,7 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
 ### Owner steps (Azure), with exact commands
 
 1. **G0 decisions.** Assign roles (pilot owner, operator, DEV approver, qualifier, cleanup owner), the execution host, the one additive change and the cleanup owner. Use Z1's page when it lands.
-2. **Tenant and DEV subscription.** You need Application Administrator or Cloud Application Administrator in the tenant, and Owner (or Contributor plus Role Based Access Control Administrator) on the subscription. Register `Microsoft.Storage` (`docs/act-pilot-bootstrap.md`, "Prerequisites").
+2. **Tenant and DEV subscription.** You need Application Administrator or Cloud Application Administrator in the tenant, and Owner (or Contributor plus User Access Administrator) on the subscription: the bootstrap defines APPLY's custom roles, which needs `Microsoft.Authorization/roleDefinitions/write`, and Role Based Access Control Administrator holds only role assignment writes (UNVERIFIED: built-in role contents as of 2026-10-28; check with `az role definition list --name "Role Based Access Control Administrator"`). Register `Microsoft.Storage` (`docs/act-pilot-bootstrap.md`, "Prerequisites").
 3. **Federated identity issuer.** As for AWS step 3. Each of the four identities needs its own subject per environment. GitHub's audience is `api://AzureADTokenExchange`.
 4. **Bootstrap** (Terraform and the Azure CLI, not `./alz`). Until Z3 lands this needs three subscriptions.
 

@@ -119,16 +119,18 @@ test("the Azure Terraform DEV example (docs/act-pilot-azure-terraform-g0.md) nam
   const report = checkDraftContract(example);
   assert.deepEqual([report.provider, report.engine, report.enabledAsWritten, report.scope], ["AZURE", "TERRAFORM", false, ["DEV"]]);
   assert.equal(report.complete, false);
-  // The DEV target only, with the Azure spec's account fields (no region, no QA or PROD).
+  // The DEV target only, with the Azure spec's account fields (no region, no QA or PROD) and its authorized location (owner
+  // decision of 2026-10-28: every Azure Terraform APPLY plan is judged against it).
   assert.deepEqual(report.inputs.map((x) => x.field), [
     "enabled", "provider", "engine", "policyVersion", "enabledEnvironments",
-    "targets.DEV.tenantId", "targets.DEV.subscriptionId", "targets.DEV.backend", "targets.DEV.workspace", "requiredApprovals.DEV",
+    "targets.DEV.tenantId", "targets.DEV.subscriptionId", "targets.DEV.backend", "targets.DEV.workspace", "targets.DEV.location", "requiredApprovals.DEV",
     "maxApprovalAgeMinutes", "approvers[0].id", "approvers[0].publicKeyPem", "approvers[0].environments", "killSwitchPath",
   ]);
   // Every value that only the owner can supply is refused as a placeholder or the example's fake backend, each by its field.
   // The DEV-only scope itself is accepted for Azure Terraform (#298, owner decision 6442856302).
-  assert.deepEqual(notReady(report), ["policyVersion", "targets.DEV.tenantId", "targets.DEV.subscriptionId", "targets.DEV.backend", "approvers[0].id", "approvers[0].publicKeyPem"]);
+  assert.deepEqual(notReady(report), ["policyVersion", "targets.DEV.tenantId", "targets.DEV.subscriptionId", "targets.DEV.backend", "targets.DEV.location", "approvers[0].id", "approvers[0].publicKeyPem"]);
   assert.equal(statusOf(report, "enabledEnvironments"), "PRESENT");
+  assert.equal(statusOf(report, "targets.DEV.location"), "PLACEHOLDER");
   assert.equal(statusOf(report, "targets.DEV.tenantId"), "PLACEHOLDER");
   assert.equal(statusOf(report, "targets.DEV.subscriptionId"), "PLACEHOLDER");
   assert.equal(statusOf(report, "targets.DEV.backend"), "EXAMPLE");
@@ -138,7 +140,7 @@ test("the Azure Terraform DEV example (docs/act-pilot-azure-terraform-g0.md) nam
   // offline check as Azure Terraform DEV: every input present, the validator's shape accepted, COMPLETE. It enables nothing.
   const filled = {
     ...example, policyVersion: "2026-10-11.1",
-    targets: { DEV: { tenantId: "4b1d7c2e-9a3f-4e6b-8c5d-2f7a9e1b3c4d", subscriptionId: "7e8f9a0b-1c2d-4e3f-9a5b-6c7d8e9f0a1b", backend: "fixturedevstate/tfstate/dev.tfstate", workspace: "pilot-dev" } },
+    targets: { DEV: { tenantId: "4b1d7c2e-9a3f-4e6b-8c5d-2f7a9e1b3c4d", subscriptionId: "7e8f9a0b-1c2d-4e3f-9a5b-6c7d8e9f0a1b", backend: "fixturedevstate/tfstate/dev.tfstate", workspace: "pilot-dev", location: "westeurope" } },
     approvers: [{ id: "pilot-owner", publicKeyPem: keys.alice.pub, environments: ["DEV"] }], killSwitchPath: ".runs/apply/STOP-DEV",
   };
   const draft = checkDraftContract(filled);
@@ -155,6 +157,14 @@ test("the Azure Terraform DEV example (docs/act-pilot-azure-terraform-g0.md) nam
   const notGuid = checkDraftContract({ ...filled, targets: { DEV: { ...filled.targets.DEV, subscriptionId: "dev-subscription" } } });
   assert.equal(statusOf(notGuid, "targets.DEV.subscriptionId"), "INVALID");
   assert.equal(notGuid.complete, false);
+  // The location is ARM's programmatic name: a display name ("West Europe") is INVALID on its field, and a draft without one is not COMPLETE.
+  const display = checkDraftContract({ ...filled, targets: { DEV: { ...filled.targets.DEV, location: "West Europe" } } });
+  assert.equal(statusOf(display, "targets.DEV.location"), "INVALID");
+  assert.equal(display.complete, false);
+  const { location: _location, ...unlocated } = filled.targets.DEV;
+  const missing = checkDraftContract({ ...filled, targets: { DEV: unlocated } });
+  assert.equal(statusOf(missing, "targets.DEV.location"), "MISSING");
+  assert.equal(missing.complete, false);
 });
 
 test("RB6: the AWS CDK DEV example names every owner input, is never COMPLETE as shipped, carries no authorization, and a filled copy is COMPLETE for AWS CDK DEV", () => {
@@ -195,7 +205,7 @@ test("RB6: the AWS CDK DEV example names every owner input, is never COMPLETE as
 
 test("a repeated-digit GUID tenant or subscription (11111111-1111-…, 00000000-…-0000) is an example value, never COMPLETE; a real-looking GUID stays PRESENT", () => {
   const example = JSON.parse(readFileSync(join(ROOT, "config", "act-pilot-contract.azure-dev.example.json"), "utf8")) as Record<string, unknown>;
-  const dev = { tenantId: "4b1d7c2e-9a3f-4e6b-8c5d-2f7a9e1b3c4d", subscriptionId: "7e8f9a0b-1c2d-4e3f-9a5b-6c7d8e9f0a1b", backend: "fixturedevstate/tfstate/dev.tfstate", workspace: "pilot-dev" };
+  const dev = { tenantId: "4b1d7c2e-9a3f-4e6b-8c5d-2f7a9e1b3c4d", subscriptionId: "7e8f9a0b-1c2d-4e3f-9a5b-6c7d8e9f0a1b", backend: "fixturedevstate/tfstate/dev.tfstate", workspace: "pilot-dev", location: "westeurope" };
   const filled = { ...example, policyVersion: "2026-10-11.1", targets: { DEV: dev }, approvers: [{ id: "pilot-owner", publicKeyPem: keys.alice.pub, environments: ["DEV"] }], killSwitchPath: ".runs/apply/STOP-DEV" };
   assert.equal(checkDraftContract(filled).complete, true, "the control: a filled draft with real-looking GUIDs is COMPLETE");
   for (const [field, value] of [

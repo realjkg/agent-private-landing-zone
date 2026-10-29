@@ -1,6 +1,8 @@
 locals {
   subscription_scope = "/subscriptions/${var.settings.subscription_id}"
-  apply_scope        = var.settings.apply_resource_group_name == null ? local.subscription_scope : azurerm_resource_group.apply[0].id
+  # APPLY and DISCOVERY are scoped to the pilot resource group in every mode (owner decision of 2026-10-28: no subscription-wide
+  # Contributor). The module refuses an environment without one (variables.tf), so there is no subscription fallback.
+  apply_scope = azurerm_resource_group.apply[0].id
 }
 
 # State storage: versioning and soft delete on, Entra ID authorization only (no account keys, no SAS).
@@ -49,7 +51,8 @@ resource "azurerm_storage_container" "state" {
   container_access_type = "private"
 }
 
-# The pilot's own resource group, when APPLY is scoped to one. Contributor on a group cannot create the group.
+# The pilot's own resource group, where APPLY and DISCOVERY are scoped. APPLY's role cannot create, change or delete a group.
+# (The count is kept so existing state keeps its address; the module's validation makes it always 1.)
 resource "azurerm_resource_group" "apply" {
   count    = var.settings.apply_resource_group_name == null ? 0 : 1
   name     = var.settings.apply_resource_group_name
@@ -78,23 +81,51 @@ resource "azurerm_role_assignment" "discovery" {
   principal_id         = var.principal_ids["DISCOVERY"]
 }
 
-# APPLY: Contributor on the target resource group (or subscription). It cannot assign roles and has no role on the state container.
-resource "azurerm_role_assignment" "apply" {
-  scope                = local.apply_scope
-  role_definition_name = "Contributor"
-  principal_id         = var.principal_ids["APPLY"]
+# APPLY, Azure Terraform path (owner decision of 2026-10-28, "Azure APPLY role"): a custom role, defined, assignable and assigned at
+# the pilot resource group only, in place of the built-in Contributor. It lists exactly the ARM operations `terraform apply` runs as
+# APPLY for the canary (one empty virtual network): azurerm reads the network before it creates it (the import check) and after,
+# writes it with its tags, and deletes it at the governed cleanup. The plan, its refresh and every data source run as DISCOVERY
+# (Reader), not APPLY. No wildcard, no Microsoft.Authorization action (APPLY cannot assign roles or write deny assignments), no
+# resource group write or delete, no data action, nothing at subscription scope, and no role on the state container. Each action is
+# justified in docs/act-pilot-bootstrap.md, "APPLY's role". The application's canary allowlist is not the IAM boundary: this role is.
+locals {
+  apply_actions = [
+    "Microsoft.Network/virtualNetworks/read",
+    "Microsoft.Network/virtualNetworks/write",
+    "Microsoft.Network/virtualNetworks/delete",
+  ]
 }
 
-# Azure Bicep (path 4, DEV only; owner decision E2): one custom role, defined and assignable only at the pilot resource group,
+resource "azurerm_role_definition" "apply" {
+  # Custom role names are unique in the tenant: the subscription and the group make each environment's its own.
+  name        = "alz-pilot-apply-${var.settings.subscription_id}-${azurerm_resource_group.apply[0].name}"
+  scope       = azurerm_resource_group.apply[0].id
+  description = "ACT pilot APPLY, Azure Terraform path: read, write and delete virtual networks in this resource group only."
+
+  permissions {
+    actions     = local.apply_actions
+    not_actions = []
+  }
+
+  assignable_scopes = [azurerm_resource_group.apply[0].id]
+}
+
+resource "azurerm_role_assignment" "apply" {
+  scope              = azurerm_resource_group.apply[0].id
+  role_definition_id = azurerm_role_definition.apply.role_definition_resource_id
+  principal_id       = var.principal_ids["APPLY"]
+}
+
+# Azure Bicep (path 4, DEV only; owner decision E2): one more custom role, defined and assignable only at the pilot resource group,
 # assigned to APPLY only. It lists exactly the operations the engine's az calls need (docs/act-pilot-bicep.md, "Identities and
-# roles"). APPLY keeps Contributor above for the Terraform path, and Contributor already allows every action here except
-# manageDenySetting (a Contributor NotAction), so APPLY's effective addition is that one action, at the pilot group only.
-# DISCOVERY gets nothing new: it keeps Reader. No Microsoft.Authorization action, no role assignment right, nothing at
-# subscription scope.
+# roles"), deny settings included. With Contributor gone (owner decision of 2026-10-28), it is APPLY's whole Bicep authority, so it
+# also reads the stack deployment's operation statuses (UNVERIFIED P1, formerly covered by Contributor). DISCOVERY gets nothing new:
+# it keeps Reader. No Microsoft.Authorization action, no role assignment right, nothing at subscription scope.
 locals {
   bicep_stack_actions = [
     "Microsoft.Resources/deployments/read",
     "Microsoft.Resources/deployments/write",
+    "Microsoft.Resources/deployments/operationstatuses/read",
     "Microsoft.Resources/deployments/validate/action",
     "Microsoft.Resources/deployments/whatIf/action",
     "Microsoft.Resources/deploymentStacks/read",

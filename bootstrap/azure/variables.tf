@@ -50,11 +50,12 @@ variable "environments" {
     error_message = "DEV, QA and PROD must use three different state storage accounts."
   }
 
-  # DEV-only mode keeps APPLY's Contributor and DISCOVERY's Reader on the pilot resource group: without it they would fall back
-  # to the whole subscription. The chain keeps its existing behavior (a group is optional there), so this rule is DEV-only.
+  # Every enabled environment names its pilot resource group: APPLY's custom role and DISCOVERY's Reader live there, never on the
+  # whole subscription (owner decision of 2026-10-28, "Azure APPLY role": no subscription-wide Contributor). This applies to the
+  # chain as well as to DEV-only mode.
   validation {
-    condition     = toset(var.enabled_environments) != toset(["DEV"]) || try(trimspace(var.environments.DEV.apply_resource_group_name), "") != ""
-    error_message = "DEV-only mode needs environments.DEV.apply_resource_group_name (a non-empty name): APPLY and DISCOVERY are scoped to that pilot resource group, never to the whole subscription."
+    condition     = alltrue([for e in values(var.environments) : try(trimspace(e.apply_resource_group_name), "") != "" if e != null])
+    error_message = "Every enabled environment needs apply_resource_group_name (a non-empty name): APPLY and DISCOVERY are scoped to that pilot resource group, never to the whole subscription."
   }
 
   validation {

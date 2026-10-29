@@ -401,6 +401,8 @@ function changesOf(shown: string, judge: Judge, purpose: "APPLY" | "CLEANUP"): P
   judge.spec.assertProviderConfig(Object.values(document.configuration?.provider_config ?? {}), judge.pinned, judge.env, uses);
   // Then, for an APPLY (the seal, the qualification plan, and the apply's re-derivation), the canary allowlist. A cleanup's destroy plan keeps its own rules.
   if (purpose === "APPLY") assertPlanInCanary(document, judge.pinned);
+  // And where it places them, from the resolved planned values (Azure: the contract's location, owner decision of 2026-10-28).
+  if (purpose === "APPLY") judge.spec.assertPlannedLocations?.(uses, judge.pinned);
   const resources = (Array.isArray(document.resource_changes) ? document.resource_changes : []).map((found, index): PlanChange => {
     const actions = found?.change?.actions ?? [];
     const previous = found?.previous_address;

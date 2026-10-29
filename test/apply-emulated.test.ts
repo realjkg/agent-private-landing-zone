@@ -31,7 +31,7 @@ import { captureProjectFiles } from "../src/teardown/snapshot.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   DEV_TARGET, ENGINE_VERSION, H, NOW, POLICY, QA_TARGET, REQUESTER, SOURCE_COMMIT, TENANT, approvalFor, behave as behaveFake, callsOf, contractJson, human, identityEnv,
-  installFakeTerraform, sha, writeReviewedContract, writeProject, withCanary, CANARY_AZURE } from "./helpers/apply-fixtures.js";
+  installFakeTerraform, sha, writeReviewedContract, writeProject, withCanary, CANARY_AZURE, AZURE_LOCATION_FIXTURE } from "./helpers/apply-fixtures.js";
 import { AZURE } from "../src/apply/providers/azure.js";
 
 /**
@@ -280,11 +280,12 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
 
     // The DEV contract names the emulator's storage account; the tenant and subscription are obviously fake GUIDs.
     contractPath = join(fresh("contract"), "act-pilot-contract.json");
+    // Each names its authorized location (owner decision of 2026-10-28); the emulated project places nothing in Azure.
     const contract = contractJson(KILL, {
       targets: {
-        DEV: { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: BACKEND, workspace: "default" },
-        QA: { tenantId: TENANT, subscriptionId: QA_TARGET.account, backend: "emulatedqa/tfstate/qa.tfstate", workspace: "default" },
-        PROD: { tenantId: TENANT, subscriptionId: "33333333-3333-4333-8333-333333333333", backend: "emulatedprod/tfstate/prod.tfstate", workspace: "default" },
+        DEV: { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: BACKEND, workspace: "default", location: AZURE_LOCATION_FIXTURE },
+        QA: { tenantId: TENANT, subscriptionId: QA_TARGET.account, backend: "emulatedqa/tfstate/qa.tfstate", workspace: "default", location: AZURE_LOCATION_FIXTURE },
+        PROD: { tenantId: TENANT, subscriptionId: "33333333-3333-4333-8333-333333333333", backend: "emulatedprod/tfstate/prod.tfstate", workspace: "default", location: AZURE_LOCATION_FIXTURE },
       },
     });
     baseContract = contract;
@@ -659,7 +660,7 @@ describe("emulator-only credentials never enter a production path (default CI; n
   const KILL = join(root, "KILL");
   const toolDir = join(root, "fake-tools");
   // The fake engine saves the shared fixture's backend; the emulator's own location is checked in the contract test.
-  const pinned = { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default", canary: CANARY_AZURE };
+  const pinned = { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default", location: AZURE_LOCATION_FIXTURE, canary: CANARY_AZURE };
   const target = { ...DEV_TARGET };
 
   before(() => {

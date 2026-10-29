@@ -21,7 +21,7 @@ import { SOURCE_COMMIT,
   AWS_DEV_TARGET, ENGINE_VERSION, NOW, POLICY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf, contractJson, identityEnv,
   installFakeAwsReads, installFakeTerraform, keys, stateResource, targetOf, testFixtureForgeQualificationEvidence,
   AWS_LOCK, writeReviewedContract, writeProject, type Behavior, type Project,
-  ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, DEV_TARGET, azureStateResource, fakeArmHttp,
+  ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, DEV_TARGET, azureStateResource, AZURE_LOCATION_FIXTURE, fakeArmHttp,
   REQUESTER,
   requesterArgs,
   requesterKeyFile, canaryFor, withCanary,
@@ -1276,7 +1276,7 @@ async function azureCleanupJourney() {
   const journey = await consoleJourney("AZURE");
   writeReviewedContract(journey.w.contractPath, AZ_CONTRACT);
   behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: AZ_CREATES, stateResources: AZ_STATE, unitTags: { ...AZ_UNIT.tags }, unitTagAttribute: "tags" });
-  const arm = fakeArmHttp({ existing: AZ_EXISTING, tagged: AZ_TAGGED });
+  const arm = fakeArmHttp({ existing: AZ_EXISTING, tagged: AZ_TAGGED }, { defaultLocation: AZURE_LOCATION_FIXTURE });
   const w = { ...journey.w, cli: { ...journey.w.cli, env: { ...identityEnv("DEV"), ALZ_DISCOVERY_ARM_OIDC_TOKEN_FILE: azTokenFile }, observeArm: arm.http, proposalsDir: fresh("proposals") } };
   const { port } = await serve(w);
   await choose(port);
