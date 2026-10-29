@@ -31,7 +31,7 @@ const withEntry = (gate: string, change: Partial<GateStatusEntry>): ReleaseStatu
 };
 const admitted = (...ids: string[]): ReleaseAdmissionReport => ({
   sourceCommit: candidate, readyForIndependentReleaseReview: false, productionReleaseApproved: false, infrastructureAct: "DISABLED",
-  actPilot: null, blockers: [], candidateIdentityHash: "0".repeat(64),
+  actPilot: null, actPilots: [], blockers: [], candidateIdentityHash: "0".repeat(64),
   gates: ids.map((id) => ({ id, mode: "CI", status: "EVIDENCE_PRESENT", blockers: [], evidenceSha256: evidence })),
 });
 const row = (cloud: string, path: string, implemented: boolean, live: RowReport["live"]): RowReport => ({

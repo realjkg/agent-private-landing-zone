@@ -95,11 +95,10 @@ function positiveInteger(
 function providerScopeMatches(
   target: RecoveryTargetSpec,
 ): boolean {
-  return target.provider === "AWS"
-    ? target.scope.type.startsWith("AWS_")
-    : target.scope.type.startsWith(
-        "AZURE_",
-      );
+  // Each provider matches only its own scope types; a provider with none (GCP) matches nothing, never Azure's by default.
+  if (target.provider === "AWS") return target.scope.type.startsWith("AWS_");
+  if (target.provider === "AZURE") return target.scope.type.startsWith("AZURE_");
+  return false;
 }
 
 export function validateRecoveryTarget(
