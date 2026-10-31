@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { costStatusLines, readCostStatus, type CostRead, type CostReadRequest, type CostStatusRequest } from "../src/cost/status.js";
+import { brokerCostRead, costStatusLines, readCostStatus, type CostRead, type CostReadRequest, type CostStatusRequest } from "../src/cost/status.js";
 import { awsCostReadArgs } from "../src/tools/aws-cost-reads.js";
 
 // Synthetic: every answer below is a fixture shaped like the AWS CLI's JSON output. Nothing here reads AWS; that the live
@@ -313,4 +313,15 @@ test("requests: a bad account, a unit without a region, a bad window or a field 
   await assert.rejects(readCostStatus({ ...REQUEST, exportArn: "arn:aws:s3:::bucket" }, read, NOW), /COST_STATUS_EXPORT_ARN_INVALID/);
   await assert.rejects(readCostStatus({ ...REQUEST, unitId: "a,Values=b" }, read, NOW), /COST_STATUS_UNIT_INVALID/);
   assert.equal(calls.length, 0, "a refused request never reaches the reader");
+});
+
+test("the production reader goes through the governed broker: a refused read is READ_BLOCKED, and no process starts", async () => {
+  // A suspected compromise denies cloud reads before any AWS CLI runs.
+  const read = brokerCostRead({ cwd: process.cwd(), compromiseState: "SUSPECTED" });
+  await assert.rejects(read({ tool: "aws_bcm_list_exports" }), /READ_BLOCKED/);
+  const s = await readCostStatus(REQUEST, read, NOW);
+  assert.equal(s.budget.state, "UNKNOWN");
+  assert.deepEqual(s.budget.budgetCount, { label: "UNKNOWN", reason: "READ_BLOCKED" });
+  assert.equal(s.export.state, "UNKNOWN");
+  assert.equal(s.overall, "INCOMPLETE");
 });

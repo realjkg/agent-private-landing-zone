@@ -1,5 +1,5 @@
 import { awsCostReadArgs, type AwsCostReadTool } from "../tools/aws-cost-reads.js";
-import { executeTool } from "../tools/broker.js";
+import { runGovernedTool } from "../tools/governed.js";
 import type { BudgetNotificationKey, ToolContext, ToolRequest } from "../tools/types.js";
 
 /**
@@ -13,7 +13,7 @@ import type { BudgetNotificationKey, ToolContext, ToolRequest } from "../tools/t
  *
  * Nothing here writes, retries silently or gates ACT. A missing or empty answer is never read as zero spend, a denied read is
  * never a pass, and an export with no delivery yet is WAITING, not healthy. The reader is injected (`CostRead`), so the
- * whole model runs offline against fixtures; `brokerCostRead` runs the same calls through the tool broker's exact argv.
+ * whole model runs offline against fixtures; `brokerCostRead` runs the same calls through the governed path to the tool broker's exact argv.
  *
  * The Python budget read-back (scripts/act-dev1-readiness.py, budget_inspection) is ported in `readBudget`: the budget's
  * type, limit, notification count and whether an ACTUAL alert exists, extended with subscribers, spend and filters.
@@ -173,10 +173,10 @@ export type CostStatusRequest = {
 export type CostReadRequest = ToolRequest & { tool: AwsCostReadTool };
 export type CostRead = (request: CostReadRequest) => Promise<unknown>;
 
-/** The production reader: the broker's exact argv, read-only cloud access, and nothing else. */
+/** The production reader: the governed path to the broker's exact argv, read-only cloud access, and nothing else. */
 export function brokerCostRead(context: Omit<ToolContext, "allowCloudRead" | "allowMutation">): CostRead {
   return async (request) => {
-    const result = executeTool(request, { ...context, allowCloudRead: true, allowMutation: false });
+    const result = await runGovernedTool(request, { ...context, allowCloudRead: true, allowMutation: false });
     if (Array.isArray(result)) throw new Error("READ_BLOCKED: unexpected multi-result");
     if (result.blocked) throw new Error("READ_BLOCKED: " + (result.reason ?? ""));
     if (!result.ok) throw new Error(result.stderr || "READ_FAILED");

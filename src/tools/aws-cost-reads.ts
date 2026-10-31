@@ -21,7 +21,7 @@ export const AWS_COST_READ_TOOLS = [
 export type AwsCostReadTool = (typeof AWS_COST_READ_TOOLS)[number];
 
 /**
- * The deletion unit's tag key. The broker never imports the deletion-unit module (test/teardown-driver-denials.test.ts), so
+ * The deletion unit's tag key. The broker's modules never import the deletion-unit module (a boundary test pins that), so
  * the key is written here, and test/aws-cost-reads.test.ts pins it to ALZ_TAG_KEYS.unit.
  */
 export const UNIT_TAG_KEY = "alz-unit";
