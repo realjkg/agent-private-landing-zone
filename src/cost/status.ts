@@ -80,7 +80,10 @@ export type BudgetStatus = {
   actualSpend: Labeled<Money>;
   /** AWS's forecast: an ESTIMATE by definition. */
   forecastedSpend: Labeled<Money>;
-  spendUpdatedAt: Labeled<string>;
+  /** When the budget itself was last updated (Budgets' LastUpdatedTime): a configuration time, not a spend time. */
+  budgetUpdatedAt: Labeled<string>;
+  /** When Budgets last calculated the spend. Budgets reports no such time, so this is always UNKNOWN (NOT_REPORTED_BY_AWS). */
+  spendCalculatedAt: Labeled<string>;
   notifications: Labeled<NotificationStatus[]>;
   hasActualAlert: Labeled<boolean>;
   hasForecastAlert: Labeled<boolean>;
@@ -222,8 +225,8 @@ const obj = (value: unknown): Record<string, unknown> => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Malformed();
   return value as Record<string, unknown>;
 };
+/** A list the answer must carry: an absent key is a malformed answer, never an observed empty list. */
 const list = (value: unknown): unknown[] => {
-  if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Malformed();
   return value;
 };
@@ -317,7 +320,7 @@ async function readBudget(read: CostRead, request: CostStatusRequest): Promise<B
   const name = request.budgetName;
   const blank = (state: BudgetStatus["state"], reason: UnknownReason, count: Labeled<number>): BudgetStatus => ({
     name, state, budgetCount: count, budgetType: unknown(reason), limit: unknown(reason), period: unknown(reason), filters: unknown(reason),
-    actualSpend: unknown(reason), forecastedSpend: unknown(reason), spendUpdatedAt: unknown(reason), notifications: unknown(reason),
+    actualSpend: unknown(reason), forecastedSpend: unknown(reason), budgetUpdatedAt: unknown(reason), spendCalculatedAt: unknown(reason), notifications: unknown(reason),
     hasActualAlert: unknown(reason), hasForecastAlert: unknown(reason), hardSpendCap: false,
   });
   const budgets = await attempt(read, { tool: "aws_budgets_describe_budgets", accountId: request.accountId }, parseBudgets);
@@ -348,7 +351,8 @@ async function readBudget(read: CostRead, request: CostStatusRequest): Promise<B
     filters: observed(found.filters),
     actualSpend: found.actual ? observed(found.actual) : unknown("NOT_REPORTED_BY_AWS"),
     forecastedSpend: found.forecast ? { label: "ESTIMATE", value: found.forecast, basis: "AWS Budgets forecast (CalculatedSpend.ForecastedSpend)" } : unknown("NOT_REPORTED_BY_AWS"),
-    spendUpdatedAt: found.updatedAt ? observed(found.updatedAt) : unknown("NOT_REPORTED_BY_AWS"),
+    budgetUpdatedAt: found.updatedAt ? observed(found.updatedAt) : unknown("NOT_REPORTED_BY_AWS"),
+    spendCalculatedAt: unknown("NOT_REPORTED_BY_AWS"),
     notifications: notificationStatus,
     hasActualAlert: has("ACTUAL"), hasForecastAlert: has("FORECASTED"),
     hardSpendCap: false,
@@ -499,7 +503,8 @@ async function readExport(read: CostRead, request: CostStatusRequest, now: Date,
   const latestFinished = sorted.find((x) => x.state !== "IN_PROGRESS");
   let state: ExportStatus["state"];
   if ((health.label === "OBSERVED" && health.value === "UNHEALTHY") || latestFinished?.state === "FAILED") state = "FAILED";
-  else if (!delivered) state = "WAITING";
+  // No delivery yet is WAITING only within the window after the export was created; past it, the export is STALE.
+  else if (!delivered) state = raw.createdAt !== undefined && now.getTime() - Date.parse(raw.createdAt) > staleMs ? "STALE" : "WAITING";
   else if (now.getTime() - Date.parse(delivered.completedAt ?? delivered.at) > staleMs) state = "STALE";
   else state = "DELIVERED";
   return { ...base, state, lastExecution, lastDelivery };
@@ -526,11 +531,20 @@ function overallOf(s: Omit<CostStatus, "overall">): CostStatusOverall {
     (s.budget.notifications.label === "OBSERVED" && s.budget.notifications.value.some((n) => n.subscribers.label === "OBSERVED" && n.subscribers.value.length === 0));
   if (attention) return "ATTENTION";
   if (s.export.state === "STALE") return "STALE";
-  const incomplete = s.budget.state === "UNKNOWN" || s.tags.state === "UNKNOWN" || s.costAllocationTags.state === "UNKNOWN" ||
-    s.export.state === "UNKNOWN" || s.export.state === "NOT_REQUESTED" || s.budget.notifications.label === "UNKNOWN" ||
-    (s.budget.notifications.label === "OBSERVED" && s.budget.notifications.value.some((n) => n.subscribers.label === "UNKNOWN"));
+  const b = s.budget;
+  const present = b.state === "PRESENT";
+  const incomplete = b.state === "UNKNOWN" || s.tags.state === "UNKNOWN" || s.costAllocationTags.state === "UNKNOWN" ||
+    s.export.state === "UNKNOWN" || s.export.state === "NOT_REQUESTED" || b.notifications.label === "UNKNOWN" ||
+    (b.notifications.label === "OBSERVED" && b.notifications.value.some((n) => n.subscribers.label === "UNKNOWN")) ||
+    // A present budget's limit and period are always reported; spend not yet reported is WAITING below, any other unknown is INCOMPLETE.
+    (present && (b.limit.label === "UNKNOWN" || b.period.label === "UNKNOWN" ||
+      (b.actualSpend.label === "UNKNOWN" && b.actualSpend.reason !== "NOT_REPORTED_BY_AWS"))) ||
+    // An export whose health AWS did not report is not shown healthy.
+    (s.export.state !== "MISSING" && s.export.health.label === "UNKNOWN");
   if (incomplete) return "INCOMPLETE";
   if (s.export.state === "WAITING") return "WAITING";
+  // A new budget before Budgets first calculates its spend: waiting, never zero and never complete.
+  if (present && b.actualSpend.label === "UNKNOWN") return "WAITING";
   return "OBSERVED_COMPLETE";
 }
 
@@ -565,11 +579,30 @@ const show = <T>(value: Labeled<T>, format: (v: T) => string): string =>
   value.label === "UNKNOWN" ? "UNKNOWN (" + value.reason + ")" : format(value.value) + (value.label === "ESTIMATE" ? " [ESTIMATE]" : "");
 const amount = (m: Money): string => m.amount + " " + m.unit;
 
-/** A few lines for a terminal or a log. The UI reads the typed status instead. */
-export function costStatusLines(status: CostStatus): string[] {
+/** An email address with its local part masked (first character kept); an SNS topic ARN is kept as it is. */
+export function redactAddress(type: SubscriberStatus["type"], address: string): string {
+  if (type === "SNS") return address;
+  const at = address.lastIndexOf("@");
+  return at <= 0 ? "***" : address[0] + "***" + address.slice(at);
+}
+
+/**
+ * The status with every subscriber email masked (coordinator decision on review 6539122808, N5, until the owner decides):
+ * the typed status may show addresses to the local operator, but any text summary, log or recorded evidence uses this.
+ */
+export function redactCostStatus(status: CostStatus): CostStatus {
+  const notifications = status.budget.notifications;
+  if (notifications.label !== "OBSERVED") return status;
+  return { ...status, budget: { ...status.budget, notifications: observed(notifications.value.map((n) => n.subscribers.label !== "OBSERVED" ? n
+    : { ...n, subscribers: observed(n.subscribers.value.map((x) => ({ ...x, address: redactAddress(x.type, x.address) }))) })) } };
+}
+
+/** A few lines for a terminal or a log, always from the redacted status. The UI reads the typed status instead. */
+export function costStatusLines(full: CostStatus): string[] {
+  const status = redactCostStatus(full);
   const b = status.budget;
-  const subscribers = b.notifications.label === "OBSERVED"
-    ? b.notifications.value.flatMap((n) => (n.subscribers.label === "OBSERVED" ? n.subscribers.value : [])).length : 0;
+  const recipients = b.notifications.label === "OBSERVED"
+    ? [...new Set(b.notifications.value.flatMap((n) => (n.subscribers.label === "OBSERVED" ? n.subscribers.value.map((x) => x.address) : [])))] : [];
   const allocation = status.costAllocationTags.tags.map((t) => t.key + "=" + show(t.status, (v) => v)).join(", ") || "none required";
   const missingTags = status.tags.resources.label === "OBSERVED" ? status.tags.resources.value.filter((r) => r.missing.length > 0).length : 0;
   return [
@@ -577,7 +610,7 @@ export function costStatusLines(status: CostStatus): string[] {
     "  Budget " + b.name + ": " + b.state + ", limit " + show(b.limit, amount) + " " + show(b.period, (p) => p) +
       ", spend " + show(b.actualSpend, amount) + ", forecast " + show(b.forecastedSpend, amount),
     "  Alerts: " + show(b.notifications, (n) => String(n.length)) + " (actual " + show(b.hasActualAlert, String) + ", forecast " +
-      show(b.hasForecastAlert, String) + "), " + subscribers + " recipients, confirmation UNKNOWN",
+      show(b.hasForecastAlert, String) + "), recipients " + (recipients.join(" ") || "none") + " (confirmation UNKNOWN)",
     "  Tags: " + status.tags.state + (missingTags ? " (" + missingTags + " resources missing required tags)" : ""),
     "  Cost-allocation tags: " + status.costAllocationTags.state + " (" + allocation + ")",
     "  Export: " + status.export.state + ", last delivery " + show(status.export.lastDelivery, (v) => v) +

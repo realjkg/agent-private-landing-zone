@@ -170,7 +170,11 @@ const ROLE_ARN = /^arn:aws:iam::\d{12}:role\/[A-Za-z0-9+=,.@_/-]{1,512}$/;
 const POLICY_ARN = /^arn:aws:iam::(?:aws|\d{12}):policy\/[A-Za-z0-9+=,.@_/-]{1,512}$/;
 const IAM_NAME = /^[A-Za-z0-9+=,.@_-]{1,128}$/;
 const REGION = /^[a-z]{2}(?:-[a-z]+)+-\d$/;
-const BUDGET_NAME = /^[A-Za-z0-9_.-]{1,100}$/;
+/**
+ * A budget name: letters, digits and _ . -, at most 100, never starting with "-" (it is passed to the AWS CLI as an argument).
+ * The one definition: the cost status reads (src/tools/aws-cost-reads.ts) use it too, so a valid configuration is always readable.
+ */
+export const BUDGET_NAME = /^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,99}$/;
 const EXPORT_NAME = /^[A-Za-z0-9_-]{1,128}$/;
 const PREFIX = /^[a-z0-9](?:[a-z0-9/_.-]{0,126}[a-z0-9])?$/;
 const BUCKET = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
@@ -366,7 +370,7 @@ function validateNotifications(raw: unknown, c: Collector): CostNotifications | 
 function validateBudget(raw: unknown, c: Collector): CostBudget | undefined {
   const input = c.object(raw, "budget",
     ["name", "amount", "currency", "period", "actualThresholds", "forecastThresholds"], true);
-  const name = c.string(input.name, "budget.name", BUDGET_NAME, "letters, digits and _ . -, at most 100",
+  const name = c.string(input.name, "budget.name", BUDGET_NAME, "letters, digits and _ . -, at most 100, not starting with -",
     COST_DEFAULTS.budgetName);
   const amount = normalizeAmount(input.amount, c);
   const currency = c.string(input.currency, "budget.currency", CURRENCY, "a three-letter currency code",

@@ -1438,7 +1438,8 @@ test("cost baseline (owner direction 6536926009): the run's alert topic goes wit
   ];
   const w = world(contractFor(creates));
   behave({ showResources: creates, stateResources: state });
-  cloud({ existing: [...EXISTING, TOPIC] });
+  // The verifier reads the export through Cloud Control (us-east-1, by its ARN), so the fake cloud says it exists.
+  cloud({ existing: [...EXISTING, TOPIC, EXPORT] });
   const run = await proposed(w);
   assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["aws_bcmdataexports_export.cur", "aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs", "aws_s3_bucket_versioning.logs",
     "aws_sns_topic.alerts", "aws_sns_topic_policy.alerts", "aws_sns_topic_subscription.owner"]);
@@ -1447,6 +1448,22 @@ test("cost baseline (owner direction 6536926009): the run's alert topic goes wit
   assert.match(kept.get("aws_sns_topic_subscription.team")!.reason, /an attachment or setting .* that modifies another resource, and this proposal does not delete that resource with it/);
   assert.equal(kept.get("aws_ce_cost_allocation_tag.owner")?.ownership, "TYPE_UNREVIEWED", "a cost allocation tag activation is never switched off by a cleanup");
   assert.equal(kept.get("aws_ce_cost_allocation_tag.owner")?.retainedBy, "ENVIRONMENT_OWNER");
+  assert.ok(verifyCleanupProposal(run.proposal).ok);
+});
+
+test("cost baseline: a CUR 2.0 export the cloud reports absent is never proposed for deletion (review 6539122808, B1)", async () => {
+  const EXPORT = "arn:aws:bcm-data-exports:us-east-1:111111111111:export/alz-cur2-0f1e2d3c";
+  const created = (address: string, type: string) => ({ address, type, change: { actions: ["create"], before: null, after: {} } });
+  const creates = [...CREATES, created("aws_bcmdataexports_export.cur", "aws_bcmdataexports_export")];
+  const state = [...STATE, stateResource("aws_bcmdataexports_export", "cur", EXPORT, EXPORT)];
+  const w = world(contractFor(creates));
+  behave({ showResources: creates, stateResources: state });
+  cloud({ existing: [...EXISTING] });
+  const run = await proposed(w);
+  assert.ok(!run.proposal.deletes.some((d) => d.address === "aws_bcmdataexports_export.cur"), JSON.stringify(run.proposal.deletes));
+  // Observed gone, it is recorded as already absent, never a delete target.
+  assert.deepEqual(run.proposal.alreadyAbsent.filter((x) => x.type === "aws_bcmdataexports_export"),
+    [{ address: "aws_bcmdataexports_export.cur", type: "aws_bcmdataexports_export", identifier: EXPORT }]);
   assert.ok(verifyCleanupProposal(run.proposal).ok);
 });
 

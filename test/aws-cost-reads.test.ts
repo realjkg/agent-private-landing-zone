@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { BUDGET_NAME } from "../src/design/cost.js";
 import { ALZ_TAG_KEYS } from "../src/teardown/unit.js";
 import { AWS_COST_READ_TOOLS, UNIT_TAG_KEY, awsCostReadArgs } from "../src/tools/aws-cost-reads.js";
 import { executeTool, getToolSecurityPosture } from "../src/tools/broker.js";
@@ -25,8 +26,13 @@ const refusal = (request: ToolRequest): string => {
 
 test("each cost read is exactly one fixed, read-only AWS CLI call", () => {
   assert.deepEqual(argsOf({ tool: "aws_budgets_describe_budgets", accountId: ACCOUNT }), ["budgets", "describe-budgets", "--account-id", ACCOUNT, ...G]);
-  assert.deepEqual(argsOf({ tool: "aws_budgets_describe_notifications", accountId: ACCOUNT, budgetName: "alz-dev monthly" }),
-    ["budgets", "describe-notifications-for-budget", "--account-id", ACCOUNT, "--budget-name", "alz-dev monthly", ...G]);
+  assert.deepEqual(argsOf({ tool: "aws_budgets_describe_notifications", accountId: ACCOUNT, budgetName: "alz-dev.monthly_1" }),
+    ["budgets", "describe-notifications-for-budget", "--account-id", ACCOUNT, "--budget-name", "alz-dev.monthly_1", ...G]);
+  // The same budget-name rule as the cost configuration (src/design/cost.ts; review 6539122808, N4): a valid name is always readable.
+  for (const budgetName of ["_alz", ".x", "alz-cost-baseline", "x".repeat(100)]) {
+    assert.equal(BUDGET_NAME.test(budgetName), true, budgetName);
+    argsOf({ tool: "aws_budgets_describe_notifications", accountId: ACCOUNT, budgetName });
+  }
   assert.deepEqual(argsOf({ tool: "aws_budgets_describe_subscribers", accountId: ACCOUNT, budgetName: "alz-dev", notification: NOTIFICATION }),
     ["budgets", "describe-subscribers-for-notification", "--account-id", ACCOUNT, "--budget-name", "alz-dev", "--notification",
       "NotificationType=ACTUAL,ComparisonOperator=GREATER_THAN,Threshold=80,ThresholdType=PERCENTAGE", ...G]);
@@ -47,8 +53,9 @@ test("every argument is validated: no wildcard, flag, separator or other shape r
   for (const accountId of ["", "11111111111", "1111111111111", "*", "111111111111 --profile x", "--profile"]) {
     refusal({ tool: "aws_budgets_describe_budgets", accountId });
   }
-  for (const budgetName of ["", "-x", "--profile admin", "a:b", "a\\b", "a,b", "a=b", "*", "a\nb", "x".repeat(101)]) {
+  for (const budgetName of ["", "-x", "--profile admin", "a b", "a(b)", "a:b", "a\\b", "a,b", "a=b", "*", "a\nb", "x".repeat(101)]) {
     refusal({ tool: "aws_budgets_describe_notifications", accountId: ACCOUNT, budgetName });
+    assert.equal(BUDGET_NAME.test(budgetName), false, "the configuration refuses it too: " + budgetName);
   }
   for (const notification of [
     { ...NOTIFICATION, threshold: "80,ThresholdType=ABSOLUTE_VALUE" }, { ...NOTIFICATION, threshold: "-1" }, { ...NOTIFICATION, threshold: "1e3" },

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { brokerCostRead, costStatusLines, readCostStatus, type CostRead, type CostReadRequest, type CostStatusRequest } from "../src/cost/status.js";
+import { brokerCostRead, costStatusLines, readCostStatus, redactAddress, redactCostStatus, type CostRead, type CostReadRequest, type CostStatusRequest } from "../src/cost/status.js";
 import { awsCostReadArgs } from "../src/tools/aws-cost-reads.js";
 
 // Synthetic: every answer below is a fixture shaped like the AWS CLI's JSON output. Nothing here reads AWS; that the live
@@ -83,6 +83,9 @@ test("positive: every value is read back and labeled, and the forecast is an est
   assert.equal(s.budget.forecastedSpend.label, "ESTIMATE");
   assert.deepEqual(s.budget.hasActualAlert, { label: "OBSERVED", value: true });
   assert.deepEqual(s.budget.hasForecastAlert, { label: "OBSERVED", value: true });
+  // LastUpdatedTime is when the budget was last updated, never shown as a spend time (review 6539122808, N1).
+  assert.deepEqual(s.budget.budgetUpdatedAt, { label: "OBSERVED", value: "2026-10-31T06:00:00.000Z" });
+  assert.deepEqual(s.budget.spendCalculatedAt, { label: "UNKNOWN", reason: "NOT_REPORTED_BY_AWS" });
   assert.equal(s.budget.hardSpendCap, false);
   assert.equal(s.budget.notifications.label, "OBSERVED");
   if (s.budget.notifications.label !== "OBSERVED") return;
@@ -118,6 +121,7 @@ test("positive: every value is read back and labeled, and the forecast is an est
   assert.match(lines[0]!, /OBSERVED_COMPLETE/);
   assert.match(lines.join("\n"), /never caps spend/);
   assert.match(lines.join("\n"), /forecast 40\.1 USD \[ESTIMATE\]/);
+  assert.match(lines.join("\n"), /recipients f\*\*\*@example\.com arn:aws:sns:us-east-1:111111111111:alz-budget-alerts/);
 });
 
 test("analytics selected: the phase 2 fields are present and UNKNOWN, never filled", async () => {
@@ -130,6 +134,8 @@ test("waiting: an export with no execution, or only one in progress, is WAITING,
   for (const executions of [[], [{ ExecutionId: "e-1", ExecutionStatus: { StatusCode: "QUERY_IN_PROCESS", CreatedAt: "2026-10-31T01:00:00Z" } }]]) {
     const answers = fixtures();
     answers.aws_bcm_list_executions = { Executions: executions };
+    // Created this morning: still inside the 48-hour window.
+    (answers.aws_bcm_get_export as { ExportStatus: Record<string, unknown> }).ExportStatus.CreatedAt = "2026-10-31T00:00:00Z";
     const s = await readCostStatus(REQUEST, reader(answers).read, NOW);
     assert.equal(s.export.state, "WAITING");
     assert.equal(s.freshness.state, "WAITING");
@@ -324,4 +330,79 @@ test("the production reader goes through the governed broker: a refused read is 
   assert.deepEqual(s.budget.budgetCount, { label: "UNKNOWN", reason: "READ_BLOCKED" });
   assert.equal(s.export.state, "UNKNOWN");
   assert.equal(s.overall, "INCOMPLETE");
+});
+
+test("B2 (review 6539122808): a present budget with spend not yet reported is WAITING; an unknown limit, period, spend or export health is INCOMPLETE", async () => {
+  const noSpend = fixtures();
+  delete (noSpend.aws_budgets_describe_budgets as { Budgets: Record<string, unknown>[] }).Budgets[0]!.CalculatedSpend;
+  let s = await readCostStatus(REQUEST, reader(noSpend).read, NOW);
+  assert.deepEqual(s.budget.actualSpend, { label: "UNKNOWN", reason: "NOT_REPORTED_BY_AWS" });
+  assert.equal(s.overall, "WAITING");
+  assert.doesNotMatch(costStatusLines(s)[0]!, /OBSERVED_COMPLETE/);
+
+  for (const field of ["BudgetLimit", "TimeUnit"]) {
+    const answers = fixtures();
+    delete (answers.aws_budgets_describe_budgets as { Budgets: Record<string, unknown>[] }).Budgets[0]![field];
+    s = await readCostStatus(REQUEST, reader(answers).read, NOW);
+    assert.equal(s.overall, "INCOMPLETE", field);
+  }
+  const oddPeriod = fixtures();
+  (oddPeriod.aws_budgets_describe_budgets as { Budgets: Record<string, unknown>[] }).Budgets[0]!.TimeUnit = "WEEKLY";
+  assert.equal((await readCostStatus(REQUEST, reader(oddPeriod).read, NOW)).overall, "INCOMPLETE");
+
+  const noHealth = fixtures();
+  delete (noHealth.aws_bcm_get_export as Record<string, unknown>).ExportStatus;
+  s = await readCostStatus(REQUEST, reader(noHealth).read, NOW);
+  assert.deepEqual(s.export.health, { label: "UNKNOWN", reason: "NOT_REPORTED_BY_AWS" });
+  assert.equal(s.overall, "INCOMPLETE");
+  const oddHealth = fixtures();
+  (oddHealth.aws_bcm_get_export as { ExportStatus: Record<string, unknown> }).ExportStatus.StatusCode = "DEGRADED";
+  assert.equal((await readCostStatus(REQUEST, reader(oddHealth).read, NOW)).overall, "INCOMPLETE");
+});
+
+test("N2 (review 6539122808): an export with no delivery is STALE once it is older than the window; a missing list key is MALFORMED_RESPONSE", async () => {
+  const old = fixtures();
+  old.aws_bcm_list_executions = { Executions: [] };
+  (old.aws_bcm_get_export as { ExportStatus: Record<string, unknown> }).ExportStatus.CreatedAt = "2026-10-01T00:00:00Z";
+  const s = await readCostStatus(REQUEST, reader(old).read, NOW);
+  assert.equal(s.export.state, "STALE");
+  assert.equal(s.freshness.state, "STALE");
+  assert.equal(s.overall, "STALE");
+  assert.equal(s.export.lastDelivery.label, "UNKNOWN");
+
+  for (const tool of ["aws_budgets_describe_budgets", "aws_budgets_describe_notifications", "aws_budgets_describe_subscribers", "aws_tagging_get_resources",
+    "aws_ce_list_cost_allocation_tags", "aws_bcm_list_executions"]) {
+    const answers = fixtures();
+    answers[tool] = {};
+    const status = await readCostStatus(REQUEST, reader(answers).read, NOW);
+    assert.match(JSON.stringify(status), /MALFORMED_RESPONSE/, tool);
+    assert.notEqual(status.overall, "OBSERVED_COMPLETE", tool);
+    assert.notEqual(status.budget.state, "MISSING", tool + ": an empty answer is not an observed absence");
+    assert.notEqual(status.export.state, "WAITING", tool + ": an empty answer is not an observed wait");
+  }
+  const byName = fixtures();
+  byName.aws_bcm_list_exports = {};
+  const named = await readCostStatus({ ...REQUEST, exportArn: undefined, exportName: "alz-cur2" }, reader(byName).read, NOW);
+  assert.equal(named.export.state, "UNKNOWN");
+  assert.deepEqual(named.export.arn, { label: "UNKNOWN", reason: "MALFORMED_RESPONSE" });
+});
+
+test("N5 (review 6539122808): redactCostStatus masks every email's local part and keeps SNS ARNs; the text summary never holds a full email", async () => {
+  const s = await readCostStatus(REQUEST, reader(fixtures()).read, NOW);
+  assert.match(JSON.stringify(s), /finops@example\.com/, "the typed status keeps the address for the local operator");
+  const redacted = redactCostStatus(s);
+  const text = JSON.stringify(redacted);
+  assert.doesNotMatch(text, /finops@/);
+  assert.match(text, /f\*\*\*@example\.com/);
+  assert.match(text, /arn:aws:sns:us-east-1:111111111111:alz-budget-alerts/);
+  assert.match(JSON.stringify(s), /finops@example\.com/, "the input is not changed");
+  assert.equal(redacted.overall, s.overall);
+  assert.doesNotMatch(costStatusLines(s).join("\n"), /finops@/);
+  assert.equal(redactAddress("EMAIL", "@example.com"), "***");
+  assert.equal(redactAddress("EMAIL", "a@b.example"), "a***@b.example");
+  // A status with no observed notifications is returned as it is.
+  const denied = fixtures();
+  denied.aws_budgets_describe_notifications = new Error("An error occurred (AccessDeniedException) when calling the DescribeNotificationsForBudget operation: no");
+  const d = await readCostStatus(REQUEST, reader(denied).read, NOW);
+  assert.deepEqual(redactCostStatus(d), d);
 });
