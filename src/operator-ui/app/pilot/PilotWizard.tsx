@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { ExperienceLevel } from "../../experience-level.js";
 import { PilotDialog } from "./PilotDialog";
 import { ActDev1Setup } from "./ActDev1Setup";
+import { CostPanel } from "./CostPanel";
 import CleanupStep, { CleanupList } from "./CleanupStep";
 import { DeploymentPaths, usePathsLoader, usePathsRefresh, type PathsLoad } from "./DeploymentPaths";
 import { checkedTime, orderEnvironments } from "./readiness-order";
@@ -437,6 +438,8 @@ export default function PilotWizard(props: PilotWizardProps) {
     <>
     {/* The deployment paths, above the wizard once the session is unlocked (owner decision E5). Read-only. */}
     {unlocked && <DeploymentPaths ref={pathsRef} load={pathsLoad} />}
+    {/* Cost and visibility (plan item 5): the last saved read-only cost status. Read-only; it never stops or starts a change. */}
+    {unlocked && <CostPanel />}
     <section className="panel pilot" aria-labelledby="pilot-title" data-level={level}>
       <div ref={contentRef}>
         <h2 id="pilot-title" tabIndex={-1}>{COPY.heading}</h2>

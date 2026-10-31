@@ -613,7 +613,9 @@ export function describeCheck(item: PreflightCheck, environment: PilotEnvironmen
     return { known: true, label: "The owner's reviewed rules allow changes in " + environment, wrong: "The pilot is switched off, or the owner's reviewed rules do not allow changes in " + environment + ". This is the normal state until the owner allows it.", fix: "Ask the pilot owner to review the rules and allow this environment. Nothing you do here can allow it." };
   }
   if (name.startsWith("financial controls")) {
-    return { known: true, informational: true, label: "Spending limits are not checked here: the owner confirms the budget alert or cost limit separately", wrong: "", fix: "" };
+    return { known: true, informational: true, label: item.state === "READY"
+      ? "The budget, its alerts, tags and cost export were read from AWS and look right (advisory: a budget alerts, it never caps spend)"
+      : "The budget and its alerts are not confirmed yet (advisory, never a stop): see the Cost and visibility panel, or run ./alz cost status", wrong: "", fix: "" };
   }
   if (name.startsWith("identities configured")) {
     return { known: true, label: "Each separate sign-in is set up on its own", wrong: "A sign-in is missing, two are the same, or one could fall back to your own account.", fix: "In the terminal where you started the console, set the missing sign-in details (the walkthrough lists them), restart the console, and check again." };
