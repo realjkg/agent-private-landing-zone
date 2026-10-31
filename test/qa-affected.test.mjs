@@ -311,6 +311,14 @@ test("CI builds operator HTML before HTTP inventory guards", () => {
   assert.deepEqual(plan.gaps, []);
 });
 
+test("a .trivyignore.yaml change selects its focused test, and without that test it is a gap", () => {
+  const files = new Map([...fixture(), ["test/trivyignore.test.ts", "test()"]]);
+  const plan = planChanged([".trivyignore.yaml"], files);
+  assert.deepEqual(plan.nodeTests, ["test/trivyignore.test.ts"]);
+  assert.deepEqual(plan.gaps, []);
+  assert.match(planChanged([".trivyignore.yaml"], fixture()).gaps.join(" "), /\.trivyignore\.yaml has no focused test owner/);
+});
+
 test("a .gitignore change selects the secret-rule test and leaves no coverage gap", () => {
   const files = new Map([...fixture(), ["test/gitignore-secrets.test.ts", "test()"]]);
   const plan = planChanged([".gitignore"], files);

@@ -392,6 +392,12 @@ export function planChanged(changedPaths, files) {
       addExisting(selected, files, ["test/gitignore-secrets.test.ts"]);
       continue;
     }
+    // The supply-chain scan's ignore file: a focused test keeps every entry narrow, current and explained.
+    if (path === ".trivyignore.yaml") {
+      addExisting(selected, files, ["test/trivyignore.test.ts"]);
+      if (!hasFile(files, "test/trivyignore.test.ts")) gaps.push(".trivyignore.yaml has no focused test owner.");
+      continue;
+    }
     if (/^(?:Dockerfile|compose(?:\.production)?\.yaml|\.dockerignore|alz)$/.test(path)) {
       addExisting(selected, files, ["test/container-security.test.ts", "test/deps-cli.test.ts"]);
       notes.push("Release-sensitive artifact changed: dedicated qualification remains independent.");
