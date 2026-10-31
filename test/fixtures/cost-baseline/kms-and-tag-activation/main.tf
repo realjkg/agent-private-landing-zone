@@ -97,16 +97,7 @@ resource "aws_kms_key" "cost_alerts" {
         Resource  = "*"
         Condition = {
           StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
-        }
-      },
-      {
-        Sid       = "AllowSnsToUseTheKey"
-        Effect    = "Allow"
-        Principal = { Service = "sns.amazonaws.com" }
-        Action    = ["kms:GenerateDataKey*", "kms:Decrypt"]
-        Resource  = "*"
-        Condition = {
-          StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+          ArnLike      = { "aws:SourceArn" = "arn:aws:budgets::${data.aws_caller_identity.current.account_id}:*" }
         }
       },
     ]
@@ -168,6 +159,8 @@ resource "aws_s3_bucket_ownership_controls" "cost_export" {
   }
 }
 
+# SSE-S3, as in the AWS Cloud Intelligence Dashboards data-exports destination bucket. A customer-managed key
+# is not rendered; an owner who needs one adopts a bucket already configured with it (export.mode ADOPT_EXISTING).
 resource "aws_s3_bucket_server_side_encryption_configuration" "cost_export" {
   bucket = aws_s3_bucket.cost_export.id
 

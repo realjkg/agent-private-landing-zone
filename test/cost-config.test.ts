@@ -29,7 +29,10 @@ function issuesOf(input: unknown): string[] {
 test("a minimal configuration resolves to safe defaults: notify-only, no budget action, analytics off, no limits", () => {
   const config = resolveCostConfig(minimal());
   assert.equal(config.schema, 1);
-  assert.deepEqual(config.notifications, { route: "SNS_TOPIC", emails: ["finops@example.com"], encryption: "NONE" });
+  assert.deepEqual(config.notifications, { route: "SNS_TOPIC", emails: ["finops@example.com"], encryption: "NONE" },
+    "a new topic is unencrypted by default (owner decision 2026-10-31); a customer-managed key is opt-in");
+  assert.equal(resolveCostConfig({ ...minimal(), notifications: { route: "EMAIL_DIRECT", emails: ["a@example.com"] } })
+    .notifications.encryption, "NONE", "no topic is created, so there is nothing to encrypt");
   assert.equal(config.activateCostAllocationTags, false, "tag activation is opt-in");
   assert.deepEqual(config.tags, { "cost-center": "cc-1234", environment: "dev", owner: "platform-team" },
     "the owner tag defaults to the owner");

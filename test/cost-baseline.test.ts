@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -58,12 +58,21 @@ const VARIANTS: Record<string, { config: unknown; provenance?: ProvenanceTags }>
 };
 const render = (name: string) => renderAwsCostBaseline(VARIANTS[name].config as CostConfig, VARIANTS[name].provenance);
 
+test("each golden is its own Terraform module, so a scanner never merges alternative baselines", () => {
+  // Trivy (and Terraform) treat every .tf file in one directory as one module. Alternative goldens side by side read as
+  // one module with duplicate resources, and the scan then misattributes findings (COST-1c, AWS-0086 to AWS-0093).
+  assert.deepEqual(readdirSync(FIXTURES).sort(), Object.keys(VARIANTS).sort());
+  for (const name of Object.keys(VARIANTS)) {
+    assert.deepEqual(readdirSync(join(FIXTURES, name)).filter((file) => /\.tf(?:\.json)?$/.test(file)), ["main.tf"], name);
+  }
+});
+
 test("the rendered baselines match their reviewed golden files byte for byte", () => {
   for (const name of Object.keys(VARIANTS)) {
-    const golden = readFileSync(join(FIXTURES, name + ".main.tf"), "utf8");
-    assert.equal(render(name).terraform, golden, name + " drifted from test/fixtures/cost-baseline/" + name + ".main.tf");
+    const golden = readFileSync(join(FIXTURES, name, "main.tf"), "utf8");
+    assert.equal(render(name).terraform, golden, name + " drifted from test/fixtures/cost-baseline/" + name + "/main.tf");
   }
-  const metadata = JSON.parse(readFileSync(join(FIXTURES, "defaults.metadata.json"), "utf8"));
+  const metadata = JSON.parse(readFileSync(join(FIXTURES, "defaults", "metadata.json"), "utf8"));
   assert.deepEqual(render("defaults").metadata, metadata);
 });
 
@@ -100,9 +109,13 @@ test("the default baseline: notify-only budget, SNS route, new private export bu
   // N7: a member account can export its own data; only tag activation is limited to the management account.
   assert.ok(metadata.prerequisites.some((item) => /member account covers only that account's own cost and usage/.test(item)));
   assert.ok(!metadata.prerequisites.some((item) => /export run in the AWS Organizations management/.test(item)));
-  // N2: unencrypted by default, and the metadata says so.
+  // The new topic is unencrypted by default (owner decision 2026-10-31; Trivy AWS-0095 is ignored for this golden only),
+  // and the metadata says how to opt in.
   assert.equal(metadata.notifications.encryption, "NONE");
   assert.doesNotMatch(terraform, /aws_kms_key|kms_master_key_id/);
+  assert.ok(metadata.prerequisites.some((item) => /not encrypted .*set notifications\.encryption to CUSTOMER_KMS/.test(item)));
+  // The export bucket stays SSE-S3 (see .trivyignore.yaml, AWS-0132), and says so where it is rendered.
+  assert.match(terraform, /# SSE-S3, as in the AWS Cloud Intelligence Dashboards data-exports destination bucket\./);
   // N6: per-baseline names, and the bucket is never force-destroyed.
   assert.match(metadata.naming.suffix, /^[a-f0-9]{8}$/);
   assert.match(terraform, new RegExp('name = "alz-cost-alerts-' + metadata.naming.suffix + '"'));
@@ -140,13 +153,25 @@ test("adopting an existing bucket renders no bucket, and an adopted topic render
   assert.equal(metadata.naming.bucketName, "corp-billing-exports");
 });
 
-test("opt-in KMS encryption and tag activation render the key, its policy, and the us-east-1 activation", () => {
+test("an explicit encryption NONE renders the same unencrypted topic as the default, and no key", () => {
+  const { terraform, metadata } = renderAwsCostBaseline(resolveCostConfig({ ...base,
+    notifications: { ...base.notifications, encryption: "NONE" } }));
+  assert.equal(terraform, renderAwsCostBaseline(resolveCostConfig(base)).terraform);
+  assert.doesNotMatch(terraform, /aws_kms_key|kms_master_key_id/);
+  assert.equal(metadata.notifications.encryption, "NONE");
+  assert.equal(metadata.teardown.kmsKeyDeletionWindowDays, null);
+  assert.ok(metadata.creates.every((item) => item.type !== "aws_kms_key"));
+});
+
+test("KMS encryption and opt-in tag activation render the key, its policy, and the us-east-1 activation", () => {
   const { terraform, metadata } = render("kms-and-tag-activation");
   assert.match(terraform, /resource "aws_kms_key" "cost_alerts"/);
   assert.match(terraform, /enable_key_rotation\s+= true/);
   assert.match(terraform, /kms_master_key_id = aws_kms_key\.cost_alerts\.arn/);
   assert.match(terraform, /Principal = \{ Service = "budgets\.amazonaws\.com" \}\n\s+Action\s+= \["kms:GenerateDataKey\*", "kms:Decrypt"\]/);
-  assert.match(terraform, /Principal = \{ Service = "sns\.amazonaws\.com" \}/);
+  assert.doesNotMatch(terraform, /sns\.amazonaws\.com/, "only the publisher needs the key");
+  assert.match(terraform, /ArnLike\s+= \{ "aws:SourceArn" = "arn:aws:budgets::\$\{data\.aws_caller_identity\.current\.account_id\}:\*" \}/);
+  assert.ok(metadata.prerequisites.some((item) => /new customer-managed KMS key, which carries a monthly key charge/.test(item)));
   assert.doesNotMatch(terraform, /alias\/aws\/sns/);
   assert.equal(metadata.notifications.encryption, "CUSTOMER_KMS");
   assert.equal(metadata.teardown.kmsKeyDeletionWindowDays, 30);
