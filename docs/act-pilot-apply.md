@@ -217,8 +217,18 @@ Owner direction 6536926009 (cost and visibility, plan item 3): a provisioning li
 - **What the judge allows.** Only creates of the listed types, each at most `max` times. Fewer, or none, are within the limit. This is the difference from the canary's exact count.
 - **Regions.**
   - With `regions` set, Terraform reads each created resource's region from the plan's resolved values: `region` (AWS provider 6 and GCP), else `location` (Azure and GCP), else `zone`, read as its region.
-  - A region outside the list is refused, and so is a region the plan does not show until apply.
-  - A type with no region (a global service such as AWS Budgets) is not judged by region.
+  - A region outside the list is refused. So is a region the plan does not show until apply, and so is an empty region or one that is not text.
+  - **When a resource has no region.** The reviewed AWS provider (hashicorp/aws 6.68.0) writes `region` into every regional resource's planned values, so only a global service has none.
+    - An `aws_` type with no region is refused, unless it is on the reviewed global list (`isGlobalAwsType`, `src/apply/engines/terraform.ts`). The list is service prefixes: IAM, Organizations, Budgets, Cost Explorer, CUR, Data Exports, Billing, Cost Optimization Hub, CloudFront, Route 53 (not Route 53 Resolver), Shield, Global Accelerator, Account and WAF Classic.
+    - A global type missing from the list is refused until it joins by review, so the list fails closed.
+    - A type of another provider with no region is not judged by region. Azure's own location judge already holds its located types to the contract's location.
+  - **Arguments that reach another region.** `regions` judges each resource's own region and, beyond that, a small reviewed table of arguments (`CROSS_REGION_ATTRIBUTES`):
+    - `aws_dynamodb_table` `replica[].region_name`;
+    - `aws_cloudformation_stack_set_instance` `stack_set_instance_region`;
+    - `aws_vpc_peering_connection` and `aws_ec2_transit_gateway_peering_attachment` `peer_region`.
+    
+    Each value set must be in the list, and one unknown until apply is refused. An unset value means the resource's own region.
+  - **Not judged by region.** An S3 replication destination (`aws_s3_bucket_replication_configuration`): its destination is a bucket ARN, which names no region. Any other cross-region argument outside the table is not judged either. Every type must still be listed in `resources`, so the owner sees each one.
   - CDK, Bicep and GCP API-native create in the target's own region, which the contract check above already holds to the list.
 - **Sizes and families.** Every value of the type's size attribute must be one of `sizes`, or belong to one of `families`. A size's family is everything before its last dot: `t3.micro` is in `t3`, and `db.r6g.large` is in `db.r6g`. A size with no dot (`Standard_B2s`, `e2-medium`) matches only by name. A size the plan does not show is refused.
 - **`RESOURCE_NOT_IN_LIMITS`.** Something outside the limits:
@@ -234,7 +244,7 @@ Owner direction 6536926009 (cost and visibility, plan item 3): a provisioning li
   - An SNS subscription and an SNS topic policy are deleted only with their run-created topic.
   - A Data Exports export is deleted on its own. Its delivered reports stay in their bucket, which is its own leaf.
   - `aws_ce_cost_allocation_tag` is deliberately not on the list. Its delete switches the tag off for the whole account, and a planned create does not prove the run switched it on. A cleanup holds it for a person (`TYPE_UNREVIEWED`).
-- **`./alz apply contract-check`** reports each target's `limits` (or `canary`) as one owner input, summarized in plain words. A target that names neither is `MISSING`.
+- **`./alz apply contract-check`** reports each target's `limits` (or `canary`) as one owner input, summarized in plain words. A target in scope that names neither is `MISSING`, and the draft is not `COMPLETE`. That includes a target whose environment the draft authorizes only for `CLEANUP` or `REMOVE`, which need neither form. The check is advisory and stricter than the loader here: name the limits for every environment in scope, or accept the `MISSING` line for a cleanup-only one.
 
 ## Promotion: DEV, then QA, then PROD
 

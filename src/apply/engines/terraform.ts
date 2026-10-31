@@ -388,31 +388,102 @@ function assertPlanInCanary(document: Shown, pinned: PilotTarget): void {
 }
 
 /**
- * Where and how large a planned resource is, for the provisioning limits (../canary.ts, `assertLimits`), from its resolved planned
- * values only: its `region` (AWS provider 6 and GCP), else its `location` (Azure, GCP), else its `zone` read as the zone's region
- * (GCP, `us-central1-a` is `us-central1`); null when that attribute is unknown until apply, absent when the type has none. And the
- * values of its size attribute (`TERRAFORM_SIZE_ATTRIBUTES`), null when unknown or not a name. Nothing else of `after` is read, and
- * neither value is recorded; the canary judge ignores both.
+ * Whether an `after_unknown` value says something is unknown until apply. Terraform writes `true` for an unknown value and, for a
+ * known list or object, the same shape with `false` leaves (a fully known list is `[false, false]`; a known scalar is omitted), so
+ * only a `true` anywhere inside means unknown (review 6537650100, B1).
  */
-function placementOf(change: { after?: unknown; after_unknown?: unknown } | undefined, type: string): Pick<CanaryEntry, "region" | "sizes"> {
+const isUnknown = (value: unknown): boolean =>
+  value === true || (Array.isArray(value) && value.some(isUnknown)) || (isPlainRecord(value) && Object.values(value).some(isUnknown));
+
+/**
+ * Where and how large a planned resource is, for the provisioning limits (../canary.ts, `assertLimits`), from its resolved planned
+ * values only. Nothing else of `after` is read, nothing is recorded, and the canary judge ignores all of it.
+ * - `region`: the first of `region` (AWS provider 6, GCP), `location` (Azure, GCP) and `zone` (GCP, read as its region: `us-central1-a`
+ *   is `us-central1`) that the planned values carry. Null (refused when the limits name regions) when that attribute is unknown until
+ *   apply, empty or not text (review 6537650100, N2). When none is present: an AWS type is regional, and so null, unless it is a
+ *   reviewed global type (`isGlobalAwsType`); a type of another provider is not judged by region (Azure's own location judge,
+ *   `assertPlannedLocations`, holds its located types to the contract's location).
+ * - `otherRegions`: the regions a resource reaches through its own arguments (`CROSS_REGION_ATTRIBUTES`: DynamoDB replicas, stack set
+ *   instances, peering); unset is the resource's own region, unknown is null.
+ * - `sizes`: the values of the type's size attribute (`TERRAFORM_SIZE_ATTRIBUTES`), null when unknown or not a list of names.
+ */
+function placementOf(change: { after?: unknown; after_unknown?: unknown } | undefined, type: string): Pick<CanaryEntry, "region" | "otherRegions" | "sizes"> {
   const after = isPlainRecord(change?.after) ? change.after : {};
   const unknown = isPlainRecord(change?.after_unknown) ? change.after_unknown : {};
   let region: string | null | undefined;
   for (const key of ["region", "location", "zone"] as const) {
-    if (unknown[key] === true) { region = null; break; }
+    if (isUnknown(unknown[key])) { region = null; break; }
+    if (!Object.hasOwn(after, key)) continue;
     const value = after[key];
-    if (typeof value === "string" && value !== "") { region = key === "zone" ? value.replace(/-[a-z]$/, "") : value; break; }
+    region = typeof value === "string" && value !== "" ? (key === "zone" ? value.replace(/-[a-z]$/, "") : value) : null;
+    break;
   }
+  if (region === undefined && type.startsWith("aws_") && !isGlobalAwsType(type)) region = null;
+  const otherRegions = crossRegionsOf(type, after, unknown);
   const attribute = TERRAFORM_SIZE_ATTRIBUTES[type];
   let sizes: readonly string[] | null | undefined;
   if (attribute !== undefined) {
     const value = after[attribute];
-    sizes = unknown[attribute] !== undefined && unknown[attribute] !== false ? null
+    sizes = isUnknown(unknown[attribute]) ? null
       : typeof value === "string" ? [value]
       : Array.isArray(value) && value.every((item) => typeof item === "string") ? value as string[]
       : null;
   }
-  return { ...(region !== undefined ? { region } : {}), ...(sizes !== undefined ? { sizes } : {}) };
+  return { ...(region !== undefined ? { region } : {}), ...(otherRegions !== undefined ? { otherRegions } : {}), ...(sizes !== undefined ? { sizes } : {}) };
+}
+
+/**
+ * The AWS Terraform types with no region of their own (hashicorp/aws 6.68.0 adds `region` to every regional resource, so a global one
+ * is the only kind whose planned values carry none): a reviewed list of service prefixes, plus the regional families that share one of
+ * those prefixes. A type here is still judged by region when its planned values carry one. A global type missing here is refused when
+ * the limits name regions (fail closed) until it joins by review; a regional type wrongly listed would still carry its `region`.
+ */
+const GLOBAL_AWS_PREFIXES: readonly string[] = [
+  "aws_iam_", "aws_organizations_", "aws_budgets_", "aws_ce_", "aws_cur_", "aws_bcmdataexports_", "aws_billing_", "aws_costoptimizationhub_",
+  "aws_cloudfront_", "aws_route53_", "aws_shield_", "aws_globalaccelerator_", "aws_account_", "aws_waf_",
+];
+const REGIONAL_UNDER_GLOBAL_PREFIX: readonly string[] = ["aws_route53_resolver_"];
+export const isGlobalAwsType = (type: string): boolean =>
+  GLOBAL_AWS_PREFIXES.some((prefix) => type.startsWith(prefix)) && !REGIONAL_UNDER_GLOBAL_PREFIX.some((prefix) => type.startsWith(prefix));
+
+/**
+ * The arguments through which one resource places infrastructure in another region (review 6537650100, N1): a reviewed table, judged
+ * against the limits' `regions` beside the resource's own region. `[block, field]` reads the field in every element of a nested block.
+ * Not covered, and documented as not judged: an S3 replication destination (a bucket ARN names no region).
+ */
+export const CROSS_REGION_ATTRIBUTES: Readonly<Record<string, readonly (readonly [string] | readonly [string, string])[]>> = {
+  aws_dynamodb_table: [["replica", "region_name"]],
+  aws_cloudformation_stack_set_instance: [["stack_set_instance_region"]],
+  aws_vpc_peering_connection: [["peer_region"]],
+  aws_ec2_transit_gateway_peering_attachment: [["peer_region"]],
+};
+
+function crossRegionsOf(type: string, after: Record<string, unknown>, unknown: Record<string, unknown>): (string | null)[] | undefined {
+  const paths = CROSS_REGION_ATTRIBUTES[type];
+  if (paths === undefined) return undefined;
+  const found: (string | null)[] = [];
+  // Unset (absent, null or empty) is the resource's own region; unknown or not text is null.
+  const read = (value: unknown, unknownValue: unknown): void => {
+    if (isUnknown(unknownValue)) { found.push(null); return; }
+    if (value === undefined || value === null || value === "") return;
+    found.push(typeof value === "string" ? value : null);
+  };
+  for (const path of paths) {
+    if (path.length === 1) { read(after[path[0]], unknown[path[0]]); continue; }
+    const [block, field] = path;
+    if (isUnknown(unknown[block]) && !Array.isArray(unknown[block])) { found.push(null); continue; }
+    const items = after[block];
+    if (items === undefined || items === null) continue;
+    if (!Array.isArray(items)) { found.push(null); continue; }
+    const unknownItems = Array.isArray(unknown[block]) ? unknown[block] as unknown[] : [];
+    items.forEach((item, index) => {
+      const itemUnknown = unknownItems[index];
+      if (itemUnknown === true) { found.push(null); return; }
+      read(isPlainRecord(item) ? item[field] : undefined, isPlainRecord(itemUnknown) ? itemUnknown[field] : undefined);
+      if (!isPlainRecord(item)) found.push(null);
+    });
+  }
+  return found;
 }
 
 /**

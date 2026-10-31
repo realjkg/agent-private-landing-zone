@@ -26,10 +26,16 @@ export const RETAINABLE_CANARY_TYPES: ReadonlySet<string> = new Set(["AWS::Cloud
  * One resource the artifact would touch: its address, its type, its action as the engine reports it, and whether that action is a plain
  * create. An engine that can read where and how large a resource is from its own artifact adds those, for the provisioning `limits`
  * (Terraform, from the plan's resolved values): `region` is the resource's region or location (undefined: the type has none, a global
- * service; null: not known until apply), and `sizes` the values of the type's size attribute (`SIZE_ATTRIBUTES`; undefined: the engine
+ * service; null: not known until apply, empty or not text), `otherRegions` the regions it reaches through its own arguments, and `sizes` the values of the type's size attribute (`SIZE_ATTRIBUTES`; undefined: the engine
  * did not read one; null: not shown in the plan). The canary judge never reads either.
  */
-export type CanaryEntry = { address: string; type: string; action: string; creates: boolean; region?: string | null; sizes?: readonly string[] | null };
+export type CanaryEntry = {
+  address: string; type: string; action: string; creates: boolean;
+  region?: string | null;
+  /** Other regions the resource reaches through its own arguments (a DynamoDB replica, a stack set instance, a peering), each null when unknown. */
+  otherRegions?: readonly (string | null)[];
+  sizes?: readonly string[] | null;
+};
 
 const MAX_REASON = 200;
 const clip = (text: string): string => (text.length > MAX_REASON ? text.slice(0, MAX_REASON) + "..." : text);
@@ -72,6 +78,12 @@ export function assertLimits(limits: PilotLimits, entries: readonly CanaryEntry[
     if (regions !== undefined && entry.region !== undefined) {
       if (entry.region === null) return stopBecause(RESOURCE_NOT_IN_LIMITS, at + ": the " + what + " does not show its region, so it cannot be judged against the allowed regions");
       if (!regions.has(entry.region.toLowerCase())) stopBecause(RESOURCE_NOT_IN_LIMITS, at + ": region " + shown(entry.region) + " is not in the allowed regions (" + limits.regions!.join(", ") + ")");
+    }
+    if (regions !== undefined) {
+      for (const other of entry.otherRegions ?? []) {
+        if (other === null) return stopBecause(RESOURCE_NOT_IN_LIMITS, at + ": the " + what + " does not show a region it reaches (a replica, a stack set instance or a peer), so it cannot be judged against the allowed regions");
+        if (!regions.has(other.toLowerCase())) stopBecause(RESOURCE_NOT_IN_LIMITS, at + ": it reaches region " + shown(other) + " (a replica, a stack set instance or a peer), which is not in the allowed regions (" + limits.regions!.join(", ") + ")");
+      }
     }
     if (resource.sizes !== undefined || resource.families !== undefined) {
       if (entry.sizes === undefined || entry.sizes === null || entry.sizes.length === 0) {

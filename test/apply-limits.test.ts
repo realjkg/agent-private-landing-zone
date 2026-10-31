@@ -8,6 +8,7 @@ import { assertCanary, assertLimits, assertProvisioning, canaryRefusal, familyOf
 import { checkDraftContract, contractCheckLines } from "../src/apply/contract-check.js";
 import { authorizeContract, inspectPilotContract, pilotTargetSha256, repoPaths } from "../src/apply/contract.js";
 import { codeOf, reasonOf } from "../src/apply/engine.js";
+import { CROSS_REGION_ATTRIBUTES, isGlobalAwsType } from "../src/apply/engines/terraform.js";
 import type { PilotContract, PilotLimits, PilotTarget } from "../src/apply/types.js";
 import { CODE_COPY } from "../src/operator-ui/app/pilot/pilot-copy.js";
 import { AWS_REGION, awsContractJson } from "./helpers/apply-fixtures.js";
@@ -222,4 +223,18 @@ test("contract-check reports each target's limits or canary as one owner input, 
   const invalid = over.inputs.find((x) => x.field === "targets.DEV.limits");
   assert.equal(invalid?.status, "INVALID");
   assert.match(invalid!.detail!, /targets\.DEV\.limits\.resources\[0\]\.max: expected an integer from 1/);
+});
+
+test("the reviewed global AWS types carry no region of their own; a regional family under a global prefix, and every other aws_ type, is regional (review 6537650100, N2)", () => {
+  for (const type of ["aws_budgets_budget", "aws_budgets_budget_action", "aws_ce_cost_allocation_tag", "aws_bcmdataexports_export", "aws_iam_role", "aws_organizations_policy", "aws_route53_zone", "aws_cloudfront_distribution"]) {
+    assert.ok(isGlobalAwsType(type), type);
+  }
+  for (const type of ["aws_route53_resolver_endpoint", "aws_cloudwatch_log_group", "aws_s3_bucket", "aws_sns_topic", "aws_wafv2_web_acl", "aws_iamx_thing", "azurerm_virtual_network"]) {
+    assert.ok(!isGlobalAwsType(type), type);
+  }
+  // The arguments that reach another region are a reviewed table; S3 replication (a bucket ARN names no region) is not in it, and documented as not judged.
+  assert.deepEqual(Object.keys(CROSS_REGION_ATTRIBUTES).sort(), ["aws_cloudformation_stack_set_instance", "aws_dynamodb_table", "aws_ec2_transit_gateway_peering_attachment", "aws_vpc_peering_connection"]);
+  limitsStop({ regions: ["us-east-1"], resources: [{ type: "aws_dynamodb_table", max: 1 }] }, [create("aws_dynamodb_table.t", { region: "us-east-1", otherRegions: ["eu-west-1"] })], /it reaches region eu-west-1/, "other region");
+  limitsStop({ regions: ["us-east-1"], resources: [{ type: "aws_dynamodb_table", max: 1 }] }, [create("aws_dynamodb_table.t", { region: "us-east-1", otherRegions: [null] })], /does not show a region it reaches/, "unknown other region");
+  assertLimits({ resources: [{ type: "aws_dynamodb_table", max: 1 }] }, [create("aws_dynamodb_table.t", { region: "us-east-1", otherRegions: ["eu-west-1", null] })], "plan");
 });
