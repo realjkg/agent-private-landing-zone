@@ -90,6 +90,7 @@ export const FIXTURE_OWNERS = {
   "test/fixtures/cost-baseline/defaults.metadata.json": ["test/cost-baseline.test.ts"],
   "test/fixtures/cost-baseline/adopt-existing.main.tf": ["test/cost-baseline.test.ts"],
   "test/fixtures/cost-baseline/budget-action.main.tf": ["test/cost-baseline.test.ts"],
+  "test/fixtures/cost-baseline/kms-and-tag-activation.main.tf": ["test/cost-baseline.test.ts"],
   // The capture manifest is checked against every live fixture on disk.
   "test/fixtures/live/MANIFEST.json": ["test/teardown-live-fixtures.test.ts"],
   // Real Terraform 1.16.4 sources and `show -json` output for the construct judge (RB1): read by name from the fixture directory.
