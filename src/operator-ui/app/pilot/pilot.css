@@ -228,6 +228,15 @@
   color: var(--pilot-bad);
 }
 
+/* Advisory items only (financial controls): not yet verified, or needs attention. Never a stop. */
+.pilot-badge-neutral {
+  color: var(--muted);
+}
+
+.pilot-badge-warn {
+  color: var(--pilot-warn);
+}
+
 .pilot-facts {
   display: grid;
   grid-template-columns: max-content 1fr;

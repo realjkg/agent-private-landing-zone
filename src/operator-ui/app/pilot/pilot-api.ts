@@ -7,6 +7,8 @@
 // The session token is held in this module's memory only: never in storage, a cookie, the address bar or a log. Reloading the page
 // forgets it, and the person pastes it again. It travels in one request header, to the console's own origin.
 
+import { isCostStatus } from "../../../cost/shape.js";
+
 export type PilotEnvironment = "DEV" | "QA" | "PROD";
 export type PilotPath = "UI" | "CLI";
 export type PilotStep = "preflight" | "prepare" | "seal" | "approve" | "apply" | "observe" | "propose-cleanup" | "cleanup" | "verify-cleanup";
@@ -273,12 +275,8 @@ export type CostVisibility = {
   contractLimits: { state: "DISABLED" | "UNKNOWN" } | { state: "OK"; environments: { environment: PilotEnvironment; limits: ContractLimitsView | null; canary: boolean }[] };
 };
 
-const isLabeled = (value: unknown): boolean => isObject(value) && (value.label === "OBSERVED" || value.label === "ESTIMATE" || (value.label === "UNKNOWN" && typeof value.reason === "string"));
-const isCostStatusView = (value: unknown): value is CostStatusView => isObject(value) && value.kind === "ALZ_COST_STATUS" && typeof value.capturedAt === "string" &&
-  typeof value.overall === "string" && value.advisory === true && value.actEnabled === false && isObject(value.budget) && value.budget.hardSpendCap === false &&
-  ["limit", "period", "actualSpend", "forecastedSpend", "notifications", "hasActualAlert", "hasForecastAlert"].every((key) => isLabeled((value.budget as Record<string, unknown>)[key])) &&
-  isObject(value.tags) && isLabeled(value.tags.resources) && isObject(value.costAllocationTags) && Array.isArray(value.costAllocationTags.tags) &&
-  isObject(value.export) && isLabeled(value.export.lastDelivery) && isObject(value.freshness) && isLabeled(value.freshness.billingPeriod);
+/** The same deep check the local reader uses (src/cost/shape.ts, browser-safe): a status not exactly as written is not data. */
+const isCostStatusView = (value: unknown): value is CostStatusView => isCostStatus(value);
 
 /** True only for a reply with the panel's shape. A status that is not well formed is shown as unreadable, never as data. */
 export function isCostVisibility(value: unknown): value is CostVisibility {

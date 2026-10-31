@@ -244,8 +244,11 @@ export function CostPanel() {
       <h2 id="cost-visibility-title" tabIndex={-1} data-panel={COST_PANEL_ID}>Cost and visibility</h2>
       <p>Read-only and advisory. This shows the budget, alerts, tags, cost export and limits as last read from AWS by <code>./alz cost status</code> in a terminal. It never stops a change, and the console never reads AWS itself.</p>
       <p><button type="button" className="pilot-secondary" onClick={reload} disabled={load.status === "loading"}>Show the latest saved read</button></p>
-      {load.status === "loading" && <p role="status">Loading the saved cost status…</p>}
-      {load.status === "error" && <p role="note" className="cost-error">The cost status could not be loaded from the console. Nothing here is shown as passing. Try again, or run <code>./alz cost status</code> in a terminal.</p>}
+      {/* One polite live region, always present, so loading and a failed (re)load are both announced (review 6539995646, N6). */}
+      <p role="status" aria-live="polite" className={load.status === "error" ? "cost-error" : undefined}>
+        {load.status === "loading" ? "Loading the saved cost status…" : load.status === "error"
+          ? <>The cost status could not be loaded from the console. Nothing here is shown as passing. Try again, or run <code>./alz cost status</code> in a terminal.</> : ""}
+      </p>
       {data && <>
         <div role="status" className="cost-summary">
           {cost ? <>

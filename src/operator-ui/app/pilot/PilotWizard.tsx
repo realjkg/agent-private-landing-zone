@@ -217,6 +217,13 @@ const stateWord = (state: PreflightCheck["state"]): string => ({
   READY: COPY.stateReady, MISSING: COPY.stateMissing, INVALID: COPY.stateInvalid, UNVERIFIED: COPY.stateUnverified, UNAVAILABLE: COPY.stateUnavailable,
   BLOCKED: COPY.stateBlocked,
 })[state] ?? COPY.stateInvalid;
+/**
+ * The badge style for a readiness item. An advisory item (financial controls) is always `ok`, so its style follows its state
+ * instead (review 6539995646, N1): ready reads ok, not yet verified reads neutral, and anything that needs attention reads as a
+ * warning. It is still advisory and never blocks; the state word beside it is the text cue.
+ */
+export const badgeClass = (item: PreflightCheck): string => "pilot-badge " + (!item.advisory ? (item.ok ? "pilot-badge-ok" : "pilot-badge-bad")
+  : item.state === "READY" ? "pilot-badge-ok" : item.state === "UNVERIFIED" ? "pilot-badge-neutral" : "pilot-badge-warn");
 /** Who can make a readiness item ready, in plain words. */
 const partyWord = (party: PreflightCheck["responsible"]): string | undefined =>
   party === undefined ? undefined : ({ OWNER: COPY.partyOwner, OPERATOR: COPY.partyOperator, TOOL: COPY.partyTool })[party];
@@ -564,7 +571,7 @@ export default function PilotWizard(props: PilotWizardProps) {
                         const good = item.ok;
                         return (
                           <li key={item.check} data-ok={good ? "true" : "false"}>
-                            <p><span className={good ? "pilot-badge pilot-badge-ok" : "pilot-badge pilot-badge-bad"} data-state={item.state}>{stateWord(item.state)}</span> {words.label}</p>
+                            <p><span className={badgeClass(item)} data-state={item.state}>{stateWord(item.state)}</span> {words.label}</p>
                             {!good && !words.informational && (
                               <>
                                 <p><strong>What is wrong:</strong> {words.wrong}</p>

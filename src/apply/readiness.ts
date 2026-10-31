@@ -99,8 +99,15 @@ export const COST_STATUS_MAX_AGE_HOURS = 24;
  * - OBSERVED_COMPLETE: READY; WAITING (deployed, AWS has no spend or export delivery yet): UNVERIFIED, never zero spend;
  * - STALE (the export stopped delivering) and INCOMPLETE (a read was denied or not answered): UNAVAILABLE;
  * - ATTENTION: MISSING when the budget is not there, otherwise INVALID, with what needs attention.
+ * A snapshot reaches here only after the deep shape check (src/cost/shape.ts); anything that still fails to judge is UNVERIFIED.
  */
 export function costReadiness(snapshot: CostSnapshot, contract: PilotContract, environment: ApplyEnvironment, now: Date): { state: ReadinessState; detail: string } {
+  // Total: the item is advisory, so nothing in a saved file can make readiness throw (review 6539995646, B2).
+  try { return judgeCost(snapshot, contract, environment, now); }
+  catch { return { state: "UNVERIFIED", detail: "The saved cost status could not be judged. Run ./alz cost status in a terminal (read-only) to read it again." }; }
+}
+
+function judgeCost(snapshot: CostSnapshot, contract: PilotContract, environment: ApplyEnvironment, now: Date): { state: ReadinessState; detail: string } {
   const run = "Run ./alz cost status in a terminal (read-only) to read the budget, alerts, tags and cost export again.";
   if (contract.provider !== "AWS") return { state: "UNVERIFIED", detail: "The cost status reads AWS only; this contract's provider is " + contract.provider + ". The owner confirms the budget and its alerts out of band." };
   if (snapshot.state === "NONE") return { state: "UNVERIFIED", detail: "No cost status has been read on this computer. " + run };
@@ -199,7 +206,9 @@ export async function assessReadiness(input: ReadinessInput): Promise<ReadinessR
   add("engine qualified in DEV for seal and apply (" + engine.id + ")", qualification.state, "OWNER", qualification.detail);
   // Financial controls: advisory, never a stop (owner direction 6536926009). The state comes from the cost status the last
   // `./alz cost status` read from AWS and saved on this computer (src/cost/local.ts); readiness reads that file and calls no cloud.
-  const cost = costReadiness(readCostSnapshot(input.costStatusPath ?? costPaths(repoPaths().root).status), contract, environment, (input.now ?? (() => new Date()))());
+  let snapshot: CostSnapshot;
+  try { snapshot = readCostSnapshot(input.costStatusPath ?? costPaths(repoPaths().root).status); } catch { snapshot = { state: "UNREADABLE" }; }
+  const cost = costReadiness(snapshot, contract, environment, (input.now ?? (() => new Date()))());
   checks.push({ check: FINANCIAL_CHECK, ok: true, state: cost.state, advisory: true, detail: cost.detail });
   add("identity separation attested on the real DEV backend", qualification.state === "READY" ? "READY" : "UNVERIFIED", "OWNER", qualification.state === "READY"
     ? "Attested by the person who ran ./alz apply qualify, from the cloud's own logs; recorded in the qualification evidence."

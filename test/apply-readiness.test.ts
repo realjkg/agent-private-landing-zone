@@ -171,3 +171,31 @@ test("financial controls through assessReadiness: a saved observed status for th
     assert.equal(report.next, null);
   }
 });
+
+test("B2: a shallow or malformed saved status never throws and is never READY: UNVERIFIED through assessReadiness, still advisory", async () => {
+  const { input } = await world((k) => awsContractJson(k), "AWS");
+  const shallow = (overall: string) => ({ kind: "ALZ_COST_STATUS", source: "AWS_API_READ_ONLY", accountId: "111111111111", capturedAt: NOW.toISOString(), overall,
+    advisory: true, actEnabled: false, budget: { state: "PRESENT", hardSpendCap: false }, tags: { state: "x" }, costAllocationTags: { state: "x" }, export: { state: "x" }, freshness: { state: "x" } });
+  const observed = { ...(await costStatusOf("observed")), capturedAt: NOW.toISOString() };
+  for (const content of [
+    { schemaVersion: 1, kind: "ALZ_COST_STATUS_SNAPSHOT", status: shallow("OBSERVED_COMPLETE") },
+    { schemaVersion: 1, kind: "ALZ_COST_STATUS_SNAPSHOT", status: shallow("ATTENTION") },
+    { schemaVersion: 2, kind: "ALZ_COST_STATUS_SNAPSHOT", status: observed },
+    observed,
+  ]) {
+    writeFileSync(input.costStatusPath!, JSON.stringify(content));
+    const report = await assessReadiness(input);
+    const financial = item(report, "financial controls");
+    assert.deepEqual([financial.state, financial.ok, financial.advisory], ["UNVERIFIED", true, true], JSON.stringify(content).slice(0, 80));
+    assert.equal(report.ready, true);
+  }
+  // A directory where the file should be is unreadable, not a throw.
+  rmSync(input.costStatusPath!, { force: true });
+  mkdirSync(input.costStatusPath!);
+  assert.equal(item(await assessReadiness(input), "financial controls").state, "UNVERIFIED");
+  // costReadiness itself is total: handed a malformed status directly, it answers UNVERIFIED.
+  const malformed = costReadiness({ state: "OK", status: { ...shallow("ATTENTION"), capturedAt: READ_AT.toISOString() } as never }, AWS_CONTRACT, "DEV", READ_AT);
+  assert.deepEqual(malformed.state, "UNVERIFIED");
+  assert.match(malformed.detail, /could not be judged/, "reached the judgment and was caught there, not refused earlier");
+  assert.equal(costReadiness({ state: "OK", status: null as never }, AWS_CONTRACT, "DEV", READ_AT).state, "UNVERIFIED");
+});

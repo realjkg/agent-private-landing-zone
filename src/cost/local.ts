@@ -1,9 +1,13 @@
-import { lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describeBudgetAction, validateCostConfig, type CostConfig, type CostProvisioningLimits } from "../design/cost.js";
-import type { CostStatus, CostStatusOverall, CostStatusRequest } from "./status.js";
+import { writePrivateFileAtomic } from "../tools/private-file.js";
+import { COST_SNAPSHOT_SCHEMA_VERSION, isCostStatus } from "./shape.js";
+import type { CostStatus, CostStatusRequest } from "./status.js";
+
+export { isCostStatus } from "./shape.js";
 
 /**
  * The cost status on this computer (plan item 5; owner direction 2026-10-31, issue #39 comment 6536926009).
@@ -109,32 +113,32 @@ export function costRequestOf(config: CostConfig, target: { accountId: string; u
 
 export type CostSnapshot = { state: "NONE" } | { state: "UNREADABLE" } | { state: "OK"; status: CostStatus };
 
-const OVERALL: readonly CostStatusOverall[] = ["OBSERVED_COMPLETE", "WAITING", "STALE", "ATTENTION", "INCOMPLETE"];
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const hasState = (value: unknown): boolean => isObject(value) && typeof value.state === "string";
+/** The file `./alz cost status` writes: the status inside a versioned envelope, so a format change is refused, never misread. */
+export type CostSnapshotFile = { schemaVersion: typeof COST_SNAPSHOT_SCHEMA_VERSION; kind: "ALZ_COST_STATUS_SNAPSHOT"; status: CostStatus };
 
-/** True only for a value with the status's fixed fields: a hand-edited or foreign file is never shown as a status. */
-export function isCostStatus(value: unknown): value is CostStatus {
-  return isObject(value) && value.kind === "ALZ_COST_STATUS" && value.source === "AWS_API_READ_ONLY" &&
-    typeof value.accountId === "string" && /^[0-9]{12}$/.test(value.accountId) &&
-    typeof value.capturedAt === "string" && Number.isFinite(Date.parse(value.capturedAt)) &&
-    OVERALL.includes(value.overall as CostStatusOverall) && value.advisory === true && value.actEnabled === false &&
-    hasState(value.budget) && (value.budget as Record<string, unknown>).hardSpendCap === false &&
-    hasState(value.tags) && hasState(value.costAllocationTags) && hasState(value.export) && hasState(value.freshness);
-}
-
+/** The saved status, or NONE (no file) or UNREADABLE (not JSON, another or no schema version, or any field not as written). */
 export function readCostSnapshot(path: string = costPaths().status): CostSnapshot {
   const file = readSmallJson(path);
   if (!file.found) return { state: "NONE" };
-  if ("unreadable" in file || !isCostStatus(file.value)) return { state: "UNREADABLE" };
-  return { state: "OK", status: file.value };
+  if ("unreadable" in file) return { state: "UNREADABLE" };
+  const envelope = file.value;
+  if (typeof envelope !== "object" || envelope === null || Array.isArray(envelope)) return { state: "UNREADABLE" };
+  const { schemaVersion, kind, status } = envelope as Record<string, unknown>;
+  if (schemaVersion !== COST_SNAPSHOT_SCHEMA_VERSION || kind !== "ALZ_COST_STATUS_SNAPSHOT" || !isCostStatus(status)) return { state: "UNREADABLE" };
+  return { state: "OK", status };
 }
 
-/** Saves the typed status for this computer's console and readiness: owner-only, replaced whole, never appended. */
+/**
+ * Saves the typed status for this computer's console and readiness: the folder is owner-only (0700, tightened when it already
+ * exists) and the file is written by `writePrivateFileAtomic` (0600 on every rewrite, never through a link, replaced whole).
+ */
 export function writeCostSnapshot(status: CostStatus, path: string = costPaths().status): void {
   if (!isCostStatus(status)) throw new Error("COST_STATUS_INVALID");
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = path + ".tmp-" + process.pid;
-  writeFileSync(temporary, JSON.stringify(status, null, 2) + "\n", { mode: 0o600 });
-  renameSync(temporary, path);
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const folder = lstatSync(dir);
+  if (folder.isSymbolicLink() || !folder.isDirectory()) throw new Error("COST_STATUS_FOLDER_INVALID");
+  if ((folder.mode & 0o777) !== 0o700) chmodSync(dir, 0o700);
+  const file: CostSnapshotFile = { schemaVersion: COST_SNAPSHOT_SCHEMA_VERSION, kind: "ALZ_COST_STATUS_SNAPSHOT", status };
+  writePrivateFileAtomic(path, JSON.stringify(file, null, 2) + "\n");
 }

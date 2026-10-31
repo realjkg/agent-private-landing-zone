@@ -3,6 +3,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, expect, test, vi } from "vitest";
 
 import { ActDev1Setup } from "../src/operator-ui/app/pilot/ActDev1Setup";
+import { badgeClass } from "../src/operator-ui/app/pilot/PilotWizard";
+import { describeCheck } from "../src/operator-ui/app/pilot/pilot-copy";
 import { CostPanel } from "../src/operator-ui/app/pilot/CostPanel";
 import { forgetPilotToken, setPilotToken, type CostVisibility } from "../src/operator-ui/app/pilot/pilot-api";
 import { costConfigSummary } from "../src/cost/local";
@@ -122,8 +124,9 @@ test("loading, error and request: GET /pilot/cost with the session token; a fail
   render(<CostPanel />);
   expect(screen.getByRole("region", { name: "Cost and visibility" }).getAttribute("aria-busy")).toBe("true");
   expect(screen.getByText(/Loading the saved cost status/)).toBeTruthy();
-  // A note, as the Deployment paths panel does: this panel is advisory and never interrupts the wizard with an alert.
-  await waitFor(() => expect(screen.getByText(/The cost status could not be loaded/).getAttribute("role")).toBe("note"));
+  // Announced politely in the panel's one live region (review N6); advisory, so never an alert that interrupts the wizard.
+  await waitFor(() => expect(screen.getByText(/The cost status could not be loaded/).closest("[aria-live]")?.getAttribute("aria-live")).toBe("polite"));
+  expect(screen.getByText(/The cost status could not be loaded/).closest("[aria-live]")?.getAttribute("role")).toBe("status");
   expect(screen.queryByRole("alert")).toBeNull();
   expect(calls[0]!.url).toBe("/pilot/cost");
   expect(calls[0]!.init.method).toBe("GET");
@@ -149,4 +152,33 @@ test("the setup checklist points to the panel instead of a text-only spending st
   expect(screen.getByText(/Check cost and visibility:/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Go to Cost and visibility" }));
   expect(document.activeElement?.id).toBe("cost-visibility-title");
+});
+
+test("N6: a failed reload after a good load is announced in the same polite live region", async () => {
+  setPilotToken("session-token-only");
+  serve(await visibility("observed"));
+  render(<CostPanel />);
+  await waitFor(() => expect(screen.getByText(/Overall: OBSERVED COMPLETE/)).toBeTruthy());
+  const region = screen.getByText(/Overall: OBSERVED COMPLETE/).closest("section")!.querySelector('[aria-live="polite"]')!;
+  expect(region.textContent).toBe("");
+  serve({ error: "PILOT_FAILED", message: "x" }, 500);
+  fireEvent.click(screen.getByRole("button", { name: "Show the latest saved read" }));
+  await waitFor(() => expect(region.textContent).toContain("could not be loaded"));
+});
+
+test("N1/N2: the advisory financial badge and words follow its state, and it stays informational (never a stop)", () => {
+  const name = "financial controls (budget, alerts and cost visibility; advisory)";
+  const expected = { READY: "pilot-badge-ok", UNVERIFIED: "pilot-badge-neutral", MISSING: "pilot-badge-warn", INVALID: "pilot-badge-warn", UNAVAILABLE: "pilot-badge-warn" } as const;
+  const words = { READY: /look right.*never caps spend/, UNVERIFIED: /not confirmed yet/, MISSING: /Budget not found/, INVALID: /need attention/, UNAVAILABLE: /unavailable or stale/ } as const;
+  for (const state of Object.keys(expected) as (keyof typeof expected)[]) {
+    const item = { check: name, ok: true, state, advisory: true as const };
+    expect(badgeClass(item).split(" ")).toContain(expected[state]);
+    const copy = describeCheck(item, "DEV");
+    expect(copy.label, state).toMatch(words[state]);
+    expect(copy.informational).toBe(true);
+    expect(copy.label).not.toMatch(/is a hard cap|caps spend\./i);
+  }
+  // A non-advisory item keeps the ok/bad pair.
+  expect(badgeClass({ check: "kill switch absent", ok: false, state: "BLOCKED" })).toBe("pilot-badge pilot-badge-bad");
+  expect(badgeClass({ check: "kill switch absent", ok: true, state: "READY" })).toBe("pilot-badge pilot-badge-ok");
 });

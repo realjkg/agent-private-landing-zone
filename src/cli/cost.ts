@@ -49,9 +49,14 @@ export async function runCostCommand(args: readonly string[], deps: CostCliDeps 
     target[key] = value;
   }
   if (target.accountId === undefined) return refuse("COST_STATUS_ACCOUNT_REQUIRED", "Name the account to read with --account <12-digit account>.");
+  // An export in another account is not this account's export (review 6539995646, N3): refused before any read.
+  const exportAccount = target.exportArn === undefined ? undefined : /^arn:aws[a-z-]*:bcm-data-exports:[^:]*:([0-9]{12}):/.exec(target.exportArn)?.[1];
+  if (target.exportArn !== undefined && exportAccount !== target.accountId) {
+    return refuse("COST_STATUS_EXPORT_ACCOUNT_MISMATCH", "The --export-arn must name an export in the --account account.");
+  }
   const paths = costPaths();
   const local = readLocalCostConfig(deps.configPath ?? paths.config);
-  if (local.state === "NONE") return refuse("COST_CONFIG_MISSING", "No cost configuration at " + COST_CONFIG_FILE + ". Write the landing zone's cost section there first.");
+  if (local.state === "NONE") return refuse("COST_CONFIG_MISSING", "No cost configuration at " + COST_CONFIG_FILE + ". Copy config/cost.example.json there and fill in your values first.");
   if (local.state === "INVALID") return refuse("COST_CONFIG_INVALID", "The cost configuration has problems at: " + local.issues.map((i) => i.path + " " + i.code).join(", ") + ".");
   const read = deps.read ?? brokerCostRead({ cwd: process.cwd() });
   let status;
