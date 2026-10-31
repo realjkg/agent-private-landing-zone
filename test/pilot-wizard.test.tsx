@@ -262,7 +262,7 @@ describe("step 2: readiness in plain words", () => {
       "contract shape (provider, engine, targets, approvals, approvers)", "pilot contract enabled and authorizes APPLY in DEV (required before seal)",
       "identities configured, distinct, no fallback (A, B)", "identities aimed at the QA account", "plan will embed STATE_WRITE settings: yes",
       "tool terraform installed in an approved directory", "tool aws installed in an approved directory", "kill switch absent",
-      "engine qualified in DEV for seal and apply (TERRAFORM)", "identity separation attested on the real DEV backend", "financial controls (budget alerts or cost cap)",
+      "engine qualified in DEV for seal and apply (TERRAFORM)", "identity separation attested on the real DEV backend", "financial controls (budget, alerts and cost visibility; advisory)",
     ];
     expect(names.length).toBeGreaterThanOrEqual(6);
     for (const name of dynamic) expect(describeCheck({ check: name, ok: false, state: "MISSING" }, "QA").known, name).toBe(true);
@@ -941,7 +941,7 @@ describe("the words are plain", () => {
     for (const environment of ["DEV", "QA", "PROD"] as const) {
       for (const name of ["contract shape (x)", "pilot contract enabled and authorizes APPLY in " + environment + " (x)", "identities configured, distinct, no fallback (x)", "identities aimed at the " + environment + " account",
         "plan will embed STATE_WRITE settings: yes", "plan will embed STATE_WRITE settings: no", "tool terraform installed in an approved directory", "kill switch absent",
-        "engine qualified in DEV for seal and apply (x)", "identity separation attested on the real DEV backend", "financial controls (budget alerts or cost cap)"]) {
+        "engine qualified in DEV for seal and apply (x)", "identity separation attested on the real DEV backend", "financial controls (budget, alerts and cost visibility; advisory)"]) {
         const words = describeCheck({ check: name, ok: false, state: "MISSING" }, environment);
         strings.push(["CHECK." + name, words.label + " " + words.wrong + " " + words.fix]);
       }

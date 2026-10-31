@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { ExperienceLevel } from "../../experience-level.js";
 import { PilotDialog } from "./PilotDialog";
 import { ActDev1Setup } from "./ActDev1Setup";
+import { CostPanel } from "./CostPanel";
 import CleanupStep, { CleanupList } from "./CleanupStep";
 import { DeploymentPaths, usePathsLoader, usePathsRefresh, type PathsLoad } from "./DeploymentPaths";
 import { checkedTime, orderEnvironments } from "./readiness-order";
@@ -216,6 +217,13 @@ const stateWord = (state: PreflightCheck["state"]): string => ({
   READY: COPY.stateReady, MISSING: COPY.stateMissing, INVALID: COPY.stateInvalid, UNVERIFIED: COPY.stateUnverified, UNAVAILABLE: COPY.stateUnavailable,
   BLOCKED: COPY.stateBlocked,
 })[state] ?? COPY.stateInvalid;
+/**
+ * The badge style for a readiness item. An advisory item (financial controls) is always `ok`, so its style follows its state
+ * instead (review 6539995646, N1): ready reads ok, not yet verified reads neutral, and anything that needs attention reads as a
+ * warning. It is still advisory and never blocks; the state word beside it is the text cue.
+ */
+export const badgeClass = (item: PreflightCheck): string => "pilot-badge " + (!item.advisory ? (item.ok ? "pilot-badge-ok" : "pilot-badge-bad")
+  : item.state === "READY" ? "pilot-badge-ok" : item.state === "UNVERIFIED" ? "pilot-badge-neutral" : "pilot-badge-warn");
 /** Who can make a readiness item ready, in plain words. */
 const partyWord = (party: PreflightCheck["responsible"]): string | undefined =>
   party === undefined ? undefined : ({ OWNER: COPY.partyOwner, OPERATOR: COPY.partyOperator, TOOL: COPY.partyTool })[party];
@@ -437,6 +445,8 @@ export default function PilotWizard(props: PilotWizardProps) {
     <>
     {/* The deployment paths, above the wizard once the session is unlocked (owner decision E5). Read-only. */}
     {unlocked && <DeploymentPaths ref={pathsRef} load={pathsLoad} />}
+    {/* Cost and visibility (plan item 5): the last saved read-only cost status. Read-only; it never stops or starts a change. */}
+    {unlocked && <CostPanel />}
     <section className="panel pilot" aria-labelledby="pilot-title" data-level={level}>
       <div ref={contentRef}>
         <h2 id="pilot-title" tabIndex={-1}>{COPY.heading}</h2>
@@ -561,7 +571,7 @@ export default function PilotWizard(props: PilotWizardProps) {
                         const good = item.ok;
                         return (
                           <li key={item.check} data-ok={good ? "true" : "false"}>
-                            <p><span className={good ? "pilot-badge pilot-badge-ok" : "pilot-badge pilot-badge-bad"} data-state={item.state}>{stateWord(item.state)}</span> {words.label}</p>
+                            <p><span className={badgeClass(item)} data-state={item.state}>{stateWord(item.state)}</span> {words.label}</p>
                             {!good && !words.informational && (
                               <>
                                 <p><strong>What is wrong:</strong> {words.wrong}</p>

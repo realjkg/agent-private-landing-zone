@@ -28,6 +28,7 @@ alz target | test/operator-cli.test.ts
 alz recovery | test/operator-cli.test.ts
 alz control-plane | test/control-plane-recovery.test.ts
 alz economics | test/operator-cli.test.ts
+alz cost | test/cost-local.test.ts, test/operations-governance.test.ts
 alz teardown | test/teardown-traceability.test.ts
 alz apply | test/apply-cli.test.ts, test/apply-boundary.test.ts
 alz health | test/observability-health-server.test.ts

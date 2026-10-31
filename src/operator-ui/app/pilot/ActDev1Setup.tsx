@@ -1,9 +1,9 @@
 import { useState } from "react";
+import { focusCostPanel } from "./CostPanel";
 import { checkAwsDevAccount, type AwsAdminStatus } from "./pilot-api";
 
 /** Operator guidance only. Cloud mutation still uses the existing PilotWizard protected apply path. */
 const STAGES = [
-  { title: "Confirm spending", detail: "An owner approves the maximum cost. Alerts are helpful, but they cannot stop a charge." },
   { title: "Prepare secure access", detail: "An authorized administrator creates the protected storage and separate roles. The system verifies the result." },
   { title: "Verify each sign-in", detail: "Check four independent, short-lived sign-ins. Reused credentials are rejected." },
   { title: "Review your changes", detail: "See every addition, modification and removal with policy and approval status." },
@@ -53,6 +53,10 @@ export function ActDev1Setup() {
         <h3>Next steps</h3>
         <ol>
           <li><strong>Connect AWS:</strong> {result ? "Account verified." : "Account not yet verified."}</li>
+          <li><strong>Check cost and visibility:</strong> The Cost and visibility panel on this page shows the budget, its alerts and recipients,
+            required tags, the cost export and the provisioning limits, as last read from AWS by <code>./alz cost status</code>. A budget tracks
+            spend and alerts; it cannot stop a charge. The owner still approves the maximum cost.{" "}
+            <button type="button" className="pilot-secondary" onClick={focusCostPanel}>Go to Cost and visibility</button></li>
           {STAGES.map((stage) => (
             <li key={stage.title}><strong>{stage.title}:</strong> {stage.detail} <small>Not yet verified in this setup check.</small></li>
           ))}

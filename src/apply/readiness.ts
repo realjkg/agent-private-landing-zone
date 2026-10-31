@@ -13,6 +13,7 @@ import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from ".
 import { checkDeliveredTokens, deliveryPathOf } from "./token-delivery.js";
 import type { PrepareBlocker } from "./prepare.js";
 import { specOf } from "./provider.js";
+import { costPaths, readCostSnapshot, type CostSnapshot } from "../cost/local.js";
 import type { ActOperation, ApplyEnvironment, PilotContract } from "./types.js";
 
 /**
@@ -41,6 +42,8 @@ export type ReadinessInput = {
   toolDirs?: readonly string[];
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
+  /** The saved cost status (src/cost/local.ts). Default: .runs/cost/status.json under the repository. */
+  costStatusPath?: string;
 };
 
 const MAX_CONTRACT_BYTES = 8 * 1024 * 1024;
@@ -82,6 +85,64 @@ export async function qualificationReadiness(contract: PilotContract, input: Omi
   if (!attested.ok) return { state: "INVALID", detail: attested.message };
   return { state: "READY", engineVersion: latest.engineVersion, qualifiedAt: latest.qualifiedAt,
     detail: "Qualified in DEV for engine version " + latest.engineVersion + " on " + latest.qualifiedAt.slice(0, 10) + "; the evidence matches this machine." };
+}
+
+/** The financial controls item. Its name starts "financial controls" (the console's words key on it). */
+export const FINANCIAL_CHECK = "financial controls (budget, alerts and cost visibility; advisory)";
+/** A saved status older than this is not used: readiness asks for a new read rather than report an old one as current. */
+export const COST_STATUS_MAX_AGE_HOURS = 24;
+
+/**
+ * The advisory financial controls state from the saved cost status. A budget tracks spend and alerts; it never caps it, so
+ * READY means "the budget, its alerts, tags and export were read and look right", never "spend is limited". Never a stop.
+ * - nothing read, unreadable, another account, or too old: UNVERIFIED (nothing current was read);
+ * - OBSERVED_COMPLETE: READY; WAITING (deployed, AWS has no spend or export delivery yet): UNVERIFIED, never zero spend;
+ * - STALE (the export stopped delivering) and INCOMPLETE (a read was denied or not answered): UNAVAILABLE;
+ * - ATTENTION: MISSING when the budget is not there, otherwise INVALID, with what needs attention.
+ * A snapshot reaches here only after the deep shape check (src/cost/shape.ts); anything that still fails to judge is UNVERIFIED.
+ */
+export function costReadiness(snapshot: CostSnapshot, contract: PilotContract, environment: ApplyEnvironment, now: Date): { state: ReadinessState; detail: string } {
+  // Total: the item is advisory, so nothing in a saved file can make readiness throw (review 6539995646, B2).
+  try { return judgeCost(snapshot, contract, environment, now); }
+  catch { return { state: "UNVERIFIED", detail: "The saved cost status could not be judged. Run ./alz cost status in a terminal (read-only) to read it again." }; }
+}
+
+function judgeCost(snapshot: CostSnapshot, contract: PilotContract, environment: ApplyEnvironment, now: Date): { state: ReadinessState; detail: string } {
+  const run = "Run ./alz cost status in a terminal (read-only) to read the budget, alerts, tags and cost export again.";
+  if (contract.provider !== "AWS") return { state: "UNVERIFIED", detail: "The cost status reads AWS only; this contract's provider is " + contract.provider + ". The owner confirms the budget and its alerts out of band." };
+  if (snapshot.state === "NONE") return { state: "UNVERIFIED", detail: "No cost status has been read on this computer. " + run };
+  if (snapshot.state === "UNREADABLE") return { state: "UNVERIFIED", detail: "The saved cost status cannot be read as a cost status. " + run };
+  const status = snapshot.status;
+  const target = contract.targets[environment] as { accountId?: unknown } | undefined;
+  if (target?.accountId !== status.accountId) return { state: "UNVERIFIED", detail: "The saved cost status was read from a different account than this environment's target. " + run };
+  const age = now.getTime() - Date.parse(status.capturedAt);
+  if (age > COST_STATUS_MAX_AGE_HOURS * 3_600_000 || age < -5 * 60_000) {
+    return { state: "UNVERIFIED", detail: "The saved cost status was read " + status.capturedAt.slice(0, 16) + "Z, not within the last " + COST_STATUS_MAX_AGE_HOURS + " hours. " + run };
+  }
+  const at = " (read " + status.capturedAt.slice(0, 16) + "Z).";
+  switch (status.overall) {
+    case "OBSERVED_COMPLETE":
+      return { state: "READY", detail: "The budget, its alerts, the required tags, the cost-allocation tags and the cost export were read from AWS" + at + " A budget alerts; it never caps spend." };
+    case "WAITING":
+      return { state: "UNVERIFIED", detail: "Deployed, and AWS has not reported spend or the first cost export delivery yet" + at + " No data yet is not zero spend." };
+    case "STALE":
+      return { state: "UNAVAILABLE", detail: "The cost export has not delivered within " + status.freshness.staleAfterHours + " hours, so current cost data is not available" + at };
+    case "INCOMPLETE":
+      return { state: "UNAVAILABLE", detail: "Some cost reads did not answer (for example a denied read), so those values are UNKNOWN, not passing" + at };
+    case "ATTENTION": {
+      const b = status.budget;
+      const needs = [
+        b.state === "MISSING" ? "the budget was not found" : "",
+        b.hasActualAlert.label === "OBSERVED" && !b.hasActualAlert.value ? "the budget has no actual-spend alert" : "",
+        b.notifications.label === "OBSERVED" && b.notifications.value.some((n) => n.subscribers.label === "OBSERVED" && n.subscribers.value.length === 0) ? "an alert has no recipient" : "",
+        status.tags.state === "MISSING" ? "resources are missing required tags" : status.tags.state === "NO_RESOURCES_FOUND" ? "no tagged resources were found" : "",
+        status.costAllocationTags.state === "INACTIVE" ? "cost-allocation tags are inactive" : "",
+        status.export.state === "MISSING" ? "the cost export was not found" : status.export.state === "FAILED" ? "the cost export failed" : "",
+        status.export.configValid.label === "OBSERVED" && !status.export.configValid.value ? "the cost export's configuration is not the intended one" : "",
+      ].filter(Boolean);
+      return { state: b.state === "MISSING" ? "MISSING" : "INVALID", detail: "Needs attention: " + (needs.join("; ") || "see the cost status") + at };
+    }
+  }
 }
 
 /** Every readiness item for the environment, in the order the journey needs them. */
@@ -143,11 +204,12 @@ export async function assessReadiness(input: ReadinessInput): Promise<ReadinessR
   // The same records and checks seal and apply use: without them seal refuses ENGINE_NOT_QUALIFIED, so readiness does not say ready.
   const qualification = await qualificationReadiness(contract, { environment, qualificationDir: input.qualificationDir, toolDirs: input.toolDirs, env, now: input.now });
   add("engine qualified in DEV for seal and apply (" + engine.id + ")", qualification.state, "OWNER", qualification.detail);
-  // Financial controls: the bootstrap can create an optional monthly budget with alerts (bootstrap/aws budget_monthly_usd,
-  // bootstrap/azure budget_monthly_amount), and the contract has no cost cap. Nothing here reads whether a budget exists, so
-  // the item reports that honestly and never stops a run; whether it should is an open owner question.
-  checks.push({ check: "financial controls (budget alerts or cost cap)", ok: true, state: "UNVERIFIED", advisory: true,
-    detail: "Not checked by the product: no contract cost cap exists, and the optional bootstrap budget alert is not read. The owner confirms it out of band." });
+  // Financial controls: advisory, never a stop (owner direction 6536926009). The state comes from the cost status the last
+  // `./alz cost status` read from AWS and saved on this computer (src/cost/local.ts); readiness reads that file and calls no cloud.
+  let snapshot: CostSnapshot;
+  try { snapshot = readCostSnapshot(input.costStatusPath ?? costPaths(repoPaths().root).status); } catch { snapshot = { state: "UNREADABLE" }; }
+  const cost = costReadiness(snapshot, contract, environment, (input.now ?? (() => new Date()))());
+  checks.push({ check: FINANCIAL_CHECK, ok: true, state: cost.state, advisory: true, detail: cost.detail });
   add("identity separation attested on the real DEV backend", qualification.state === "READY" ? "READY" : "UNVERIFIED", "OWNER", qualification.state === "READY"
     ? "Attested by the person who ran ./alz apply qualify, from the cloud's own logs; recorded in the qualification evidence."
     : "Not proven on a real backend until ./alz apply qualify has run against the real DEV target and its evidence matches this machine.");
