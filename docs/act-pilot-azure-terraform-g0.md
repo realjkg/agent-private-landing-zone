@@ -82,7 +82,7 @@ The pilot therefore does not exercise the creation of a container. That is accep
 
 The roles, their contract fields and the rules the driver enforces are the same as for AWS: see `docs/act-pilot-aws-terraform-g0.md`, "Approver roles". Approvals are Ed25519 signatures by allowlisted keys, never a typed name. The requester signs the sealed request. In PROD, the requester can never approve. Azure differs in one way:
 
-- **Qualifier** `<name>` runs `./alz apply qualify` on the execution host against the real Terraform. From the Entra sign-in logs and the storage account's logs, the qualifier attests `SEPARATED <STATE_WRITE client id> <APPLY client id>`: state access by STATE_WRITE, provider access by APPLY, and no state access by APPLY. Whether the plan-time and apply-time backend authenticates as STATE_WRITE or falls back to APPLY's `ARM_*` is an open real-cloud question (`docs/act-pilot-apply.md`, "Open item that blocks live apply").
+- **Qualifier** `<name>` runs `./alz apply qualify` on the execution host against the real Terraform. From the Entra sign-in logs and the storage account's logs, the qualifier attests `SEPARATED <STATE_WRITE client id> <APPLY client id>`: state reads and writes by STATE_WRITE or STATE only, and no state access by APPLY or DISCOVERY. Qualify runs nothing as APPLY, so APPLY's provider access is checked at the first supervised DEV apply. Whether the plan-time and apply-time backend authenticates as STATE_WRITE or falls back to APPLY's `ARM_*` is an open real-cloud question (`docs/act-pilot-apply.md`, "Open item that blocks live apply").
 
 For the DEV-only pilot, the minimum is three people: a pilot owner, an operator and a DEV approver. The owner is free to hold more than one role.
 

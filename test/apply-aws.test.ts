@@ -961,6 +961,10 @@ test("./alz apply qualify, seal, approve and apply work for an AWS contract with
   assert.equal(qualified.code, 0, qualified.stderr);
   assert.match(qualified.shown, /CloudTrail/);
   assert.ok(qualified.shown.includes(awsRoleArn("STATE_WRITE", "DEV")) && qualified.shown.includes(awsRoleArn("APPLY", "DEV")));
+  // #365 review 6510401916, N14: the prompt asks for what qualify's CloudTrail can show, never for APPLY's provider access.
+  assert.match(qualified.shown, /state reads and writes\s+only by STATE_WRITE\s+\S+\s+or STATE/);
+  assert.match(qualified.shown, /no state access by\s+APPLY\s+\S+\s+and none by DISCOVERY/);
+  assert.doesNotMatch(qualified.shown, /provider \(resource\) access is by/);
   assert.ok(calls().some((c) => c.args.join(" ") === APPLY_INIT_ARGV.join(" ")), "the apply adapter's init ran");
   const printed = JSON.parse(qualified.stdout) as { qualified: { adapterVersion: string }[] };
   assert.ok(printed.qualified.some((q) => q.adapterVersion === APPLY_ADAPTER.adapterVersion));

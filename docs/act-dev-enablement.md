@@ -131,8 +131,9 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
     ```bash
     ./alz apply prepare --environment DEV --project <PROJECT_DIR>       # writes .runs/pilot/DEV/request-<id>.json, apply-request-<id>.json and manifest-<id>.json
     ./alz apply qualify --request <REQUEST.json> --manifest <MANIFEST.json>
-    # type SEPARATED <STATE_WRITE role ARN> <APPLY role ARN> only if CloudTrail shows state access by STATE_WRITE,
-    # provider access by APPLY, and no state access by APPLY
+    # type SEPARATED <STATE_WRITE role ARN> <APPLY role ARN> only if CloudTrail (S3 data events on a trail) shows
+    # state reads and writes by STATE_WRITE or STATE only, and no state access by APPLY or DISCOVERY.
+    # Qualify runs nothing as APPLY; APPLY's provider access is checked at the supervised DEV apply (step 13)
     ./alz apply preflight --environment DEV                              # now READY, qualification included
     ```
 
