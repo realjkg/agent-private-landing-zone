@@ -521,7 +521,9 @@ function overallOf(s: Omit<CostStatus, "overall">): CostStatusOverall {
   const attention = s.budget.state === "MISSING" || s.tags.state === "MISSING" || s.tags.state === "NO_RESOURCES_FOUND" ||
     s.costAllocationTags.state === "INACTIVE" || s.export.state === "MISSING" || s.export.state === "FAILED" ||
     (s.export.configValid.label === "OBSERVED" && !s.export.configValid.value) ||
-    (s.budget.hasActualAlert.label === "OBSERVED" && !s.budget.hasActualAlert.value);
+    (s.budget.hasActualAlert.label === "OBSERVED" && !s.budget.hasActualAlert.value) ||
+    // An alert with no recipient reaches nobody.
+    (s.budget.notifications.label === "OBSERVED" && s.budget.notifications.value.some((n) => n.subscribers.label === "OBSERVED" && n.subscribers.value.length === 0));
   if (attention) return "ATTENTION";
   if (s.export.state === "STALE") return "STALE";
   const incomplete = s.budget.state === "UNKNOWN" || s.tags.state === "UNKNOWN" || s.costAllocationTags.state === "UNKNOWN" ||

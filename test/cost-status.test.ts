@@ -160,6 +160,16 @@ test("empty: no spend reported is UNKNOWN, never zero; no budget at all is MISSI
   assert.equal(s.budget.state, "MISSING");
   assert.deepEqual(s.budget.budgetCount, { label: "OBSERVED", value: 0 });
 
+  // An alert with no recipient, or no ACTUAL alert at all, needs attention.
+  const noRecipients = fixtures();
+  noRecipients.aws_budgets_describe_subscribers = { Subscribers: [] };
+  assert.equal((await readCostStatus(REQUEST, reader(noRecipients).read, NOW)).overall, "ATTENTION");
+  const noAlerts = fixtures();
+  noAlerts.aws_budgets_describe_notifications = { Notifications: [] };
+  const quiet = await readCostStatus(REQUEST, reader(noAlerts).read, NOW);
+  assert.deepEqual(quiet.budget.hasActualAlert, { label: "OBSERVED", value: false });
+  assert.equal(quiet.overall, "ATTENTION");
+
   // Nothing tagged with the unit is not a pass.
   answers.aws_tagging_get_resources = { ResourceTagMappingList: [] };
   s = await readCostStatus(REQUEST, reader(answers).read, NOW);
