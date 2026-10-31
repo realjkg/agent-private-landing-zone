@@ -1,0 +1,177 @@
+{
+  "scenario": "aws-terraform-cost-baseline-v1",
+  "mode": "FIXED_TEMPLATE",
+  "configHash": "b9937d9556c78e52da79f7c9482ddacb83f3ccd36dc5f7bb5c1c2e6c970f212b",
+  "artifactHash": "71551c1395d764ada3634cb68ecfe5e14ac4eef11a02edcc9be0ee40a21aaf5d",
+  "awsProviderVersion": "6.68.0",
+  "homeRegion": "var.aws_region",
+  "creates": [
+    {
+      "address": "aws_bcmdataexports_export.cur2",
+      "type": "aws_bcmdataexports_export",
+      "taggable": true,
+      "region": "us-east-1"
+    },
+    {
+      "address": "aws_budgets_budget.cost_baseline",
+      "type": "aws_budgets_budget",
+      "taggable": true,
+      "region": "GLOBAL"
+    },
+    {
+      "address": "aws_ce_cost_allocation_tag.required[\"cost-center\"]",
+      "type": "aws_ce_cost_allocation_tag",
+      "taggable": false,
+      "region": "us-east-1"
+    },
+    {
+      "address": "aws_ce_cost_allocation_tag.required[\"environment\"]",
+      "type": "aws_ce_cost_allocation_tag",
+      "taggable": false,
+      "region": "us-east-1"
+    },
+    {
+      "address": "aws_ce_cost_allocation_tag.required[\"owner\"]",
+      "type": "aws_ce_cost_allocation_tag",
+      "taggable": false,
+      "region": "us-east-1"
+    },
+    {
+      "address": "aws_s3_bucket.cost_export",
+      "type": "aws_s3_bucket",
+      "taggable": true,
+      "region": "HOME"
+    },
+    {
+      "address": "aws_s3_bucket_lifecycle_configuration.cost_export",
+      "type": "aws_s3_bucket_lifecycle_configuration",
+      "taggable": false,
+      "region": "HOME"
+    },
+    {
+      "address": "aws_s3_bucket_ownership_controls.cost_export",
+      "type": "aws_s3_bucket_ownership_controls",
+      "taggable": false,
+      "region": "HOME"
+    },
+    {
+      "address": "aws_s3_bucket_policy.cost_export",
+      "type": "aws_s3_bucket_policy",
+      "taggable": false,
+      "region": "HOME"
+    },
+    {
+      "address": "aws_s3_bucket_public_access_block.cost_export",
+      "type": "aws_s3_bucket_public_access_block",
+      "taggable": false,
+      "region": "HOME"
+    },
+    {
+      "address": "aws_s3_bucket_server_side_encryption_configuration.cost_export",
+      "type": "aws_s3_bucket_server_side_encryption_configuration",
+      "taggable": false,
+      "region": "HOME"
+    },
+    {
+      "address": "aws_sns_topic.cost_alerts",
+      "type": "aws_sns_topic",
+      "taggable": true,
+      "region": "HOME"
+    },
+    {
+      "address": "aws_sns_topic_policy.cost_alerts",
+      "type": "aws_sns_topic_policy",
+      "taggable": false,
+      "region": "HOME"
+    },
+    {
+      "address": "aws_sns_topic_subscription.cost_alerts[\"finops@example.com\"]",
+      "type": "aws_sns_topic_subscription",
+      "taggable": false,
+      "region": "HOME"
+    },
+    {
+      "address": "aws_sns_topic_subscription.cost_alerts[\"ops@example.com\"]",
+      "type": "aws_sns_topic_subscription",
+      "taggable": false,
+      "region": "HOME"
+    }
+  ],
+  "crossRegionDependencies": [
+    {
+      "service": "bcm-data-exports",
+      "region": "us-east-1",
+      "addresses": [
+        "aws_bcmdataexports_export.cur2"
+      ],
+      "reason": "AWS Data Exports is served only from us-east-1; the files land in the destination bucket's region."
+    },
+    {
+      "service": "ce",
+      "region": "us-east-1",
+      "addresses": [
+        "aws_ce_cost_allocation_tag.required[\"cost-center\"]",
+        "aws_ce_cost_allocation_tag.required[\"environment\"]",
+        "aws_ce_cost_allocation_tag.required[\"owner\"]"
+      ],
+      "reason": "Cost Explorer cost-allocation tags are managed through us-east-1."
+    }
+  ],
+  "requiredTags": {
+    "cost-center": "cc-1234",
+    "environment": "dev",
+    "owner": "platform-team"
+  },
+  "costAllocationTagKeys": [
+    "cost-center",
+    "environment",
+    "owner"
+  ],
+  "budget": {
+    "name": "alz-cost-baseline",
+    "amount": "250.00",
+    "currency": "USD",
+    "period": "MONTHLY",
+    "actualThresholds": [
+      80,
+      100
+    ],
+    "forecastThresholds": [
+      100
+    ],
+    "control": "ALERT_ONLY"
+  },
+  "budgetAction": {
+    "enabled": false,
+    "effect": "No budget action: the budget sends alerts only and never changes resources or permissions."
+  },
+  "notifications": {
+    "route": "SNS_TOPIC",
+    "emailRecipients": 2,
+    "snsTopic": "NEW",
+    "emailConfirmationRequired": true
+  },
+  "export": {
+    "mode": "NEW_BUCKET",
+    "exportName": "alz-cur2",
+    "bucket": "alz-cost-export-<account-id>-<home-region>",
+    "prefix": "cur2",
+    "granularity": "DAILY",
+    "delivery": "AT_LEAST_DAILY",
+    "retentionDays": 400
+  },
+  "analytics": "OFF",
+  "prerequisites": [
+    "Cost-allocation tag activation and the CUR 2.0 export run in the AWS Organizations management (payer) account or a standalone account; a member account cannot activate cost-allocation tags.",
+    "A tag key can be activated only after it appears in billing data, up to 24 hours after a resource is tagged.",
+    "The first CUR 2.0 delivery can take up to 24 hours; until then the export is WAITING, never zero spend.",
+    "Each email recipient must confirm the SNS subscription before alerts reach them."
+  ],
+  "review": {
+    "reviewBy": "2027-01-31",
+    "expiresOn": null
+  },
+  "approval": "NOT_GRANTED",
+  "infrastructureAct": "DISABLED",
+  "mutationObserved": false
+}

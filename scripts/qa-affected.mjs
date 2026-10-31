@@ -85,6 +85,11 @@ export const DOC_INPUT_OWNERS = {
 // Fixtures a test reads from disk (not imported), so the import closure never selects their owner.
 export const FIXTURE_OWNERS = {
   "test/fixtures/backend-pin/cases.json": ["test/apply-backend-pin-real.test.ts"],
+  // The cost-baseline renderer's golden files (COST-1): read by name, compared byte for byte.
+  "test/fixtures/cost-baseline/defaults.main.tf": ["test/cost-baseline.test.ts"],
+  "test/fixtures/cost-baseline/defaults.metadata.json": ["test/cost-baseline.test.ts"],
+  "test/fixtures/cost-baseline/adopt-existing.main.tf": ["test/cost-baseline.test.ts"],
+  "test/fixtures/cost-baseline/budget-action.main.tf": ["test/cost-baseline.test.ts"],
   // The capture manifest is checked against every live fixture on disk.
   "test/fixtures/live/MANIFEST.json": ["test/teardown-live-fixtures.test.ts"],
   // Real Terraform 1.16.4 sources and `show -json` output for the construct judge (RB1): read by name from the fixture directory.
