@@ -17,14 +17,17 @@ import { provenanceTags } from "../teardown/unit.js";
  *
  * Rendered:
  * - an `aws_budgets_budget` with one notification per actual and forecast threshold (notify-only by default);
- * - the alert route: a new SNS topic with a publish policy for AWS Budgets and email subscriptions, the emails
- *   directly, or an adopted topic;
+ * - the alert route: a new SNS topic with a publish policy for AWS Budgets and email subscriptions (optionally
+ *   encrypted with a new customer-managed KMS key AWS Budgets may use), the emails directly, or an adopted topic;
  * - a CUR 2.0 `aws_bcmdataexports_export`, with a new private bucket and the bucket policy for
  *   bcm-data-exports.amazonaws.com and billingreports.amazonaws.com, or an adopted bucket (no bucket rendered);
- * - `aws_ce_cost_allocation_tag` activation for the required tag keys;
+ * - opt-in only, `aws_ce_cost_allocation_tag` activation for the required tag keys (off by default, because it fails
+ *   in a member account and before the keys appear in billing data);
  * - provider `default_tags` carrying the required tags beside the deletion-unit tags.
  *
  * Data Exports and Cost Explorer are served from us-east-1, so those resources use a `billing` provider alias there.
+ * The topic and the default bucket names carry a suffix derived from the budget and export names, so two baselines
+ * in one account never share a topic (SNS would silently return the existing one) or collide on a bucket name.
  * The render reports this as a cross-region dependency rather than assuming the home region holds everything.
  * Nothing here reads AWS, holds a credential, runs a plan or applies anything.
  */
@@ -53,11 +56,21 @@ export type CostBaselineMetadata = {
   crossRegionDependencies: Array<{ service: string; region: string; addresses: string[]; reason: string }>;
   requiredTags: Record<string, string>;
   costAllocationTagKeys: string[];
+  /** Off by default (review 6537285254, N1): rendering it into a fresh or member account fails the first apply. */
+  costAllocationTagActivation: { rendered: boolean; keys: string[]; when: string };
+  /**
+   * Names that must be unique per account or globally carry a suffix derived from the budget and export names, which
+   * the owner already keeps unique per account. Not from the whole config (an edited amount would rename, and so
+   * replace, the topic and bucket) and not from the deletion unit (a new build id would do the same).
+   */
+  naming: { suffix: string; derivedFrom: "budget.name+export.exportName"; topicName: string | null; bucketName: string };
+  /** How teardown treats what this render creates. */
+  teardown: { exportBucketForceDestroy: false; kmsKeyDeletionWindowDays: number | null; note: string };
   budget: { name: string; amount: string; currency: string; period: string; actualThresholds: number[];
     forecastThresholds: number[]; control: "ALERT_ONLY" | "ALERT_AND_BUDGET_ACTION" };
   budgetAction: { enabled: boolean; effect: string };
   notifications: { route: string; emailRecipients: number; snsTopic: "NEW" | "ADOPTED" | "NONE";
-    emailConfirmationRequired: boolean };
+    encryption: "NONE" | "CUSTOMER_KMS" | "OWNER_MANAGED"; emailConfirmationRequired: boolean };
   export: { mode: string; exportName: string; bucket: string; prefix: string; granularity: string;
     delivery: "AT_LEAST_DAILY"; retentionDays: number | null };
   analytics: "OFF" | "REQUESTED_SEPARATE_PACK";
@@ -186,10 +199,48 @@ function renderBudget(config: CostConfig, topic: string | undefined, emails: rea
   return lines;
 }
 
-function renderSnsTopic(emails: readonly string[]): string[] {
+/**
+ * A customer-managed key AWS Budgets can publish with; AWS Budgets cannot use the AWS-managed SNS key. Only the
+ * publisher needs the key: SNS delivers to the email endpoints itself, so no statement for sns.amazonaws.com is
+ * rendered (review 6538175443, N2). The Budgets statement is scoped to this account's budgets.
+ */
+function renderTopicKey(suffix: string): string[] {
+  const account = "data.aws_caller_identity.current.account_id";
   return [
+    'resource "aws_kms_key" "cost_alerts" {',
+    ...attrs(2, [["description", q("ALZ cost alerts topic " + suffix + " (AWS Budgets publishes with it)")],
+      ["enable_key_rotation", "true"], ["deletion_window_in_days", "30"]]),
+    "",
+    "  policy = jsonencode({",
+    '    Version = "2012-10-17"',
+    "    Statement = [",
+    "      {",
+    ...attrs(8, [["Sid", q("AccountAdministration")], ["Effect", q("Allow")],
+      ["Principal", '{ AWS = "arn:aws:iam::${' + account + '}:root" }'], ["Action", q("kms:*")], ["Resource", q("*")]]),
+    "      },",
+    "      {",
+    ...attrs(8, [["Sid", q("AllowAwsBudgetsToPublishEncrypted")], ["Effect", q("Allow")],
+      ["Principal", '{ Service = "budgets.amazonaws.com" }'], ["Action", '["kms:GenerateDataKey*", "kms:Decrypt"]'],
+      ["Resource", q("*")]]),
+    "        Condition = {",
+    '          StringEquals = { "aws:SourceAccount" = ' + account + " }",
+    '          ArnLike      = { "aws:SourceArn" = "arn:aws:budgets::${' + account + '}:*" }',
+    "        }",
+    "      },",
+    "    ]",
+    "  })",
+    "}",
+    "",
+  ];
+}
+
+function renderSnsTopic(emails: readonly string[], suffix: string, encrypted: boolean): string[] {
+  return [
+    ...(encrypted ? renderTopicKey(suffix) : []),
     'resource "aws_sns_topic" "cost_alerts" {',
-    '  name = "alz-cost-alerts"',
+    ...(encrypted
+      ? attrs(2, [["name", q("alz-cost-alerts-" + suffix)], ["kms_master_key_id", "aws_kms_key.cost_alerts.arn"]])
+      : ["  name = " + q("alz-cost-alerts-" + suffix)]),
     "}",
     "",
     'resource "aws_sns_topic_policy" "cost_alerts" {',
@@ -250,15 +301,17 @@ function renderBudgetAction(config: CostConfig, topic: string | undefined, email
   ];
 }
 
-function renderExportBucket(config: CostConfig): string[] {
+function renderExportBucket(config: CostConfig, suffix: string): string[] {
   const e = config.export;
   if (e.mode !== "NEW_BUCKET") return [];
   const name = e.bucketName ? q(e.bucketName)
-    : '"alz-cost-export-${data.aws_caller_identity.current.account_id}-${var.aws_region}"';
+    : '"alz-cost-export-' + suffix + '-${data.aws_caller_identity.current.account_id}-${var.aws_region}"';
   const account = "data.aws_caller_identity.current.account_id";
   return [
+    "# force_destroy stays false: billing data is never deleted silently. Destroying a non-empty bucket fails closed,",
+    "# and its owner empties or keeps it; the lifecycle rule below expires old exports.",
     'resource "aws_s3_bucket" "cost_export" {',
-    "  bucket = " + name,
+    ...attrs(2, [["bucket", name], ["force_destroy", "false"]]),
     "}",
     "",
     'resource "aws_s3_bucket_public_access_block" "cost_export" {',
@@ -274,6 +327,8 @@ function renderExportBucket(config: CostConfig): string[] {
     "  }",
     "}",
     "",
+    "# SSE-S3, as in the AWS Cloud Intelligence Dashboards data-exports destination bucket. A customer-managed key",
+    "# is not rendered; an owner who needs one adopts a bucket already configured with it (export.mode ADOPT_EXISTING).",
     'resource "aws_s3_bucket_server_side_encryption_configuration" "cost_export" {',
     "  bucket = aws_s3_bucket.cost_export.id",
     "",
@@ -382,7 +437,7 @@ function renderExport(config: CostConfig): string[] {
 
 function renderCostAllocationTags(keys: readonly string[]): string[] {
   return [
-    "# Activation needs the key to appear in billing data first, which can take up to 24 hours after tagging.",
+    "# Opt-in. Activation runs only in the management or a standalone account, for keys already in billing data.",
     'resource "aws_ce_cost_allocation_tag" "required" {',
     "  provider = aws.billing",
     ...attrs(2, [["for_each", "toset(" + list(keys) + ")"], ["tag_key", "each.value"], ["status", q("Active")]]),
@@ -398,12 +453,14 @@ function checkedProvenance(provenance?: ProvenanceTags): Record<string, string> 
 }
 
 function createsOf(config: CostConfig, keys: readonly string[]): CostBaselineCreate[] {
+  const encrypted = config.notifications.route === "SNS_TOPIC" && config.notifications.encryption === "CUSTOMER_KMS";
   const creates: CostBaselineCreate[] = [
     { address: "aws_budgets_budget.cost_baseline", type: "aws_budgets_budget", taggable: true, region: "GLOBAL" },
   ];
   if (config.notifications.route === "SNS_TOPIC") {
     creates.push(
       { address: "aws_sns_topic.cost_alerts", type: "aws_sns_topic", taggable: true, region: "HOME" },
+      ...(encrypted ? [{ address: "aws_kms_key.cost_alerts", type: "aws_kms_key", taggable: true, region: "HOME" as const }] : []),
       { address: "aws_sns_topic_policy.cost_alerts", type: "aws_sns_topic_policy", taggable: false, region: "HOME" },
       ...config.notifications.emails.map((email) => ({ address: 'aws_sns_topic_subscription.cost_alerts["' + email + '"]',
         type: "aws_sns_topic_subscription", taggable: false, region: "HOME" as const })),
@@ -422,8 +479,10 @@ function createsOf(config: CostConfig, keys: readonly string[]): CostBaselineCre
   }
   creates.push({ address: "aws_bcmdataexports_export.cur2", type: "aws_bcmdataexports_export", taggable: true,
     region: COST_BILLING_API_REGION });
-  creates.push(...keys.map((key) => ({ address: 'aws_ce_cost_allocation_tag.required["' + key + '"]',
-    type: "aws_ce_cost_allocation_tag", taggable: false, region: COST_BILLING_API_REGION })));
+  if (config.activateCostAllocationTags) {
+    creates.push(...keys.map((key) => ({ address: 'aws_ce_cost_allocation_tag.required["' + key + '"]',
+      type: "aws_ce_cost_allocation_tag", taggable: false, region: COST_BILLING_API_REGION })));
+  }
   return creates.sort((a, b) => (a.address < b.address ? -1 : a.address > b.address ? 1 : 0));
 }
 
@@ -442,6 +501,9 @@ export function renderAwsCostBaseline(input: CostConfig, provenance?: Provenance
   const topic = n.route === "SNS_TOPIC" ? "aws_sns_topic.cost_alerts.arn"
     : n.route === "EXISTING_SNS_TOPIC" ? q(n.snsTopicArn!) : undefined;
   const directEmails = n.route === "SNS_TOPIC" ? [] : n.emails;
+  const suffix = sha256("alz-cost-baseline\n" + config.budget.name + "\n" + config.export.exportName).slice(0, 8);
+  const encrypted = n.route === "SNS_TOPIC" && n.encryption === "CUSTOMER_KMS";
+  const activate = config.activateCostAllocationTags;
   const lines = [
     "# ALZ REVIEW CANDIDATE — AWS cost baseline rendered by fixed code; NOT an applied plan.",
     "# A budget sends alerts; it is not a hard cap. A budget action exists only when the owner configured one.",
@@ -465,7 +527,8 @@ export function renderAwsCostBaseline(input: CostConfig, provenance?: Provenance
     ...defaultTagsBlock(defaultTags),
     "}",
     "",
-    "# Cross-region dependency: AWS Data Exports and Cost Explorer are served from " + COST_BILLING_API_REGION + ".",
+    "# Cross-region dependency: AWS Data Exports" + (activate ? " and Cost Explorer are" : " is") + " served from " +
+      COST_BILLING_API_REGION + ".",
     'provider "aws" {',
     ...attrs(2, [["alias", q("billing")], ["region", q(COST_BILLING_API_REGION)]]),
     "",
@@ -477,24 +540,35 @@ export function renderAwsCostBaseline(input: CostConfig, provenance?: Provenance
     ...renderBudget(config, topic, directEmails),
     ...renderBudgetAction(config, topic, directEmails),
     "",
-    ...(n.route === "SNS_TOPIC" ? [...renderSnsTopic(n.emails), ""] : []),
-    ...renderExportBucket(config),
+    ...(n.route === "SNS_TOPIC" ? [...renderSnsTopic(n.emails, suffix, encrypted), ""] : []),
+    ...renderExportBucket(config, suffix),
     ...renderExport(config),
     "",
-    ...renderCostAllocationTags(keys),
-    "",
+    ...(activate ? [...renderCostAllocationTags(keys), ""] : []),
   ];
   const terraform = lines.join("\n");
   const creates = createsOf(config, keys);
   const e = config.export;
+  const activationWhen = "Cost-allocation tag activation runs only in the AWS Organizations management account or a " +
+    "standalone account, and only for keys that already appear in that account's cost-allocation tags (up to 24 " +
+    "hours after a resource is tagged). " + (activate
+    ? "It is rendered here because activateCostAllocationTags is on."
+    : "It is not rendered (activateCostAllocationTags is off); turn it on in a later build once the keys are listed.");
   const prerequisites = [
-    "Cost-allocation tag activation and the CUR 2.0 export run in the AWS Organizations management (payer) account " +
-      "or a standalone account; a member account cannot activate cost-allocation tags.",
-    "A tag key can be activated only after it appears in billing data, up to 24 hours after a resource is tagged.",
+    "A CUR 2.0 export created in the management account covers the whole organization; one created in a member " +
+      "account covers only that account's own cost and usage.",
+    activationWhen,
     "The first CUR 2.0 delivery can take up to 24 hours; until then the export is WAITING, never zero spend.",
   ];
-  if (n.route !== "EMAIL_DIRECT" && n.emails.length > 0) {
+  if (n.route === "SNS_TOPIC" && n.emails.length > 0) {
     prerequisites.push("Each email recipient must confirm the SNS subscription before alerts reach them.");
+  }
+  if (n.route === "SNS_TOPIC" && n.encryption === "CUSTOMER_KMS") {
+    prerequisites.push("The alert topic is encrypted with a new customer-managed KMS key, which carries a monthly " +
+      "key charge.");
+  } else if (n.route === "SNS_TOPIC") {
+    prerequisites.push("The alert topic is not encrypted (alert content is low sensitivity, and no key charge is " +
+      "added); set notifications.encryption to CUSTOMER_KMS to encrypt it with a new customer-managed key.");
   }
   if (n.route === "EXISTING_SNS_TOPIC") {
     prerequisites.push("The adopted SNS topic's policy must allow budgets.amazonaws.com to publish.");
@@ -519,12 +593,21 @@ export function renderAwsCostBaseline(input: CostConfig, provenance?: Provenance
         addresses: creates.filter((c) => c.type === "aws_bcmdataexports_export").map((c) => c.address),
         reason: "AWS Data Exports is served only from " + COST_BILLING_API_REGION + "; the files land in the " +
           "destination bucket's region." },
-      { service: "ce", region: COST_BILLING_API_REGION,
+      ...(activate ? [{ service: "ce", region: COST_BILLING_API_REGION,
         addresses: creates.filter((c) => c.type === "aws_ce_cost_allocation_tag").map((c) => c.address),
-        reason: "Cost Explorer cost-allocation tags are managed through " + COST_BILLING_API_REGION + "." },
+        reason: "Cost Explorer cost-allocation tags are managed through " + COST_BILLING_API_REGION + "." }] : []),
     ],
     requiredTags: config.tags,
     costAllocationTagKeys: keys,
+    costAllocationTagActivation: { rendered: activate, keys, when: activationWhen },
+    naming: { suffix, derivedFrom: "budget.name+export.exportName",
+      topicName: n.route === "SNS_TOPIC" ? "alz-cost-alerts-" + suffix : null,
+      bucketName: e.mode === "ADOPT_EXISTING" ? e.bucketName
+        : e.bucketName ?? "alz-cost-export-" + suffix + "-<account-id>-<home-region>" },
+    teardown: { exportBucketForceDestroy: false, kmsKeyDeletionWindowDays: encrypted ? 30 : null,
+      note: "Cleanup deletes the export bucket only when it is empty, the same way it treats every bucket; billing " +
+        "data is never deleted silently, so a non-empty bucket stops the destroy and stays with its owner." +
+        (encrypted ? " A deleted KMS key is scheduled for deletion after 30 days and can be restored until then." : "") },
     budget: { name: config.budget.name, amount: config.budget.amount, currency: config.budget.currency,
       period: config.budget.period, actualThresholds: config.budget.actualThresholds,
       forecastThresholds: config.budget.forecastThresholds,
@@ -532,10 +615,12 @@ export function renderAwsCostBaseline(input: CostConfig, provenance?: Provenance
     budgetAction: { enabled: config.budgetAction.enabled, effect: describeBudgetAction(config) },
     notifications: { route: n.route, emailRecipients: n.emails.length,
       snsTopic: n.route === "SNS_TOPIC" ? "NEW" : n.route === "EXISTING_SNS_TOPIC" ? "ADOPTED" : "NONE",
-      emailConfirmationRequired: n.route !== "EMAIL_DIRECT" && n.emails.length > 0 },
+      encryption: n.route === "SNS_TOPIC" ? n.encryption : n.route === "EXISTING_SNS_TOPIC" ? "OWNER_MANAGED" : "NONE",
+      // Only the SNS_TOPIC route subscribes emails to a topic; on the other routes they are direct budget subscribers.
+      emailConfirmationRequired: n.route === "SNS_TOPIC" && n.emails.length > 0 },
     export: { mode: e.mode, exportName: e.exportName,
       bucket: e.mode === "ADOPT_EXISTING" ? e.bucketName
-        : e.bucketName ?? "alz-cost-export-<account-id>-<home-region>",
+        : e.bucketName ?? "alz-cost-export-" + suffix + "-<account-id>-<home-region>",
       prefix: e.prefix, granularity: e.granularity, delivery: "AT_LEAST_DAILY",
       retentionDays: e.mode === "NEW_BUCKET" ? e.retentionDays : null },
     analytics: config.analytics === "ON" ? "REQUESTED_SEPARATE_PACK" : "OFF",

@@ -26,7 +26,7 @@ provider "aws" {
   }
 }
 
-# Cross-region dependency: AWS Data Exports and Cost Explorer are served from us-east-1.
+# Cross-region dependency: AWS Data Exports is served from us-east-1.
 provider "aws" {
   alias  = "billing"
   region = "us-east-1"
@@ -115,12 +115,4 @@ resource "aws_bcmdataexports_export" "cur2" {
       frequency = "SYNCHRONOUS"
     }
   }
-}
-
-# Activation needs the key to appear in billing data first, which can take up to 24 hours after tagging.
-resource "aws_ce_cost_allocation_tag" "required" {
-  provider = aws.billing
-  for_each = toset(["cost-center", "environment", "owner"])
-  tag_key  = each.value
-  status   = "Active"
 }

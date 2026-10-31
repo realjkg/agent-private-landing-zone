@@ -923,7 +923,7 @@ test("canary: the allowlist is part of the target hash (and so of every seal, ap
   assert.notEqual(pilotContractSha256(base), pilotContractSha256(changed), "and of the contract hash");
 });
 
-test("canary: every shipped example contract names its path's canary allowlist on every target", () => {
+test("canary: every shipped example contract names its path's canary allowlist on every target, but the one limits example, which names provisioning limits instead", () => {
   const expected: Record<string, { type: string; count: number }[]> = {
     "act-pilot-contract.example.json": [{ type: "azurerm_virtual_network", count: 1 }],
     "act-pilot-contract.azure-dev.example.json": [{ type: "azurerm_virtual_network", count: 1 }],
@@ -934,7 +934,13 @@ test("canary: every shipped example contract names its path's canary allowlist o
     "act-pilot-contract.aws-cdk-dev.example.json": [{ type: "AWS::Logs::LogGroup", count: 1 }, { type: "AWS::CloudFormation::WaitConditionHandle", count: 1, retain: true }],
   };
   const config = join(repoPaths().root, "config");
-  assert.deepEqual(readdirSync(config).filter((name) => /^act-pilot-contract.*\.example\.json$/.test(name)).sort(), Object.keys(expected).sort());
+  const LIMITS_EXAMPLE = "act-pilot-contract.aws-dev-limits.example.json";
+  assert.deepEqual(readdirSync(config).filter((name) => /^act-pilot-contract.*\.example\.json$/.test(name)).sort(), [...Object.keys(expected), LIMITS_EXAMPLE].sort());
+  // The limits example (owner direction 6536926009): limits and no canary on every target, valid for its engine (test/apply-limits.test.ts reads its content).
+  const limited = JSON.parse(readFileSync(join(config, LIMITS_EXAMPLE), "utf8")) as { targets: Record<string, { canary?: unknown; limits?: unknown }> };
+  for (const [env, target] of Object.entries(limited.targets)) assert.ok(target.limits !== undefined && target.canary === undefined, LIMITS_EXAMPLE + " " + env);
+  const limitedShape = inspectPilotContract(limited);
+  assert.ok(limitedShape.ok || !/limits/.test(limitedShape.reason), limitedShape.ok ? "" : limitedShape.reason);
   for (const [name, resources] of Object.entries(expected)) {
     const raw = JSON.parse(readFileSync(join(config, name), "utf8")) as { targets: Record<string, { canary?: unknown }> };
     for (const [env, target] of Object.entries(raw.targets)) assert.deepEqual(target.canary, { resources }, name + " " + env);

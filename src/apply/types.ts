@@ -47,8 +47,24 @@ export type ProviderId = "AZURE" | "AWS" | "GCP";
  */
 export type PilotCanary = { resources: { type: string; count: number; retain?: true }[] };
 
-/** One environment's exact target, in the shape the contract's provider defines, with its optional canary allowlist. Real values come from the owner; tests use explicit fixtures. */
-export type PilotTarget = (AzureTarget | AwsTarget | GcpTarget) & { canary?: PilotCanary };
+/**
+ * The provisioning limits (owner direction 6536926009, plan item 3): the general form of the canary allowlist. The resource types an
+ * APPLY in this environment may create, each at most `max` times, in the engine's own type names; optionally the regions they may be
+ * created in (which must include the target's own region or location) and, per type, the sizes or size families it may use (a type in
+ * the engine's size table only, `TERRAFORM_SIZE_ATTRIBUTES`). Create only, as for the canary (owner decision E1). It is an allowlist
+ * judged at seal, never a cost estimate or a spending limit. Part of the target, so it is in the target hash every seal, approval and
+ * evidence record binds. A target names `limits` or `canary`, never both.
+ */
+export type PilotLimits = {
+  resources: { type: string; max: number; sizes?: string[]; families?: string[] }[];
+  regions?: string[];
+};
+
+/**
+ * One environment's exact target, in the shape the contract's provider defines, with its optional canary allowlist or provisioning
+ * limits (one of the two). Real values come from the owner; tests use explicit fixtures.
+ */
+export type PilotTarget = (AzureTarget | AwsTarget | GcpTarget) & { canary?: PilotCanary; limits?: PilotLimits };
 
 /** What ACT can be authorized for: an apply, a cleanup of what a run created, or a removal of what the product generated. */
 export type ActOperation = "APPLY" | "CLEANUP" | "REMOVE";
@@ -213,10 +229,12 @@ export type ApplyRefusalCode =
   | "ACT_DISABLED"
   /** The reviewed contract's `authorize` does not list this operation for this environment. Nothing ran. */
   | "ACT_NOT_AUTHORIZED"
-  /** The contract authorizes APPLY for an environment whose target names no canary allowlist (`PilotCanary`). Nothing ran. */
+  /** The contract authorizes APPLY for an environment whose target names no canary allowlist (`PilotCanary`) and no provisioning limits (`PilotLimits`). Nothing ran. */
   | "CANARY_ALLOWLIST_MISSING"
   /** The plan or change set does anything but create exactly the canary allowlist's types and counts. Nothing was sealed or applied. */
   | "RESOURCE_NOT_IN_CANARY"
+  /** The plan or change set creates a type, a count, a region or a size the provisioning limits do not allow, or does anything but create. Nothing was sealed or applied. */
+  | "RESOURCE_NOT_IN_LIMITS"
   /** The contract or its authorizing entry changed since the plan was sealed or the cleanup proposed. Nothing was consumed. */
   | "ACT_AUTHORIZATION_CHANGED"
   | "CONTRACT_INVALID"

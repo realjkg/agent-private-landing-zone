@@ -20,6 +20,13 @@ export const COST_REQUIRED_TAG_KEYS = ["owner", "cost-center", "environment"] as
 export type CostBudgetPeriod = "MONTHLY" | "QUARTERLY" | "ANNUALLY";
 export type CostNotificationRoute = "SNS_TOPIC" | "EMAIL_DIRECT" | "EXISTING_SNS_TOPIC";
 export type CostExportGranularity = "DAILY" | "HOURLY";
+/**
+ * NONE (the default, owner decision 2026-10-31): the new topic is not encrypted; alert content is low sensitivity and
+ * no key charge is added. CUSTOMER_KMS (opt-in): a new customer-managed key whose policy lets AWS Budgets publish; it
+ * adds a monthly key charge. The AWS-managed `alias/aws/sns` key is never offered, because AWS Budgets cannot publish
+ * to a topic encrypted with it. The adopted-topic and direct-email routes create no topic, so they are always NONE.
+ */
+export type CostTopicEncryption = "NONE" | "CUSTOMER_KMS";
 
 export type CostNotifications = {
   /**
@@ -29,6 +36,8 @@ export type CostNotifications = {
   route: CostNotificationRoute;
   emails: string[];
   snsTopicArn?: string;
+  /** Applies only to the SNS_TOPIC route, which creates the topic; an adopted topic keeps its owner's settings. */
+  encryption: CostTopicEncryption;
 };
 
 export type CostBudget = {
@@ -112,6 +121,13 @@ export type CostConfig = {
   limits: CostProvisioningLimits;
   review: CostReview;
   export: CostExport;
+  /**
+   * Off by default. AWS activates a cost-allocation tag key only in the Organizations management account or a
+   * standalone account, and only after the key has appeared in billing data (up to 24 hours after tagging), so
+   * rendering activation into a fresh or member account would fail its first apply partway. Turn it on in a later
+   * build, once the keys are listed in the account's cost-allocation tags.
+   */
+  activateCostAllocationTags: boolean;
   /** OFF by default. ON requests the separate FinOps analytics pack (phase 2); the baseline never depends on it. */
   analytics: "OFF" | "ON";
 };
@@ -157,7 +173,11 @@ const REGION = /^[a-z]{2}(?:-[a-z]+)+-\d$/;
 const BUDGET_NAME = /^[A-Za-z0-9_.-]{1,100}$/;
 const EXPORT_NAME = /^[A-Za-z0-9_-]{1,128}$/;
 const PREFIX = /^[a-z0-9](?:[a-z0-9/_.-]{0,126}[a-z0-9])?$/;
-const BUCKET = /^[a-z0-9](?:[a-z0-9.-]{1,61})[a-z0-9]$/;
+const BUCKET = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
+/** Names S3 reserves (prefixes and suffixes for access points, aliases, directory and table buckets). */
+const BUCKET_RESERVED = [/^xn--/, /^sthree-/, /^amzn-s3-demo-/, /-s3alias$/, /--ol-s3$/, /--x-s3$/, /--table-s3$/];
+/** Keys that name an object's prototype machinery; as a plain-object key they can be silently dropped. */
+const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const CURRENCY = /^[A-Z]{3}$/;
 const AMOUNT = /^(\d{1,12})(?:\.(\d{1,2}))?$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -300,6 +320,7 @@ function validateTags(raw: unknown, owner: string | undefined, ownerGiven: boole
     if (!TAG_KEY.test(key)) c.add(path, "INVALID_KEY", "letters, digits, spaces and _ . : / = + - @, at most 128");
     else if (/^aws:/i.test(key)) c.add(path, "RESERVED_KEY", "the aws: prefix belongs to AWS");
     else if (/^alz-/i.test(key)) c.add(path, "RESERVED_KEY", "the alz- prefix is the deletion-unit tag scheme");
+    else if (PROTOTYPE_KEYS.has(key)) c.add(path, "RESERVED_KEY", "a prototype key is never a tag");
     else if (typeof value !== "string" || !TAG_VALUE.test(value)) {
       c.add(path, "INVALID_VALUE", "a non-empty value of letters, digits, spaces and _ . : / = + - @, at most 256");
     } else tags[key] = value;
@@ -317,7 +338,7 @@ function validateTags(raw: unknown, owner: string | undefined, ownerGiven: boole
 }
 
 function validateNotifications(raw: unknown, c: Collector): CostNotifications | undefined {
-  const input = c.object(raw, "notifications", ["route", "emails", "snsTopicArn"], true);
+  const input = c.object(raw, "notifications", ["route", "emails", "snsTopicArn", "encryption"], true);
   const snsTopicArn = c.optionalString(input.snsTopicArn, "notifications.snsTopicArn", SNS_ARN,
     "an SNS topic ARN in the aws partition");
   const route = c.oneOf<CostNotificationRoute>(input.route, "notifications.route",
@@ -333,8 +354,13 @@ function validateNotifications(raw: unknown, c: Collector): CostNotifications | 
       c.add("notifications.emails", "REQUIRED", "at least one recipient for the " + (route ?? "chosen") + " route");
     }
   }
-  if (!route) return undefined;
-  return { route, emails, ...(snsTopicArn && route === "EXISTING_SNS_TOPIC" ? { snsTopicArn } : {}) };
+  const encryption = c.oneOf<CostTopicEncryption>(input.encryption, "notifications.encryption",
+    ["NONE", "CUSTOMER_KMS"], "NONE");
+  if (encryption === "CUSTOMER_KMS" && route !== "SNS_TOPIC") {
+    c.add("notifications.encryption", "NOT_ALLOWED", "only the SNS_TOPIC route creates a topic to encrypt");
+  }
+  if (!route || !encryption) return undefined;
+  return { route, emails, ...(snsTopicArn && route === "EXISTING_SNS_TOPIC" ? { snsTopicArn } : {}), encryption };
 }
 
 function validateBudget(raw: unknown, c: Collector): CostBudget | undefined {
@@ -443,11 +469,13 @@ function validateExport(raw: unknown, c: Collector): CostExport | undefined {
     "lowercase letters, digits and / _ . -, no leading or trailing separator", COST_DEFAULTS.prefix);
   const granularity = c.oneOf<CostExportGranularity>(input.granularity, "export.granularity", ["DAILY", "HOURLY"],
     COST_DEFAULTS.granularity);
-  const bucketHint = "an S3 bucket name: 3 to 63 lowercase letters, digits, . and -";
+  const bucketHint = "an S3 bucket name: 3 to 63 lowercase letters, digits and -, with no dots (they break " +
+    "virtual-hosted TLS) and none of the names S3 reserves (xn--, sthree-, amzn-s3-demo-, -s3alias, --ol-s3, --x-s3, " +
+    "--table-s3)";
   const bucketName = input.bucketName === undefined ? undefined
     : c.string(input.bucketName, "export.bucketName", BUCKET, bucketHint);
-  if (bucketName && (bucketName.includes("..") || /^\d+\.\d+\.\d+\.\d+$/.test(bucketName))) {
-    c.add("export.bucketName", "INVALID", bucketHint);
+  if (bucketName && BUCKET_RESERVED.some((pattern) => pattern.test(bucketName))) {
+    c.add("export.bucketName", "RESERVED", bucketHint);
   }
   if (mode === "ADOPT_EXISTING") {
     if (input.bucketName === undefined) c.add("export.bucketName", "REQUIRED", "the existing bucket to adopt");
@@ -472,7 +500,7 @@ export function validateCostConfig(input: unknown):
   { ok: true; config: CostConfig } | { ok: false; issues: CostConfigIssue[] } {
   const c = new Collector();
   const root = c.object(input, "cost", ["schema", "owner", "notifications", "tags", "budget", "budgetAction",
-    "limits", "review", "export", "analytics"], true);
+    "limits", "review", "export", "activateCostAllocationTags", "analytics"], true);
   if (root.schema !== undefined && root.schema !== 1) c.add("cost.schema", "UNSUPPORTED", "schema 1 only");
   const owner = c.string(root.owner, "owner", TAG_VALUE,
     "the accountable owner (a team or an email), letters, digits, spaces and _ . : / = + - @");
@@ -484,13 +512,19 @@ export function validateCostConfig(input: unknown):
   const review = validateReview(root.review, c);
   const exported = validateExport(root.export, c);
   const analytics = c.oneOf<"OFF" | "ON">(root.analytics, "analytics", ["OFF", "ON"], "OFF");
+  const activate = root.activateCostAllocationTags;
+  if (activate !== undefined && typeof activate !== "boolean") {
+    c.add("activateCostAllocationTags", "INVALID", "true or false; off unless the keys already appear in billing data");
+  }
+  const activateCostAllocationTags = activate === true;
   if (c.issues.length > 0 || !owner || !notifications || !budget || !review || !exported || !analytics) {
     if (c.issues.length === 0) c.add("cost", "INVALID", "the configuration is incomplete");
     return { ok: false, issues: c.issues };
   }
   return {
     ok: true,
-    config: { schema: 1, owner, notifications, tags, budget, budgetAction, limits, review, export: exported, analytics },
+    config: { schema: 1, owner, notifications, tags, budget, budgetAction, limits, review, export: exported,
+      activateCostAllocationTags, analytics },
   };
 }
 

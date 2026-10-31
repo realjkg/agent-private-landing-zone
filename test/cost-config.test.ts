@@ -29,7 +29,11 @@ function issuesOf(input: unknown): string[] {
 test("a minimal configuration resolves to safe defaults: notify-only, no budget action, analytics off, no limits", () => {
   const config = resolveCostConfig(minimal());
   assert.equal(config.schema, 1);
-  assert.deepEqual(config.notifications, { route: "SNS_TOPIC", emails: ["finops@example.com"] });
+  assert.deepEqual(config.notifications, { route: "SNS_TOPIC", emails: ["finops@example.com"], encryption: "NONE" },
+    "a new topic is unencrypted by default (owner decision 2026-10-31); a customer-managed key is opt-in");
+  assert.equal(resolveCostConfig({ ...minimal(), notifications: { route: "EMAIL_DIRECT", emails: ["a@example.com"] } })
+    .notifications.encryption, "NONE", "no topic is created, so there is nothing to encrypt");
+  assert.equal(config.activateCostAllocationTags, false, "tag activation is opt-in");
   assert.deepEqual(config.tags, { "cost-center": "cc-1234", environment: "dev", owner: "platform-team" },
     "the owner tag defaults to the owner");
   assert.deepEqual(Object.keys(config.tags).sort(), [...COST_REQUIRED_TAG_KEYS].sort());
@@ -97,6 +101,11 @@ test("tag keys and values cannot carry HCL syntax, reserved prefixes or empty va
   assert.deepEqual(issuesOf(tags({ "alz-unit": "forged" })), ["tags.alz-unit RESERVED_KEY"],
     "the deletion-unit tags come only from the unit record");
   assert.deepEqual(issuesOf(tags({ "bad{key": "x" })), ["tags.bad{key INVALID_KEY"]);
+  // N4: a prototype key would be silently dropped from a plain object; it is refused instead.
+  assert.deepEqual(issuesOf({ ...minimal(), tags: JSON.parse('{"cost-center":"cc-1","environment":"dev","__proto__":"x"}') }),
+    ["tags.__proto__ RESERVED_KEY"]);
+  assert.deepEqual(issuesOf(tags({ constructor: "x" })), ["tags.constructor RESERVED_KEY"]);
+  assert.deepEqual(issuesOf(tags({ prototype: "x" })), ["tags.prototype RESERVED_KEY"]);
   assert.deepEqual(issuesOf({ ...minimal(), owner: "team\"x" }), ["owner INVALID"]);
   const many = Object.fromEntries(Array.from({ length: 21 }, (_, i) => ["extra-" + i, "v"]));
   assert.deepEqual(issuesOf(tags(many)), ["tags TOO_MANY"]);
@@ -122,7 +131,13 @@ test("notification routes: SNS topic and direct email need recipients, an adopte
   const adopted = resolveCostConfig({ ...minimal(),
     notifications: { snsTopicArn: "arn:aws:sns:eu-west-1:123456789012:billing" } });
   assert.deepEqual(adopted.notifications,
-    { route: "EXISTING_SNS_TOPIC", emails: [], snsTopicArn: "arn:aws:sns:eu-west-1:123456789012:billing" });
+    { route: "EXISTING_SNS_TOPIC", emails: [], snsTopicArn: "arn:aws:sns:eu-west-1:123456789012:billing", encryption: "NONE" });
+  assert.equal(resolveCostConfig({ ...minimal(), notifications: { emails: ["a@example.com"], encryption: "CUSTOMER_KMS" } })
+    .notifications.encryption, "CUSTOMER_KMS");
+  assert.deepEqual(issuesOf({ ...minimal(), notifications: { route: "EMAIL_DIRECT", emails: ["a@example.com"],
+    encryption: "CUSTOMER_KMS" } }), ["notifications.encryption NOT_ALLOWED"]);
+  assert.deepEqual(issuesOf({ ...minimal(), notifications: { emails: ["a@example.com"], encryption: "AWS_MANAGED" } }),
+    ["notifications.encryption INVALID"], "the AWS-managed SNS key cannot be used by AWS Budgets");
 });
 
 test("thresholds are percentages, sorted, unique, and within the AWS limit of five notifications per budget", () => {
@@ -202,8 +217,15 @@ test("the export creates a new bucket by default or adopts an existing one by na
   assert.deepEqual(issuesOf({ ...minimal(), export: { mode: "ADOPT_EXISTING", bucketName: "corp-billing",
     bucketRegion: "eu-west-1", retentionDays: 30 } }), ["export.retentionDays NOT_ALLOWED"]);
   assert.deepEqual(issuesOf({ ...minimal(), export: { bucketRegion: "eu-west-1" } }), ["export.bucketRegion NOT_ALLOWED"]);
-  for (const bucketName of ["Bad_Bucket", "ab", "a..b", "192.168.1.1", "-lead"]) {
+  for (const bucketName of ["Bad_Bucket", "ab", "a..b", "192.168.1.1", "-lead", "acme.cost.export"]) {
     assert.deepEqual(issuesOf({ ...minimal(), export: { bucketName } }), ["export.bucketName INVALID"], bucketName);
+  }
+  // N5: names S3 reserves are refused up front, for a new and an adopted bucket alike.
+  for (const bucketName of ["xn--cost", "sthree-cost", "amzn-s3-demo-cost", "cost-s3alias", "cost--ol-s3", "cost--x-s3",
+    "cost--table-s3"]) {
+    assert.deepEqual(issuesOf({ ...minimal(), export: { bucketName } }), ["export.bucketName RESERVED"], bucketName);
+    assert.deepEqual(issuesOf({ ...minimal(), export: { mode: "ADOPT_EXISTING", bucketName, bucketRegion: "eu-west-1" } }),
+      ["export.bucketName RESERVED"], bucketName);
   }
   assert.deepEqual(issuesOf({ ...minimal(), export: { retentionDays: 0 } }), ["export.retentionDays INVALID"]);
   assert.deepEqual(issuesOf({ ...minimal(), export: { granularity: "MINUTE" } }), ["export.granularity INVALID"]);
@@ -211,6 +233,11 @@ test("the export creates a new bucket by default or adopts an existing one by na
   const named = resolveCostConfig({ ...minimal(), export: { bucketName: "acme-cur2", granularity: "HOURLY", retentionDays: 90 } });
   assert.deepEqual(named.export, { mode: "NEW_BUCKET", exportName: "alz-cur2", bucketName: "acme-cur2", prefix: "cur2",
     granularity: "HOURLY", retentionDays: 90 });
+});
+
+test("cost-allocation tag activation is off by default and only a boolean", () => {
+  assert.equal(resolveCostConfig({ ...minimal(), activateCostAllocationTags: true }).activateCostAllocationTags, true);
+  assert.deepEqual(issuesOf({ ...minimal(), activateCostAllocationTags: "yes" }), ["activateCostAllocationTags INVALID"]);
 });
 
 test("analytics is off by default and only OFF or ON", () => {

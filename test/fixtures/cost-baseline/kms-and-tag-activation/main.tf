@@ -19,12 +19,9 @@ provider "aws" {
 
   default_tags {
     tags = {
-      "alz-build"      = "build-0001"
-      "alz-managed-by" = "alz"
-      "alz-unit"       = "alzu-0123456789abcdef0123"
-      "cost-center"    = "cc-1234"
-      "environment"    = "dev"
-      "owner"          = "platform-team"
+      "cost-center" = "cc-1234"
+      "environment" = "dev"
+      "owner"       = "platform-team"
     }
   }
 }
@@ -36,12 +33,9 @@ provider "aws" {
 
   default_tags {
     tags = {
-      "alz-build"      = "build-0001"
-      "alz-managed-by" = "alz"
-      "alz-unit"       = "alzu-0123456789abcdef0123"
-      "cost-center"    = "cc-1234"
-      "environment"    = "dev"
-      "owner"          = "platform-team"
+      "cost-center" = "cc-1234"
+      "environment" = "dev"
+      "owner"       = "platform-team"
     }
   }
 }
@@ -80,8 +74,39 @@ resource "aws_budgets_budget" "cost_baseline" {
   }
 }
 
+resource "aws_kms_key" "cost_alerts" {
+  description             = "ALZ cost alerts topic ee88914a (AWS Budgets publishes with it)"
+  enable_key_rotation     = true
+  deletion_window_in_days = 30
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AccountAdministration"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        Sid       = "AllowAwsBudgetsToPublishEncrypted"
+        Effect    = "Allow"
+        Principal = { Service = "budgets.amazonaws.com" }
+        Action    = ["kms:GenerateDataKey*", "kms:Decrypt"]
+        Resource  = "*"
+        Condition = {
+          StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+          ArnLike      = { "aws:SourceArn" = "arn:aws:budgets::${data.aws_caller_identity.current.account_id}:*" }
+        }
+      },
+    ]
+  })
+}
+
 resource "aws_sns_topic" "cost_alerts" {
-  name = "alz-cost-alerts"
+  name              = "alz-cost-alerts-ee88914a"
+  kms_master_key_id = aws_kms_key.cost_alerts.arn
 }
 
 resource "aws_sns_topic_policy" "cost_alerts" {
@@ -111,8 +136,11 @@ resource "aws_sns_topic_subscription" "cost_alerts" {
   endpoint  = each.value
 }
 
+# force_destroy stays false: billing data is never deleted silently. Destroying a non-empty bucket fails closed,
+# and its owner empties or keeps it; the lifecycle rule below expires old exports.
 resource "aws_s3_bucket" "cost_export" {
-  bucket = "alz-cost-export-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
+  bucket        = "alz-cost-export-ee88914a-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
+  force_destroy = false
 }
 
 resource "aws_s3_bucket_public_access_block" "cost_export" {
@@ -131,6 +159,8 @@ resource "aws_s3_bucket_ownership_controls" "cost_export" {
   }
 }
 
+# SSE-S3, as in the AWS Cloud Intelligence Dashboards data-exports destination bucket. A customer-managed key
+# is not rendered; an owner who needs one adopts a bucket already configured with it (export.mode ADOPT_EXISTING).
 resource "aws_s3_bucket_server_side_encryption_configuration" "cost_export" {
   bucket = aws_s3_bucket.cost_export.id
 
@@ -239,7 +269,7 @@ resource "aws_bcmdataexports_export" "cur2" {
   depends_on = [aws_s3_bucket_policy.cost_export]
 }
 
-# Activation needs the key to appear in billing data first, which can take up to 24 hours after tagging.
+# Opt-in. Activation runs only in the management or a standalone account, for keys already in billing data.
 resource "aws_ce_cost_allocation_tag" "required" {
   provider = aws.billing
   for_each = toset(["cost-center", "environment", "owner"])

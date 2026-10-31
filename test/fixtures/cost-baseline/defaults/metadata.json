@@ -1,8 +1,8 @@
 {
   "scenario": "aws-terraform-cost-baseline-v1",
   "mode": "FIXED_TEMPLATE",
-  "configHash": "b9937d9556c78e52da79f7c9482ddacb83f3ccd36dc5f7bb5c1c2e6c970f212b",
-  "artifactHash": "71551c1395d764ada3634cb68ecfe5e14ac4eef11a02edcc9be0ee40a21aaf5d",
+  "configHash": "f23b87378b1556eeb0ca2f459be94f281ff5da9a33e4a23bf5f0389b6aaeca02",
+  "artifactHash": "55977d73abdd54652b3874953757bf3823d021cd6ad16180e4948169c6f9da79",
   "awsProviderVersion": "6.68.0",
   "homeRegion": "var.aws_region",
   "creates": [
@@ -17,24 +17,6 @@
       "type": "aws_budgets_budget",
       "taggable": true,
       "region": "GLOBAL"
-    },
-    {
-      "address": "aws_ce_cost_allocation_tag.required[\"cost-center\"]",
-      "type": "aws_ce_cost_allocation_tag",
-      "taggable": false,
-      "region": "us-east-1"
-    },
-    {
-      "address": "aws_ce_cost_allocation_tag.required[\"environment\"]",
-      "type": "aws_ce_cost_allocation_tag",
-      "taggable": false,
-      "region": "us-east-1"
-    },
-    {
-      "address": "aws_ce_cost_allocation_tag.required[\"owner\"]",
-      "type": "aws_ce_cost_allocation_tag",
-      "taggable": false,
-      "region": "us-east-1"
     },
     {
       "address": "aws_s3_bucket.cost_export",
@@ -105,16 +87,6 @@
         "aws_bcmdataexports_export.cur2"
       ],
       "reason": "AWS Data Exports is served only from us-east-1; the files land in the destination bucket's region."
-    },
-    {
-      "service": "ce",
-      "region": "us-east-1",
-      "addresses": [
-        "aws_ce_cost_allocation_tag.required[\"cost-center\"]",
-        "aws_ce_cost_allocation_tag.required[\"environment\"]",
-        "aws_ce_cost_allocation_tag.required[\"owner\"]"
-      ],
-      "reason": "Cost Explorer cost-allocation tags are managed through us-east-1."
     }
   ],
   "requiredTags": {
@@ -127,6 +99,26 @@
     "environment",
     "owner"
   ],
+  "costAllocationTagActivation": {
+    "rendered": false,
+    "keys": [
+      "cost-center",
+      "environment",
+      "owner"
+    ],
+    "when": "Cost-allocation tag activation runs only in the AWS Organizations management account or a standalone account, and only for keys that already appear in that account's cost-allocation tags (up to 24 hours after a resource is tagged). It is not rendered (activateCostAllocationTags is off); turn it on in a later build once the keys are listed."
+  },
+  "naming": {
+    "suffix": "ee88914a",
+    "derivedFrom": "budget.name+export.exportName",
+    "topicName": "alz-cost-alerts-ee88914a",
+    "bucketName": "alz-cost-export-ee88914a-<account-id>-<home-region>"
+  },
+  "teardown": {
+    "exportBucketForceDestroy": false,
+    "kmsKeyDeletionWindowDays": null,
+    "note": "Cleanup deletes the export bucket only when it is empty, the same way it treats every bucket; billing data is never deleted silently, so a non-empty bucket stops the destroy and stays with its owner."
+  },
   "budget": {
     "name": "alz-cost-baseline",
     "amount": "250.00",
@@ -149,12 +141,13 @@
     "route": "SNS_TOPIC",
     "emailRecipients": 2,
     "snsTopic": "NEW",
+    "encryption": "NONE",
     "emailConfirmationRequired": true
   },
   "export": {
     "mode": "NEW_BUCKET",
     "exportName": "alz-cur2",
-    "bucket": "alz-cost-export-<account-id>-<home-region>",
+    "bucket": "alz-cost-export-ee88914a-<account-id>-<home-region>",
     "prefix": "cur2",
     "granularity": "DAILY",
     "delivery": "AT_LEAST_DAILY",
@@ -162,10 +155,11 @@
   },
   "analytics": "OFF",
   "prerequisites": [
-    "Cost-allocation tag activation and the CUR 2.0 export run in the AWS Organizations management (payer) account or a standalone account; a member account cannot activate cost-allocation tags.",
-    "A tag key can be activated only after it appears in billing data, up to 24 hours after a resource is tagged.",
+    "A CUR 2.0 export created in the management account covers the whole organization; one created in a member account covers only that account's own cost and usage.",
+    "Cost-allocation tag activation runs only in the AWS Organizations management account or a standalone account, and only for keys that already appear in that account's cost-allocation tags (up to 24 hours after a resource is tagged). It is not rendered (activateCostAllocationTags is off); turn it on in a later build once the keys are listed.",
     "The first CUR 2.0 delivery can take up to 24 hours; until then the export is WAITING, never zero spend.",
-    "Each email recipient must confirm the SNS subscription before alerts reach them."
+    "Each email recipient must confirm the SNS subscription before alerts reach them.",
+    "The alert topic is not encrypted (alert content is low sensitivity, and no key charge is added); set notifications.encryption to CUSTOMER_KMS to encrypt it with a new customer-managed key."
   ],
   "review": {
     "reviewBy": "2027-01-31",
