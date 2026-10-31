@@ -21,7 +21,7 @@ import { checkedOutput, codeOf, stop, withoutIdentities } from "../engine.js";
 import type { SyncEngineApplyRun, SyncEngineCleanupRun, EngineContext, SyncEngineSpec } from "../engine-spec.js";
 import type { ProviderBlock, ProviderSpec, ProviderUse } from "../provider.js";
 import { isRecord } from "../providers/shared.js";
-import { assertCanary, type CanaryEntry } from "../canary.js";
+import { assertProvisioning, TERRAFORM_SIZE_ATTRIBUTES, type CanaryEntry } from "../canary.js";
 import { assertNoRefusedPlanConstructs, assertNoRefusedSourceConstructs } from "../terraform-constructs.js";
 import { LockFileError, REVIEWED_PROVIDER_VERSIONS, lockedProviders, unofficialProviderHash, unreviewedProviderVersion, type LockedProvider } from "../lockfile.js";
 import {
@@ -382,9 +382,37 @@ function assertPlanInCanary(document: Shown, pinned: PilotTarget): void {
     }
     const moved = typeof found?.previous_address === "string" && found.previous_address !== "";
     const creates = sameActions(actions, ["create"]) && !found?.change?.importing && !moved;
-    entries.push({ address, type, action: found?.change?.importing ? "import " + shown : moved ? "move " + shown : shown, creates });
+    entries.push({ address, type, action: found?.change?.importing ? "import " + shown : moved ? "move " + shown : shown, creates, ...placementOf(found?.change, type) });
   }
-  assertCanary(pinned.canary, entries, "plan");
+  assertProvisioning(pinned, entries, "plan");
+}
+
+/**
+ * Where and how large a planned resource is, for the provisioning limits (../canary.ts, `assertLimits`), from its resolved planned
+ * values only: its `region` (AWS provider 6 and GCP), else its `location` (Azure, GCP), else its `zone` read as the zone's region
+ * (GCP, `us-central1-a` is `us-central1`); null when that attribute is unknown until apply, absent when the type has none. And the
+ * values of its size attribute (`TERRAFORM_SIZE_ATTRIBUTES`), null when unknown or not a name. Nothing else of `after` is read, and
+ * neither value is recorded; the canary judge ignores both.
+ */
+function placementOf(change: { after?: unknown; after_unknown?: unknown } | undefined, type: string): Pick<CanaryEntry, "region" | "sizes"> {
+  const after = isPlainRecord(change?.after) ? change.after : {};
+  const unknown = isPlainRecord(change?.after_unknown) ? change.after_unknown : {};
+  let region: string | null | undefined;
+  for (const key of ["region", "location", "zone"] as const) {
+    if (unknown[key] === true) { region = null; break; }
+    const value = after[key];
+    if (typeof value === "string" && value !== "") { region = key === "zone" ? value.replace(/-[a-z]$/, "") : value; break; }
+  }
+  const attribute = TERRAFORM_SIZE_ATTRIBUTES[type];
+  let sizes: readonly string[] | null | undefined;
+  if (attribute !== undefined) {
+    const value = after[attribute];
+    sizes = unknown[attribute] !== undefined && unknown[attribute] !== false ? null
+      : typeof value === "string" ? [value]
+      : Array.isArray(value) && value.every((item) => typeof item === "string") ? value as string[]
+      : null;
+  }
+  return { ...(region !== undefined ? { region } : {}), ...(sizes !== undefined ? { sizes } : {}) };
 }
 
 /**
@@ -640,6 +668,7 @@ export const TERRAFORM: SyncEngineSpec = {
   mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN",
   providers: ["AZURE", "AWS", "GCP"],
   canaryTypeOk: (value) => value.length <= 128 && TERRAFORM_TYPE.test(value),
+  limitSizeAttributes: TERRAFORM_SIZE_ATTRIBUTES,
   notices: {
     sealHeading: "SEAL A PREVIEW (this plans against the target and changes no infrastructure; the plan is kept encrypted)",
     sealReads: "  reads           state with the STATE identity, then plans with the DISCOVERY identity",

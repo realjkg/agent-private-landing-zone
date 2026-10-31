@@ -1012,3 +1012,41 @@ test("canary (AWS Terraform, owner decision E1): an IAM role beside the allowlis
   refused(missing as never, "CANARY_ALLOWLIST_MISSING");
   assert.equal(callsOf(toolDir).length, 0, "no engine step ran");
 });
+
+test("provisioning limits (AWS Terraform, owner direction 6536926009): the seal judges the plan's types, counts, regions and sizes from its resolved values; within the limits it seals, outside them it is RESOURCE_NOT_IN_LIMITS (SYNTHETIC: fake Terraform)", async () => {
+  const create = (address: string, after: Record<string, unknown> = {}, unknown: Record<string, unknown> = {}) =>
+    ({ address, type: address.split(".")[0], change: { actions: ["create"], before: null, after, after_unknown: unknown } });
+  // The default plan already creates one aws_cloudwatch_log_group (aws_cloudwatch_log_group.pilot), with no region in its planned values.
+  const limits = { regions: [AWS_REGION, "us-east-2"], resources: [{ type: "aws_cloudwatch_log_group", max: 2 }, { type: "aws_instance", max: 1, families: ["t3"] }] };
+  const contract = awsContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+  delete contract.targets.DEV.canary;
+  contract.targets.DEV.limits = limits;
+  {
+    const w = world(contract);
+    behave({ showResources: [create("aws_cloudwatch_log_group.second", { region: "us-east-2" }), create("aws_instance.app", { region: AWS_REGION, instance_type: "t3.micro" })] });
+    // Sealed as is: the contract's limits are not rewritten to the plan (as `seal` does for a canary), so this is the limits judge's own verdict.
+    const sealed = await sealRefusal(w, "DEV");
+    assert.ok(sealed.ok, JSON.stringify(sealed));
+  }
+  for (const [label, resources, said] of [
+    ["a type not allowed", [create("aws_iam_role.app")], /aws_iam_role\.app: type aws_iam_role is not in the provisioning limits/],
+    ["a count over its maximum", [create("aws_cloudwatch_log_group.b"), create("aws_cloudwatch_log_group.c")], /aws_cloudwatch_log_group: the plan creates 3, the provisioning limits allow at most 2/],
+    ["a region not allowed", [create("aws_cloudwatch_log_group.eu", { region: "eu-west-1" })], /region eu-west-1 is not in the allowed regions/],
+    ["a region unknown until apply", [create("aws_cloudwatch_log_group.later", {}, { region: true })], /does not show its region/],
+    ["a size not allowed", [create("aws_instance.big", { region: AWS_REGION, instance_type: "m7i.48xlarge" })], /size m7i\.48xlarge is not one of the allowed sizes or families/],
+    ["a size unknown until apply", [create("aws_instance.later", { region: AWS_REGION }, { instance_type: true })], /does not show its size/],
+  ] as const) {
+    const w = world(contract);
+    behave({ showResources: resources as never });
+    const refusal = await sealRefusal(w, "DEV");
+    refused(refusal as never, "RESOURCE_NOT_IN_LIMITS");
+    assert.match((refusal as { message: string }).message, said, label);
+    assert.match((refusal as { message: string }).message, /Nothing was sealed\./, label);
+  }
+  // An update is still refused: limits are create only, as the canary is (owner decision E1).
+  const w = world(contract);
+  behave({ showUpdate: true });
+  const update = await sealRefusal(w, "DEV");
+  refused(update as never, "RESOURCE_NOT_IN_LIMITS");
+  assert.match((update as { message: string }).message, /aws_cloudwatch_log_group\.existing \(aws_cloudwatch_log_group\): the plan would \["update"\] it; the limits allow create only/);
+});

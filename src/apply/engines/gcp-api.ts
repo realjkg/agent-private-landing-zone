@@ -11,7 +11,7 @@ import { identityVariables } from "../../tools/identity.js";
 import type { StoppableResult } from "../../tools/process.js";
 import type { ToolName } from "../../tools/types.js";
 import { sha256 } from "../../util/sha256.js";
-import { assertCanary } from "../canary.js";
+import { assertProvisioning } from "../canary.js";
 import { TOKEN_FILE } from "../constants.js";
 import { codeOf, stop } from "../engine.js";
 import type { ApplyEnd, EngineApplyRun, EngineCleanupRun, EnginePlan, EnginePlanInput, EngineRunInput, EngineSpec, StopControl } from "../engine-spec.js";
@@ -348,7 +348,7 @@ const bytesOf = (artifact: GcpApiArtifact): Buffer => Buffer.from(canonicalJson(
 const changesOf = (topicId: string): PlanChange[] => [{ address: topicAddress(topicId), type: TOPIC_TYPE, action: "CREATE" }];
 /** The canary allowlist judged on that change (D8): exactly one `google_pubsub_topic`, create only. */
 const assertTopicInCanary = (pinned: PilotTarget, topicId: string): void =>
-  assertCanary(pinned.canary, [{ address: topicAddress(topicId), type: TOPIC_TYPE, action: "CREATE", creates: true }], "request");
+  assertProvisioning(pinned, [{ address: topicAddress(topicId), type: TOPIC_TYPE, action: "CREATE", creates: true }], "request");
 
 /** A topic id this target's prefix owns: the prefix followed by exactly the 12-hex suffix. */
 const ownedTopicId = (target: GcpApiTarget, topicId: unknown): topicId is string =>

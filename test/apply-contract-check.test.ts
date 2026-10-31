@@ -31,9 +31,11 @@ const file = (value: unknown, label = "draft"): string => {
  * A complete AWS Terraform DEV-only draft: fake ids (not the shipped example's repeated digits), a region, workspace and kill
  * switch path no shipped example uses, and test keys; enabled false as a draft is.
  */
+/** What an APPLY may create (the legacy canary form; test/apply-limits.test.ts covers `limits`), an owner input of every target. */
+const CANARY = { resources: [{ type: "aws_cloudwatch_log_group", count: 1 }] };
 const completeDraft = (over: Record<string, unknown> = {}) => ({
   schemaVersion: 1, enabled: false, provider: "AWS", engine: "TERRAFORM", policyVersion: "2026-10-11.1", enabledEnvironments: ["DEV"],
-  targets: { DEV: { accountId: "123456789012", region: "eu-central-1", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "pilot-dev" } },
+  targets: { DEV: { accountId: "123456789012", region: "eu-central-1", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "pilot-dev", canary: CANARY } },
   requiredApprovals: { DEV: 1 }, maxApprovalAgeMinutes: 30,
   approvers: [{ id: "pilot-owner", publicKeyPem: keys.alice.pub, environments: ["DEV"] }],
   killSwitchPath: ".runs/apply/STOP-DEV", embedStateWrite: true, ...over,
@@ -42,9 +44,9 @@ const completeDraft = (over: Record<string, unknown> = {}) => ({
 const chainDraft = () => ({
   ...completeDraft(), enabledEnvironments: undefined,
   targets: {
-    DEV: { accountId: "123456789012", region: "eu-central-1", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "pilot-dev" },
-    QA: { accountId: "234567890123", region: "eu-central-1", backend: "fixture-qa-state/pilot/qa.tfstate", workspace: "pilot-qa" },
-    PROD: { accountId: "345678901234", region: "eu-central-1", backend: "fixture-prod-state/pilot/prod.tfstate", workspace: "pilot-prod" },
+    DEV: { accountId: "123456789012", region: "eu-central-1", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "pilot-dev", canary: CANARY },
+    QA: { accountId: "234567890123", region: "eu-central-1", backend: "fixture-qa-state/pilot/qa.tfstate", workspace: "pilot-qa", canary: CANARY },
+    PROD: { accountId: "345678901234", region: "eu-central-1", backend: "fixture-prod-state/pilot/prod.tfstate", workspace: "pilot-prod", canary: CANARY },
   },
   requiredApprovals: { DEV: 1, QA: 1, PROD: 2 },
   approvers: [
@@ -64,7 +66,7 @@ test("a complete draft with fake ids and test keys is COMPLETE, maps every owner
   assert.deepEqual(report.scope, ["DEV"]);
   assert.deepEqual(report.inputs.map((x) => x.field), [
     "enabled", "provider", "engine", "policyVersion", "enabledEnvironments",
-    "targets.DEV.accountId", "targets.DEV.region", "targets.DEV.backend", "targets.DEV.workspace", "requiredApprovals.DEV",
+    "targets.DEV.accountId", "targets.DEV.region", "targets.DEV.backend", "targets.DEV.workspace", "targets.DEV.canary", "requiredApprovals.DEV",
     "maxApprovalAgeMinutes", "approvers[0].id", "approvers[0].publicKeyPem", "approvers[0].environments", "killSwitchPath", "embedStateWrite",
   ]);
   assert.ok(report.inputs.every((x) => x.input.length > 0 && x.status === "PRESENT"));
@@ -129,7 +131,7 @@ test("the Azure Terraform DEV example (docs/act-pilot-azure-terraform-g0.md) nam
   // decision of 2026-10-28: every Azure Terraform APPLY plan is judged against it).
   assert.deepEqual(report.inputs.map((x) => x.field), [
     "enabled", "provider", "engine", "policyVersion", "enabledEnvironments",
-    "targets.DEV.tenantId", "targets.DEV.subscriptionId", "targets.DEV.backend", "targets.DEV.workspace", "targets.DEV.location", "requiredApprovals.DEV",
+    "targets.DEV.tenantId", "targets.DEV.subscriptionId", "targets.DEV.backend", "targets.DEV.workspace", "targets.DEV.location", "targets.DEV.canary", "requiredApprovals.DEV",
     "maxApprovalAgeMinutes", "approvers[0].id", "approvers[0].publicKeyPem", "approvers[0].environments", "killSwitchPath", "embedStateWrite",
   ]);
   // Every value that only the owner can supply is refused as a placeholder or the example's fake backend, each by its field.
@@ -146,7 +148,8 @@ test("the Azure Terraform DEV example (docs/act-pilot-azure-terraform-g0.md) nam
   // offline check as Azure Terraform DEV: every input present, the validator's shape accepted, COMPLETE. It enables nothing.
   const filled = {
     ...example, policyVersion: "2026-10-11.1",
-    targets: { DEV: { tenantId: "4b1d7c2e-9a3f-4e6b-8c5d-2f7a9e1b3c4d", subscriptionId: "7e8f9a0b-1c2d-4e3f-9a5b-6c7d8e9f0a1b", backend: "fixturedevstate/tfstate/dev.tfstate", workspace: "pilot-dev", location: "westeurope" } },
+    targets: { DEV: { tenantId: "4b1d7c2e-9a3f-4e6b-8c5d-2f7a9e1b3c4d", subscriptionId: "7e8f9a0b-1c2d-4e3f-9a5b-6c7d8e9f0a1b", backend: "fixturedevstate/tfstate/dev.tfstate", workspace: "pilot-dev", location: "westeurope",
+      canary: { resources: [{ type: "azurerm_virtual_network", count: 1 }] } } },
     approvers: [{ id: "pilot-owner", publicKeyPem: keys.alice.pub, environments: ["DEV"] }], killSwitchPath: ".runs/apply/STOP-DEV",
   };
   const draft = checkDraftContract(filled);
@@ -211,7 +214,8 @@ test("RB6: the AWS CDK DEV example names every owner input, is never COMPLETE as
 
 test("a repeated-digit GUID tenant or subscription (11111111-1111-…, 00000000-…-0000) is an example value, never COMPLETE; a real-looking GUID stays PRESENT", () => {
   const example = JSON.parse(readFileSync(join(ROOT, "config", "act-pilot-contract.azure-dev.example.json"), "utf8")) as Record<string, unknown>;
-  const dev = { tenantId: "4b1d7c2e-9a3f-4e6b-8c5d-2f7a9e1b3c4d", subscriptionId: "7e8f9a0b-1c2d-4e3f-9a5b-6c7d8e9f0a1b", backend: "fixturedevstate/tfstate/dev.tfstate", workspace: "pilot-dev", location: "westeurope" };
+  const dev = { tenantId: "4b1d7c2e-9a3f-4e6b-8c5d-2f7a9e1b3c4d", subscriptionId: "7e8f9a0b-1c2d-4e3f-9a5b-6c7d8e9f0a1b", backend: "fixturedevstate/tfstate/dev.tfstate", workspace: "pilot-dev", location: "westeurope",
+    canary: { resources: [{ type: "azurerm_virtual_network", count: 1 }] } };
   const filled = { ...example, policyVersion: "2026-10-11.1", targets: { DEV: dev }, approvers: [{ id: "pilot-owner", publicKeyPem: keys.alice.pub, environments: ["DEV"] }], killSwitchPath: ".runs/apply/STOP-DEV" };
   assert.equal(checkDraftContract(filled).complete, true, "the control: a filled draft with real-looking GUIDs is COMPLETE");
   for (const [field, value] of [
@@ -274,8 +278,8 @@ test("a region, workspace or kill switch path that equals a shipped example's va
   const shipped = shippedExampleValues();
   assert.ok(shipped.region.size > 0 && shipped.workspace.has("default") && shipped.killSwitchPath.has(".runs/apply/KILL"), "the repository's examples were read");
   for (const [field, over] of [
-    ["targets.DEV.region", { targets: { DEV: { accountId: "123456789012", region: [...shipped.region][0], backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "pilot-dev" } } }],
-    ["targets.DEV.workspace", { targets: { DEV: { accountId: "123456789012", region: "eu-central-1", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "default" } } }],
+    ["targets.DEV.region", { targets: { DEV: { accountId: "123456789012", region: [...shipped.region][0], backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "pilot-dev", canary: CANARY } } }],
+    ["targets.DEV.workspace", { targets: { DEV: { accountId: "123456789012", region: "eu-central-1", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "default", canary: CANARY } } }],
     ["killSwitchPath", { killSwitchPath: ".runs/apply/KILL" }],
   ] as const) {
     const r = checkDraftContract(completeDraft(over));
@@ -286,7 +290,7 @@ test("a region, workspace or kill switch path that equals a shipped example's va
     assert.equal(r.complete, true, field + ": a notice never counts against COMPLETE");
   }
   // A legitimate AWS Terraform draft with the usual defaults (us-east-1, default, .runs/apply/KILL) is COMPLETE, with three notices.
-  const usual = checkDraftContract(completeDraft({ targets: { DEV: { accountId: "123456789012", region: "us-east-1", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "default" } }, killSwitchPath: ".runs/apply/KILL" }));
+  const usual = checkDraftContract(completeDraft({ targets: { DEV: { accountId: "123456789012", region: "us-east-1", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "default", canary: CANARY } }, killSwitchPath: ".runs/apply/KILL" }));
   assert.equal(usual.complete, true, JSON.stringify(notReady(usual)));
   assert.equal(usual.notices, 3);
   assert.match(contractCheckLines(usual, "usual.json").join("\n"), /COMPLETE: every input is present and the shape is valid, with 3 notice\(s\) above/);
@@ -294,9 +298,9 @@ test("a region, workspace or kill switch path that equals a shipped example's va
   const cdk = checkDraftContract({
     ...chainDraft(), engine: "CDK", embedStateWrite: undefined,
     targets: {
-      DEV: { accountId: "123456789012", region: "us-east-1", backend: "PilotStack", workspace: "default", capabilities: [] },
-      QA: { accountId: "234567890123", region: "us-east-1", backend: "PilotStack", workspace: "default", capabilities: [] },
-      PROD: { accountId: "345678901234", region: "us-east-1", backend: "PilotStack", workspace: "default", capabilities: ["CAPABILITY_IAM"] },
+      DEV: { accountId: "123456789012", region: "us-east-1", backend: "PilotStack", workspace: "default", capabilities: [], canary: { resources: [{ type: "AWS::Logs::LogGroup", count: 1 }] } },
+      QA: { accountId: "234567890123", region: "us-east-1", backend: "PilotStack", workspace: "default", capabilities: [], canary: { resources: [{ type: "AWS::Logs::LogGroup", count: 1 }] } },
+      PROD: { accountId: "345678901234", region: "us-east-1", backend: "PilotStack", workspace: "default", capabilities: ["CAPABILITY_IAM"], canary: { resources: [{ type: "AWS::Logs::LogGroup", count: 1 }] } },
     },
   });
   assert.equal(cdk.shape.ok, true, JSON.stringify(cdk.shape));

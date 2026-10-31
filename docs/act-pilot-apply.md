@@ -190,6 +190,52 @@ Owner decision E1: each execution path names, in the same reviewed contract, the
 - **Cleanup is not create-only.** A cleanup's destroy plan (Terraform) or removal change set (CDK) is not judged against the allowlist. It keeps its own rules: only run-owned resources, exactly the approved list. The one thing the allowlist adds at cleanup is `retain`, above.
 - **Why the counts are exact.** "At most" would let a plan create fewer resources than reviewed and still pass. A missing resource usually means a module changed, a count or `for_each` resolved differently, or a resource was replaced by another. An exact count makes the reviewed allowlist the whole statement of what the apply does: one extra resource, one fewer, or one changed existing resource are each a refusal the owner reads, never a silent difference. It also means an apply runs only against a fresh workspace or stack. A second apply over existing resources plans updates or no-ops, and those are refused.
 
+## Provisioning limits
+
+Owner direction 6536926009 (cost and visibility, plan item 3): a provisioning limit is a normal landing-zone control. It is not another gate. `limits` is the general form of the canary allowlist. It sits in the same place (one target of the same reviewed contract), is judged by the same seal-time judge at the same three points, and keeps the same create-only rule (owner decision E1). A target names `limits` or `canary`, never both. A target that names neither is `CANARY_ALLOWLIST_MISSING` for `APPLY`, as before. Every `canary` contract loads and behaves exactly as it did; nothing here changes how ACT is enabled. The shipped example is `config/act-pilot-contract.aws-dev-limits.example.json`, the AWS Terraform cost baseline.
+
+```json
+"limits": {
+  "regions": ["us-east-2", "us-east-1"],
+  "resources": [
+    { "type": "aws_budgets_budget", "max": 2 },
+    { "type": "aws_sns_topic_subscription", "max": 5 },
+    { "type": "aws_instance", "max": 2, "sizes": ["m7g.large"], "families": ["t3", "t4g"] }
+  ]
+}
+```
+
+- **Shape.**
+  - `resources` is a list of 1 to 50 entries. Each entry has `type` and `max`, and optionally `sizes` and `families`.
+  - `type` follows the canary's own type rule (one exact type in the engine's naming, once each).
+  - `max` is an integer from 1 to 10,000, within the engine's per-run bound (GCP API-native: 1).
+  - `regions` is optional: 1 to 50 distinct regions in the provider's own form (AWS and GCP `region`, Azure `location`). It must include the target's own region or location. An Azure target without a `location` cannot name `regions`.
+  - `sizes` and `families` are lists of plain names, never a pattern. They are accepted only for a type in the engine's size table (`TERRAFORM_SIZE_ATTRIBUTES`, `src/apply/canary.ts`). For example, `aws_instance` reads `instance_type`, `aws_db_instance` reads `instance_class`, `azurerm_linux_virtual_machine` reads `size`, and `google_compute_instance` reads `machine_type`.
+  - CDK, Bicep and GCP API-native read no sizes, so a limit there takes types, maximums and regions only.
+  - `retain` stays canary-only.
+  - Any other key is `CONTRACT_INVALID`.
+- **What the judge allows.** Only creates of the listed types, each at most `max` times. Fewer, or none, are within the limit. This is the difference from the canary's exact count.
+- **Regions.**
+  - With `regions` set, Terraform reads each created resource's region from the plan's resolved values: `region` (AWS provider 6 and GCP), else `location` (Azure and GCP), else `zone`, read as its region.
+  - A region outside the list is refused, and so is a region the plan does not show until apply.
+  - A type with no region (a global service such as AWS Budgets) is not judged by region.
+  - CDK, Bicep and GCP API-native create in the target's own region, which the contract check above already holds to the list.
+- **Sizes and families.** Every value of the type's size attribute must be one of `sizes`, or belong to one of `families`. A size's family is everything before its last dot: `t3.micro` is in `t3`, and `db.r6g.large` is in `db.r6g`. A size with no dot (`Standard_B2s`, `e2-medium`) matches only by name. A size the plan does not show is refused.
+- **`RESOURCE_NOT_IN_LIMITS`.** Something outside the limits:
+  - a type that is not listed;
+  - a count over its maximum;
+  - a region or size that is not allowed, or not shown;
+  - any action but a create.
+  
+  The reason names the address, type, action and counts, plus the region or size when it is a plain short name, and never any other value. Nothing is sealed or applied, and no approval is consumed.
+- **Bound like the target.** `limits` is part of the target hash, exactly like `canary`. Changing a maximum, a region or a size is a target change. A target with neither form hashes exactly as before.
+- **What a limit is not.** It is an allowlist of what one apply may create, judged before anything runs. It is not a cost estimate, a budget or a spending cap. Budgets and their alerts are the cost baseline's own resources.
+- **Cleanup.** Limits add nothing at cleanup. The cost baseline's AWS types are on the cleanup leaf allowlist (`src/observe/aws-leaf-types.ts`, basis `COST_BASELINE`):
+  - An SNS subscription and an SNS topic policy are deleted only with their run-created topic.
+  - A Data Exports export is deleted on its own. Its delivered reports stay in their bucket, which is its own leaf.
+  - `aws_ce_cost_allocation_tag` is deliberately not on the list. Its delete switches the tag off for the whole account, and a planned create does not prove the run switched it on. A cleanup holds it for a person (`TYPE_UNREVIEWED`).
+- **`./alz apply contract-check`** reports each target's `limits` (or `canary`) as one owner input, summarized in plain words. A target that names neither is `MISSING`.
+
 ## Promotion: DEV, then QA, then PROD
 
 Each stage has its own sealed plan, artifact hash and approvals, and an approval signed for one environment is `APPROVAL_MISBOUND` for another. DEV needs no earlier evidence. QA needs a successful, encrypted DEV apply record for the same release identity. PROD needs a successful QA apply record for the same release identity, and DEV evidence alone is refused (`PROMOTION_EVIDENCE_MISSING`). Identity checks are per environment: each environment's credentials must match its own contract target, and the account in an AWS role ARN is the environment's own. `qualify` runs only against the DEV target; QA and PROD are not qualified separately and are refused.

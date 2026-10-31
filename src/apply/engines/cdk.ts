@@ -15,7 +15,7 @@ import type { ToolResult } from "../../tools/types.js";
 import { sha256 } from "../../util/sha256.js";
 import { isAwsIdentityType } from "../cleanup-proposal.js";
 import { stripInvisible } from "../constants.js";
-import { assertCanary } from "../canary.js";
+import { assertProvisioning } from "../canary.js";
 import { assertUsable, checkedOutput, markLeftBehind, stop, withoutIdentities } from "../engine.js";
 import type { ApplyEnd, SyncEngineApplyRun, SyncEngineCleanupRun, EngineContext, EngineRunInput, SyncEngineSpec, StateDocument, StopControl } from "../engine-spec.js";
 import type { AwsTarget } from "../providers/aws.js";
@@ -341,7 +341,7 @@ const CLOUDFORMATION_TYPE = /^[A-Z][A-Za-z0-9]{1,63}::[A-Z][A-Za-z0-9]{1,63}::[A
  * change set exists.
  */
 function assertTemplateInCanary(assembly: Assembly, pinned: PilotTarget): void {
-  assertCanary(pinned.canary, assembly.resources.map((resource) => ({ ...resource, action: "declare", creates: true })), "template");
+  assertProvisioning(pinned, assembly.resources.map((resource) => ({ ...resource, action: "declare", creates: true })), "template");
 }
 
 /**
@@ -350,7 +350,7 @@ function assertTemplateInCanary(assembly: Assembly, pinned: PilotTarget): void {
  * or an Import is refused; an action this reader does not know was already refused by `changeOf` (CHANGE_ACTION_UNKNOWN).
  */
 function assertChangeSetInCanary(changes: readonly PlanChange[], pinned: PilotTarget): void {
-  assertCanary(pinned.canary, changes.map((change) => ({
+  assertProvisioning(pinned, changes.map((change) => ({
     address: change.address, type: change.type, action: change.action.toLowerCase(), creates: change.action === "CREATE" && change.importing !== true,
   })), "change set");
 }
