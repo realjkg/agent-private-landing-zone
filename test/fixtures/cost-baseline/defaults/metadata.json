@@ -2,7 +2,7 @@
   "scenario": "aws-terraform-cost-baseline-v1",
   "mode": "FIXED_TEMPLATE",
   "configHash": "f23b87378b1556eeb0ca2f459be94f281ff5da9a33e4a23bf5f0389b6aaeca02",
-  "artifactHash": "d3f07a670bd852942777ed1422f08aed7ed749558d68cc3cd013f814e3576512",
+  "artifactHash": "55977d73abdd54652b3874953757bf3823d021cd6ad16180e4948169c6f9da79",
   "awsProviderVersion": "6.68.0",
   "homeRegion": "var.aws_region",
   "creates": [
@@ -158,7 +158,8 @@
     "A CUR 2.0 export created in the management account covers the whole organization; one created in a member account covers only that account's own cost and usage.",
     "Cost-allocation tag activation runs only in the AWS Organizations management account or a standalone account, and only for keys that already appear in that account's cost-allocation tags (up to 24 hours after a resource is tagged). It is not rendered (activateCostAllocationTags is off); turn it on in a later build once the keys are listed.",
     "The first CUR 2.0 delivery can take up to 24 hours; until then the export is WAITING, never zero spend.",
-    "Each email recipient must confirm the SNS subscription before alerts reach them."
+    "Each email recipient must confirm the SNS subscription before alerts reach them.",
+    "The alert topic is not encrypted (alert content is low sensitivity, and no key charge is added); set notifications.encryption to CUSTOMER_KMS to encrypt it with a new customer-managed key."
   ],
   "review": {
     "reviewBy": "2027-01-31",

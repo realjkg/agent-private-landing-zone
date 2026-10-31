@@ -21,9 +21,10 @@ export type CostBudgetPeriod = "MONTHLY" | "QUARTERLY" | "ANNUALLY";
 export type CostNotificationRoute = "SNS_TOPIC" | "EMAIL_DIRECT" | "EXISTING_SNS_TOPIC";
 export type CostExportGranularity = "DAILY" | "HOURLY";
 /**
- * NONE: the new topic is not encrypted (the default; alert content is low sensitivity, and a customer-managed key adds
- * a monthly charge). CUSTOMER_KMS: a new customer-managed key whose policy lets AWS Budgets publish. The AWS-managed
- * `alias/aws/sns` key is never offered, because AWS Budgets cannot publish to a topic encrypted with it.
+ * NONE (the default, owner decision 2026-10-31): the new topic is not encrypted; alert content is low sensitivity and
+ * no key charge is added. CUSTOMER_KMS (opt-in): a new customer-managed key whose policy lets AWS Budgets publish; it
+ * adds a monthly key charge. The AWS-managed `alias/aws/sns` key is never offered, because AWS Budgets cannot publish
+ * to a topic encrypted with it. The adopted-topic and direct-email routes create no topic, so they are always NONE.
  */
 export type CostTopicEncryption = "NONE" | "CUSTOMER_KMS";
 
