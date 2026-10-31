@@ -212,7 +212,7 @@ Owner direction 6536926009 (cost and visibility, plan item 3): a provisioning li
   - `regions` is optional: 1 to 50 distinct regions in the provider's own form (AWS and GCP `region`, Azure `location`). It must include the target's own region or location. An Azure target without a `location` cannot name `regions`.
   - `sizes` and `families` are lists of plain names, never a pattern. They are accepted only for a type in the engine's size table (`TERRAFORM_SIZE_ATTRIBUTES`, `src/apply/canary.ts`). For example, `aws_instance` reads `instance_type`, `aws_db_instance` reads `instance_class`, `azurerm_linux_virtual_machine` reads `size`, and `google_compute_instance` reads `machine_type`.
   - CDK, Bicep and GCP API-native read no sizes, so a limit there takes types, maximums and regions only.
-  - `retain` stays canary-only.
+  - `retain` stays canary-only. A CDK stack whose cleanup would empty it (`CLEANUP_WOULD_EMPTY_STACK`) therefore keeps the canary form with its retained sentinel.
   - Any other key is `CONTRACT_INVALID`.
 - **What the judge allows.** Only creates of the listed types, each at most `max` times. Fewer, or none, are within the limit. This is the difference from the canary's exact count.
 - **Regions.**
