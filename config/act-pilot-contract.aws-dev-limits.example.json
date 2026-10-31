@@ -24,6 +24,7 @@
           { "type": "aws_s3_bucket_ownership_controls", "max": 1 },
           { "type": "aws_s3_bucket_public_access_block", "max": 1 },
           { "type": "aws_s3_bucket_server_side_encryption_configuration", "max": 1 },
+          { "type": "aws_s3_bucket_lifecycle_configuration", "max": 1 },
           { "type": "aws_bcmdataexports_export", "max": 1 },
           { "type": "aws_ce_cost_allocation_tag", "max": 5 }
         ]

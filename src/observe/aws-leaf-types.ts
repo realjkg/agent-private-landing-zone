@@ -251,6 +251,8 @@ export const AWS_LEAF_TYPES: readonly AwsLeafEntry[] = [
   // "delete" deactivates a cost allocation tag for the whole account (organization-wide in a management account), and a planned "create"
   // of a tag that was already active does not prove the run activated it, with no parent in the state to tie it to the run; so a cleanup
   // holds it for a person (TYPE_UNREVIEWED) instead of switching off a tag the account's billing reports may rely on.
+  // Nor `aws_budgets_budget_action`, the opt-in budget action: it holds an execution role and can apply an IAM or SCP policy or stop
+  // instances when it fires, so whether a cleanup may remove one, and what it may already have done, stays the owner's decision.
   {
     what: "an SNS topic subscription",
     reason: "one subscription of an endpoint to a topic; deleted only with its topic, because deleting the topic removes every subscription, a pending (unconfirmed) one included, which an unsubscribe cannot",

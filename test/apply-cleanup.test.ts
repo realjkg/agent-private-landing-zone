@@ -1149,7 +1149,7 @@ const AWS_UNREVIEWED_TYPES = [
   "aws_eks_access_entry", "aws_eks_access_policy_association", "aws_eks_pod_identity_association", "AWS::EKS::AccessEntry", "aws_verifiedpermissions_policy_store", "aws_verifiedpermissions_policy",
   "terraform_data", "null_resource", "random_id", "aws_datazone_project", "aws_vpc", "aws_instance",
   // The cost baseline's cost allocation tag activation: its delete switches a tag off for the whole account, and a create does not prove the run activated it.
-  "aws_ce_cost_allocation_tag",
+  "aws_ce_cost_allocation_tag", "aws_budgets_budget_action",
   // Removed by design review 6434540427 (B1, N5): held for the owner, not re-justified here.
   "aws_organizations_delegated_administrator", "aws_lakeformation_permissions", "awscc_lakeformation_principal_permissions", "AWS::LakeFormation::Permissions", "AWS::LakeFormation::PrincipalPermissions", "aws_redshift_cluster_iam_roles",
   "aws_s3_bucketx", "aws_s3_bucket_notification", "aws_s3_object", "aws_sqs_queue_redrive_policy", "AWS::S3::BucketX", "AWS::S3::Bucket::Thing", "AWS::s3::Bucket", "AWS::CloudFormation::WaitCondition",
