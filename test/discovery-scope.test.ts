@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { isAllowedReadArgv } from "../src/observe/aws-cli.js";
+import { AWS_COST_READ_TOOLS } from "../src/tools/aws-cost-reads.js";
 import { CLOUD_CONTROL_TYPES, DATA_BEARING_TYPES, checkResource, cloudControlMappingOf, type AwsCli } from "../src/observe/verify.js";
 
 // Owner decision 2026-10-27 (issue #39, comment 6440801434, item 2): read-only discovery defaults to control-plane
@@ -43,7 +44,21 @@ const READ_HANDLERS: Record<string, string[]> = {
   "AWS::EC2::VPC": ["ec2:DescribeNetworkAcls", "ec2:DescribeSecurityGroups", "ec2:DescribeVpcAttribute", "ec2:DescribeVpcEncryptionControls", "ec2:DescribeVpcs"],
   "AWS::EC2::Subnet": ["ec2:DescribeSubnets", "ec2:DescribeNetworkAcls"],
   "AWS::EC2::SecurityGroup": ["ec2:DescribeSecurityGroups"],
+  "AWS::BCMDataExports::Export": ["bcm-data-exports:GetExport", "bcm-data-exports:ListTagsForResource"],
 };
+/** The IAM actions of the broker's cost reads (src/tools/aws-cost-reads.ts), from the Service Authorization Reference. tag:GetResources is the verifier's. */
+const COST_STATUS_READS: Record<string, string> = {
+  aws_budgets_describe_budgets: "budgets:ViewBudget",
+  aws_budgets_describe_notifications: "budgets:ViewBudget",
+  aws_budgets_describe_subscribers: "budgets:ViewBudget",
+  aws_bcm_list_exports: "bcm-data-exports:ListExports",
+  aws_bcm_get_export: "bcm-data-exports:GetExport",
+  aws_bcm_list_executions: "bcm-data-exports:ListExecutions",
+  aws_ce_list_cost_allocation_tags: "ce:ListCostAllocationTags",
+  aws_tagging_get_resources: "tag:GetResources",
+};
+const COST_STATUS_READS_LIST = [...new Set(Object.values(COST_STATUS_READS))];
+
 /** Read handlers that return data or secrets, from the same schemas: why these types are never read. */
 const DATA_BEARING_HANDLERS: Record<string, string[]> = {
   "AWS::Lambda::Function": ["lambda:GetFunction", "kms:Decrypt"],
@@ -110,6 +125,8 @@ test("the two reads that return more than configuration are recorded exceptions 
 test("no allowed read is a denied read, and every allowed action is a read", () => {
   for (const action of allow) {
     assert.ok(!deny.some((pattern) => matches(pattern, action)), "allowed and denied at once: " + action);
+    // budgets:ViewBudget is AWS's one IAM name for the three Budgets describe calls; it is the only read not named Describe, Get or List.
+    if (action === "budgets:ViewBudget") continue;
     assert.match(action, /^[a-z0-9-]+:(Describe|Get|List)[A-Za-z]+$/, "a read, named exactly: " + action);
   }
 });
@@ -127,8 +144,26 @@ test("the allow covers exactly the reads the product makes as DISCOVERY", () => 
   const typeNames = new Set(Object.values(CLOUD_CONTROL_TYPES).map((mapping) => mapping.typeName));
   assert.deepEqual([...typeNames].sort(), Object.keys(READ_HANDLERS).sort(), "every verifier type has a recorded read handler");
   for (const [type, actions] of Object.entries(READ_HANDLERS)) for (const action of actions) assert.ok(allow.includes(action), type + " needs " + action);
-  const needed = new Set([...Object.values(READ_HANDLERS).flat(), ...policy.allow.cdkStackReads!.actions, ...policy.allow.independentObservation!.actions, ...policy.allow.previewDiscovery!.actions]);
+  const needed = new Set([...Object.values(READ_HANDLERS).flat(), ...policy.allow.cdkStackReads!.actions, ...policy.allow.independentObservation!.actions, ...policy.allow.previewDiscovery!.actions,
+    ...COST_STATUS_READS_LIST]);
   assert.deepEqual(allow.filter((action) => !needed.has(action)), [], "no unexplained allow");
+});
+
+test("cost status: each broker cost read has its allow, the group records scope and purpose, and nothing broader is allowed", () => {
+  assert.deepEqual(Object.keys(COST_STATUS_READS).sort(), [...AWS_COST_READ_TOOLS].sort(), "every cost read tool has a recorded IAM action");
+  for (const action of COST_STATUS_READS_LIST) assert.ok(allow.includes(action), "allowed: " + action);
+  const group = policy.allow.costStatus!;
+  assert.deepEqual([...group.actions].sort(), ["bcm-data-exports:GetExport", "bcm-data-exports:ListExecutions", "bcm-data-exports:ListExports", "budgets:ViewBudget", "ce:ListCostAllocationTags"]);
+  assert.match(group.scope ?? "", /subscriber addresses/);
+  assert.match(group.scope ?? "", /never the exported data/);
+  assert.match(group.purpose ?? "", /never gates ACT/);
+  assert.match(group.why, /6536926009/);
+  for (const action of group.actions) {
+    assert.doesNotMatch(action, /\*/, "no wildcard: " + action);
+    assert.ok(!deny.some((pattern) => matches(pattern, action)), "not a denied read: " + action);
+  }
+  // No write, modify or execute action of these services is allowed, by any group.
+  for (const action of allow) assert.doesNotMatch(action, /^(budgets|bcm-data-exports|ce):(Create|Update|Delete|Modify|Execute|Tag|Untag|Start)/, action);
 });
 
 test("bootstrap: the default is ViewOnlyAccess, the deny is inline and independent of the managed list, and broad overrides are refused", () => {
@@ -208,4 +243,30 @@ test("observe: a type whose read returns data or secrets is never read, and is n
     assert.equal(cloudControlMappingOf(type) === undefined || DATA_BEARING_TYPES.has(type), true);
     assert.ok(actions.some((action) => deny.some((pattern) => matches(pattern, action))), type + ": its read handler is denied");
   }
+});
+
+test("observe: the CUR 2.0 export is read in us-east-1 by its ARN only; budgets, budget actions, cost-allocation tags and subscriptions stay unmapped", async () => {
+  const arn = "arn:aws:bcm-data-exports:us-east-1:111111111111:export/alz-cur2-0f3c8a1e-1111-4222-8333-944445555666";
+  const calls: string[][] = [];
+  const aws: AwsCli = async (argv) => {
+    calls.push([...argv]);
+    return { code: 0, stdout: JSON.stringify({ ResourceDescription: { Identifier: arn, Properties: "{}" } }), stderr: "" };
+  };
+  const present = await checkResource({ address: "aws_bcmdataexports_export.cur", type: "aws_bcmdataexports_export", arn: null, id: arn, origin: "IN_PLAN" }, "us-east-2", aws);
+  assert.equal(present.existence, "PRESENT");
+  assert.deepEqual(calls, [["cloudcontrol", "get-resource", "--type-name", "AWS::BCMDataExports::Export", "--identifier", arn, "--region", "us-east-1", "--output", "json"]]);
+  assert.ok(isAllowedReadArgv(calls[0]!), "the verifier's runner accepts the call");
+  // CloudFormation-typed (CDK) entries use the same mapping.
+  assert.equal(cloudControlMappingOf("AWS::BCMDataExports::Export")?.region, "us-east-1");
+  calls.length = 0;
+  for (const id of ["alz-cur2", "arn:aws:bcm-data-exports:us-east-2:111111111111:export/x", "111111111111:alz-cur2"]) {
+    const check = await checkResource({ address: "aws_bcmdataexports_export.cur", type: "aws_bcmdataexports_export", arn: null, id, origin: "IN_PLAN" }, "us-east-1", aws);
+    assert.equal(check.existence, "NOT_CHECKABLE", id);
+    assert.equal(check.reason, "NO_IDENTIFIER_IN_STATE", id);
+  }
+  for (const type of ["aws_budgets_budget", "aws_budgets_budget_action", "aws_ce_cost_allocation_tag", "aws_sns_topic_subscription"]) {
+    const check = await checkResource({ address: type + ".x", type, arn: null, id: "111111111111:alz-dev", origin: "IN_PLAN" }, "us-east-1", aws);
+    assert.equal(check.reason, "NO_CLOUD_CONTROL_MAPPING", type);
+  }
+  assert.deepEqual(calls, [], "an identifier of another shape, or an unmapped type, is never read");
 });

@@ -81,7 +81,21 @@
         "ec2:DescribeVpcAttribute",
         "ec2:DescribeVpcEncryptionControls",
         "ec2:DescribeVpcs",
-        "ec2:DescribeSubnets"
+        "ec2:DescribeSubnets",
+        "bcm-data-exports:GetExport",
+        "bcm-data-exports:ListTagsForResource"
+      ]
+    },
+    "costStatus": {
+      "why": "The read-only cost status (src/cost/status.ts) through the broker's cost reads (src/tools/aws-cost-reads.ts): budgets with their notifications and subscribers, Data Exports with their executions, and the user-defined cost-allocation tags. The unit's tags are read with tag:GetResources, already allowed above. Owner direction 2026-10-31, issue #39 comment 6536926009, plan item 4.",
+      "scope": "Every budget, Data Exports export and cost-allocation tag key in the account. budgets:ViewBudget is AWS's one IAM action for DescribeBudgets, DescribeNotificationsForBudget and DescribeSubscribersForNotification: it returns each budget's configuration, its calculated actual and forecasted spend, and the subscriber addresses the budget's owner configured (email addresses or SNS topic ARNs). The Data Exports reads return each export's configuration and execution status, never the exported data. ce:ListCostAllocationTags returns tag keys and their activation status, never tag values or cost data.",
+      "purpose": "Show the cost baseline's budget, recipients, cost-allocation tag activation and export delivery state, every value labeled OBSERVED, ESTIMATE or UNKNOWN. The status is read-only and never gates ACT.",
+      "actions": [
+        "budgets:ViewBudget",
+        "bcm-data-exports:ListExports",
+        "bcm-data-exports:GetExport",
+        "bcm-data-exports:ListExecutions",
+        "ce:ListCostAllocationTags"
       ]
     },
     "recordedExceptions": {
