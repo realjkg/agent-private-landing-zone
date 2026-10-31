@@ -182,6 +182,12 @@ export type EngineSpec = {
    * topic per run (D8), so its canary is refused at load unless the count is 1 (#358 review N4). Absent: the general bound.
    */
   canaryCountMax?: number;
+  /**
+   * The size attribute per resource type the engine reads from its own artifact for the provisioning limits' `sizes` and `families`
+   * (`PilotLimits`; ../canary.ts, `TERRAFORM_SIZE_ATTRIBUTES`). Absent: the engine reads no sizes, so a contract whose limits name sizes
+   * or families for it is refused when it is read; types, counts and regions still apply.
+   */
+  limitSizeAttributes?: Readonly<Record<string, string>>;
   /** Whether the engine has a state backend whose settings the plan can embed, so a contract may set `embedStateWrite`. Absent: it has none (CDK). */
   embedsStateWrite?: boolean;
   /** The manifest mode sealing and applying accept; the manifest's engine must be this spec's. */

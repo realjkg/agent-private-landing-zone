@@ -1126,6 +1126,9 @@ const AWS_LEAF_TYPES_BY_NAME = [
   "aws_lambda_function", "awscc_lambda_function", "AWS::Lambda::Function",
   "aws_cloudwatch_metric_alarm", "awscc_cloudwatch_alarm", "AWS::CloudWatch::Alarm",
   "aws_budgets_budget", "AWS::Budgets::Budget",
+  // The cost baseline (owner direction 6536926009): the budget alert route's subscriptions and topic policy, and the CUR 2.0 export.
+  "aws_sns_topic_subscription", "AWS::SNS::Subscription", "aws_sns_topic_policy",
+  "aws_bcmdataexports_export", "AWS::BCMDataExports::Export",
   "AWS::CDK::Metadata",
   // The owner's decision 6431744115, item 3, exactly (design review 6434540427 B1 and N5 removed the delegated administrator, Lake Formation and the Redshift role set).
   "aws_organizations_policy", "aws_organizations_policy_attachment", "awscc_organizations_policy", "AWS::Organizations::Policy",
@@ -1145,6 +1148,8 @@ const AWS_UNREVIEWED_TYPES = [
   "aws_cloud9_environment_ec2", "aws_config_conformance_pack", "aws_config_organization_conformance_pack", "awscc_launchwizard_deployment", "AWS::LaunchWizard::Deployment", "aws_amplify_app", "aws_amplify_branch", "aws_amplify_backend_environment",
   "aws_eks_access_entry", "aws_eks_access_policy_association", "aws_eks_pod_identity_association", "AWS::EKS::AccessEntry", "aws_verifiedpermissions_policy_store", "aws_verifiedpermissions_policy",
   "terraform_data", "null_resource", "random_id", "aws_datazone_project", "aws_vpc", "aws_instance",
+  // The cost baseline's cost allocation tag activation: its delete switches a tag off for the whole account, and a create does not prove the run activated it.
+  "aws_ce_cost_allocation_tag", "aws_budgets_budget_action",
   // Removed by design review 6434540427 (B1, N5): held for the owner, not re-justified here.
   "aws_organizations_delegated_administrator", "aws_lakeformation_permissions", "awscc_lakeformation_principal_permissions", "AWS::LakeFormation::Permissions", "AWS::LakeFormation::PrincipalPermissions", "aws_redshift_cluster_iam_roles",
   "aws_s3_bucketx", "aws_s3_bucket_notification", "aws_s3_object", "aws_sqs_queue_redrive_policy", "AWS::S3::BucketX", "AWS::S3::Bucket::Thing", "AWS::s3::Bucket", "AWS::CloudFormation::WaitCondition",
@@ -1159,7 +1164,7 @@ test("the reviewed AWS leaf allowlist is closed (delegated owner decision 643339
   assert.deepEqual([...AWS_LEAF_TYPE_NAMES].sort(), [...AWS_LEAF_TYPES_BY_NAME].sort(), "the allowlist and the test list are the same set");
   assert.equal(new Set(AWS_LEAF_TYPE_NAMES).size, AWS_LEAF_TYPE_NAMES.length, "no type is listed twice");
   for (const leaf of AWS_LEAF_TYPES) {
-    assert.ok(leaf.what.length > 0 && leaf.reason.length > 0 && leaf.types.length > 0 && ["PILOT_JOURNEY", "OWNER_DECISION", "COMMON_LEAF"].includes(leaf.basis), "an entry has a description, a reason, a basis and types");
+    assert.ok(leaf.what.length > 0 && leaf.reason.length > 0 && leaf.types.length > 0 && ["PILOT_JOURNEY", "OWNER_DECISION", "COMMON_LEAF", "COST_BASELINE"].includes(leaf.basis), "an entry has a description, a reason, a basis and types");
   }
   for (const type of AWS_LEAF_TYPE_NAMES) {
     assert.ok(isWellFormedResourceType(type) && isAwsLeafType(type) && awsLeafEntryOf(type) !== undefined, type);
@@ -1185,13 +1190,17 @@ test("the reviewed AWS leaf allowlist is closed (delegated owner decision 643339
   // Every attachment or setting names its parent by the one rule: the parent types are allowlisted leaves with no parent of their own (design review 6434540427, B3).
   const PARENTED = ["aws_s3_bucket_versioning", "aws_s3_bucket_server_side_encryption_configuration", "aws_s3_bucket_public_access_block", "aws_s3_bucket_ownership_controls", "aws_s3_bucket_lifecycle_configuration",
     "aws_s3_bucket_policy", "awscc_s3_bucket_policy", "AWS::S3::BucketPolicy", "aws_sqs_queue_policy", "AWS::SQS::QueuePolicy", "aws_lambda_permission", "awscc_lambda_permission", "AWS::Lambda::Permission",
-    "aws_kms_grant", "aws_rds_cluster_role_association", "aws_db_instance_role_association", "aws_organizations_policy_attachment"];
+    "aws_kms_grant", "aws_rds_cluster_role_association", "aws_db_instance_role_association", "aws_organizations_policy_attachment",
+    "aws_sns_topic_subscription", "AWS::SNS::Subscription", "aws_sns_topic_policy"];
   assert.deepEqual(AWS_LEAF_TYPES.filter((leaf) => leaf.parent).flatMap((leaf) => leaf.types).sort(), [...PARENTED].sort(), "exactly the attachment and setting types name a parent");
   for (const leaf of AWS_LEAF_TYPES.filter((x) => x.parent)) for (const type of leaf.parent!.types) assert.ok(isAwsLeafType(type) && awsLeafEntryOf(type)!.parent === undefined, type + " is a parent leaf");
   assert.equal(awsParentIdOf("SAME", "bucket-a"), "bucket-a");
   assert.equal(awsParentIdOf("BEFORE_FIRST_COLON", "1234abcd-key:grant0123"), "1234abcd-key");
   assert.equal(awsParentIdOf("BEFORE_FIRST_COMMA", "cluster-a,arn:aws:iam::111111111111:role/x"), "cluster-a");
   assert.equal(awsParentIdOf("AFTER_LAST_COLON", "ou-abcd-12345678:p-12345678"), "p-12345678");
+  assert.equal(awsParentIdOf("BEFORE_LAST_COLON", "arn:aws:sns:us-east-1:111111111111:alerts:0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"), "arn:aws:sns:us-east-1:111111111111:alerts");
+  // A pending email subscription Terraform could not read an ARN for names no topic, so it is held.
+  assert.equal(awsParentIdOf("BEFORE_LAST_COLON", "pending confirmation"), undefined);
   for (const [key, id] of [["NOT_IN_STATE", "anything"], ["SAME", null], ["SAME", ""], ["BEFORE_FIRST_COLON", "nocolon"], ["BEFORE_FIRST_COLON", ":grant"], ["BEFORE_FIRST_COMMA", "cluster,"], ["AFTER_LAST_COLON", "target:"]] as const) {
     assert.equal(awsParentIdOf(key, id), undefined, key + " " + id);
   }
@@ -1409,6 +1418,36 @@ test("an attachment or setting is deleted only with its parent (design review 64
   assert.ok(done.ok, JSON.stringify(done));
   assert.deepEqual(destroyPlans()[0]!.args.filter((a) => a.startsWith("-target=")).sort(), run.proposal.deletes.map((d) => "-target=" + d.address).sort());
   assert.ok(destroyPlans().every((c) => !c.args.join(" ").includes(".team") && !c.args.join(" ").includes("aws_sqs_queue_policy")), "nothing on a kept parent is targeted");
+});
+
+test("cost baseline (owner direction 6536926009): the run's alert topic goes with its subscriptions and topic policy, the CUR 2.0 export goes, a subscription on a pre-existing topic and the cost allocation tag activation are held for a person", async () => {
+  const TOPIC = "arn:aws:sns:us-east-1:111111111111:alz-budget-alerts";
+  const OLD_TOPIC = "arn:aws:sns:us-east-1:111111111111:team-alerts";
+  const EXPORT = "arn:aws:bcm-data-exports:us-east-1:111111111111:export/alz-cur2-0f1e2d3c";
+  const created = (address: string, type: string) => ({ address, type, change: { actions: ["create"], before: null, after: {} } });
+  const creates = [...CREATES,
+    created("aws_sns_topic.alerts", "aws_sns_topic"), created("aws_sns_topic_policy.alerts", "aws_sns_topic_policy"),
+    created("aws_sns_topic_subscription.owner", "aws_sns_topic_subscription"), created("aws_sns_topic_subscription.team", "aws_sns_topic_subscription"),
+    created("aws_bcmdataexports_export.cur", "aws_bcmdataexports_export"), created("aws_ce_cost_allocation_tag.owner", "aws_ce_cost_allocation_tag"),
+  ];
+  const state = [...STATE,
+    stateResource("aws_sns_topic", "alerts", TOPIC, TOPIC), stateResource("aws_sns_topic_policy", "alerts", TOPIC),
+    stateResource("aws_sns_topic_subscription", "owner", TOPIC + ":0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0", TOPIC + ":0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"),
+    stateResource("aws_sns_topic_subscription", "team", OLD_TOPIC + ":1a2b3c4d-5e6f-7081-92a3-b4c5d6e7f809", OLD_TOPIC + ":1a2b3c4d-5e6f-7081-92a3-b4c5d6e7f809"),
+    stateResource("aws_bcmdataexports_export", "cur", EXPORT, EXPORT), stateResource("aws_ce_cost_allocation_tag", "owner", "owner"),
+  ];
+  const w = world(contractFor(creates));
+  behave({ showResources: creates, stateResources: state });
+  cloud({ existing: [...EXISTING, TOPIC] });
+  const run = await proposed(w);
+  assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["aws_bcmdataexports_export.cur", "aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs", "aws_s3_bucket_versioning.logs",
+    "aws_sns_topic.alerts", "aws_sns_topic_policy.alerts", "aws_sns_topic_subscription.owner"]);
+  const kept = new Map(run.proposal.excluded.map((x) => [x.address, x]));
+  assert.equal(kept.get("aws_sns_topic_subscription.team")?.ownership, "TYPE_UNREVIEWED", "a subscription on a topic the cleanup keeps stays");
+  assert.match(kept.get("aws_sns_topic_subscription.team")!.reason, /an attachment or setting .* that modifies another resource, and this proposal does not delete that resource with it/);
+  assert.equal(kept.get("aws_ce_cost_allocation_tag.owner")?.ownership, "TYPE_UNREVIEWED", "a cost allocation tag activation is never switched off by a cleanup");
+  assert.equal(kept.get("aws_ce_cost_allocation_tag.owner")?.retainedBy, "ENVIRONMENT_OWNER");
+  assert.ok(verifyCleanupProposal(run.proposal).ok);
 });
 
 // --- AUTHORIZED for CLEANUP (review 6448347933, B2 and N3) ---------------------------------------------------

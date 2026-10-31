@@ -86,7 +86,7 @@ export type SealInput = EnginePlanInput & {
   now?: () => Date;
 };
 
-export type SealFailure = { ok: false; code: "ARTIFACT_INVALID" | "RESOURCE_NOT_IN_CANARY" | "CANARY_ALLOWLIST_MISSING"; message: string };
+export type SealFailure = { ok: false; code: "ARTIFACT_INVALID" | "RESOURCE_NOT_IN_CANARY" | "CANARY_ALLOWLIST_MISSING" | "RESOURCE_NOT_IN_LIMITS"; message: string };
 /** A stored seal: the encrypted vault file holds the record and the plan bytes. */
 export type SealResult = { ok: true; sealed: SealedPlan; path: string } | SealFailure;
 /** A qualification run's plan: made and checked, then dropped. Nothing is stored, so nothing can be approved or applied. */

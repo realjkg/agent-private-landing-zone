@@ -1012,3 +1012,69 @@ test("canary (AWS Terraform, owner decision E1): an IAM role beside the allowlis
   refused(missing as never, "CANARY_ALLOWLIST_MISSING");
   assert.equal(callsOf(toolDir).length, 0, "no engine step ran");
 });
+
+test("provisioning limits (AWS Terraform, owner direction 6536926009): the seal judges the plan's types, counts, regions and sizes from its resolved values; within the limits it seals, outside them it is RESOURCE_NOT_IN_LIMITS (SYNTHETIC: fake Terraform)", async () => {
+  const create = (address: string, after: Record<string, unknown> = {}, unknown: Record<string, unknown> = {}) =>
+    ({ address, type: address.split(".")[0], change: { actions: ["create"], before: null, after, after_unknown: unknown } });
+  const limitsContract = (limits: unknown) => {
+    const contract = awsContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+    delete contract.targets.DEV.canary;
+    contract.targets.DEV.limits = limits;
+    return contract;
+  };
+  const contract = limitsContract({
+    regions: [AWS_REGION, "us-east-2"],
+    resources: [{ type: "aws_cloudwatch_log_group", max: 2 }, { type: "aws_instance", max: 1, families: ["t3"] }, { type: "aws_eks_node_group", max: 1, families: ["t3"] },
+      { type: "aws_budgets_budget", max: 1 }, { type: "aws_dynamodb_table", max: 1 }, { type: "aws_vpc_peering_connection", max: 1 }],
+  });
+  // Only the resources each case names (no default log group), so every planned value is the case's own.
+  const plan = async (resources: unknown[], over: unknown = contract) => {
+    const w = world(over);
+    behave({ showOnlyConfigured: true, showResources: resources as never });
+    return sealRefusal(w, "DEV");
+  };
+  const seals = async (label: string, resources: unknown[]) => { const sealed = await plan(resources); assert.ok(sealed.ok, label + ": " + JSON.stringify(sealed)); };
+  const refuses = async (label: string, resources: unknown[], said: RegExp, over: unknown = contract) => {
+    const refusal = await plan(resources, over);
+    refused(refusal as never, "RESOURCE_NOT_IN_LIMITS");
+    assert.match((refusal as { message: string }).message, said, label);
+    assert.match((refusal as { message: string }).message, /Nothing was sealed\./, label);
+  };
+  // Sealed as is: the contract's limits are not rewritten to the plan (as `seal` does for a canary), so this is the limits judge's own verdict.
+  await seals("within the limits", [create("aws_cloudwatch_log_group.a", { region: AWS_REGION }), create("aws_cloudwatch_log_group.b", { region: "us-east-2" }),
+    create("aws_instance.app", { region: AWS_REGION, instance_type: "t3.micro" })]);
+  // B1 (review 6537650100): the real `show -json` shape of a fully known list is `after_unknown: [false]`; it is known, and judged value by value.
+  await seals("a known list size", [create("aws_eks_node_group.ng", { region: AWS_REGION, instance_types: ["t3.large", "t3.xlarge"] }, { instance_types: [false, false] })]);
+  await refuses("a known list with a size not allowed", [create("aws_eks_node_group.ng", { region: AWS_REGION, instance_types: ["t3.large", "m7i.large"] }, { instance_types: [false, false] })], /size m7i\.large is not one of the allowed sizes or families/);
+  await refuses("a list with an unknown entry", [create("aws_eks_node_group.ng", { region: AWS_REGION, instance_types: ["t3.large", null] }, { instance_types: [false, true] })], /does not show its size/);
+  await refuses("a list unknown as a whole", [create("aws_eks_node_group.ng", { region: AWS_REGION }, { instance_types: true })], /does not show its size/);
+  // N2: a global type with no region is not judged by region; a regional type without one, or with an empty or non-text one, is refused.
+  await seals("a global type", [create("aws_budgets_budget.monthly", { name: "monthly" })]);
+  for (const [label, after] of [["no region", {}], ["an empty region", { region: "" }], ["a region that is not text", { region: 7 }], ["a null region", { region: null }]] as const) {
+    await refuses(label, [create("aws_cloudwatch_log_group.x", after)], /does not show its region/);
+  }
+  // N1: a region reached through the resource's own arguments is judged too.
+  await seals("a replica in an allowed region", [create("aws_dynamodb_table.t", { region: AWS_REGION, replica: [{ region_name: "us-east-2" }] }, { replica: [{}] })]);
+  await refuses("a replica in another region", [create("aws_dynamodb_table.t", { region: AWS_REGION, replica: [{ region_name: "us-east-2" }, { region_name: "eu-west-1" }] }, { replica: [{}, {}] })], /it reaches region eu-west-1/);
+  await refuses("a replica region unknown until apply", [create("aws_dynamodb_table.t", { region: AWS_REGION, replica: [{}] }, { replica: [{ region_name: true }] })], /does not show a region it reaches/);
+  await seals("a same-region peering", [create("aws_vpc_peering_connection.p", { region: AWS_REGION })]);
+  await refuses("a peer in another region", [create("aws_vpc_peering_connection.p", { region: AWS_REGION, peer_region: "ap-south-1" })], /it reaches region ap-south-1/);
+  for (const [label, resources, said] of [
+    ["a type not allowed", [create("aws_iam_role.app")], /aws_iam_role\.app: type aws_iam_role is not in the provisioning limits/],
+    ["a count over its maximum", ["a", "b", "c"].map((n) => create("aws_cloudwatch_log_group." + n, { region: AWS_REGION })), /aws_cloudwatch_log_group: the plan creates 3, the provisioning limits allow at most 2/],
+    ["a region not allowed", [create("aws_cloudwatch_log_group.eu", { region: "eu-west-1" })], /region eu-west-1 is not in the allowed regions/],
+    ["a region unknown until apply", [create("aws_cloudwatch_log_group.later", {}, { region: true })], /does not show its region/],
+    ["a size not allowed", [create("aws_instance.big", { region: AWS_REGION, instance_type: "m7i.48xlarge" })], /size m7i\.48xlarge is not one of the allowed sizes or families/],
+    ["a size unknown until apply", [create("aws_instance.later", { region: AWS_REGION }, { instance_type: true })], /does not show its size/],
+  ] as const) await refuses(label, resources as unknown as unknown[], said);
+  await seals("an empty plan is within every maximum", []);
+  // Without `regions`, a resource with no region is not judged by region.
+  const unregioned = limitsContract({ resources: [{ type: "aws_cloudwatch_log_group", max: 2 }] });
+  { const sealed = await plan([create("aws_cloudwatch_log_group.x")], unregioned); assert.ok(sealed.ok, JSON.stringify(sealed)); }
+  // An update is still refused: limits are create only, as the canary is (owner decision E1).
+  const w = world(unregioned);
+  behave({ showUpdate: true });
+  const update = await sealRefusal(w, "DEV");
+  refused(update as never, "RESOURCE_NOT_IN_LIMITS");
+  assert.match((update as { message: string }).message, /aws_cloudwatch_log_group\.existing \(aws_cloudwatch_log_group\): the plan would \["update"\] it; the limits allow create only/);
+});

@@ -15,7 +15,7 @@ import { interceptStopSignals, runBoundedProcess, runStoppableProcess, type Stop
 import { PROFILES, type ProcessProfile } from "../../tools/profiles.js";
 import type { ToolName, ToolResult } from "../../tools/types.js";
 import { sha256 } from "../../util/sha256.js";
-import { assertCanary } from "../canary.js";
+import { assertProvisioning } from "../canary.js";
 import { SAFE_VALUE, TOKEN_FILE, stripInvisible } from "../constants.js";
 import { assertUsable, checkedOutput, stop, withoutIdentities } from "../engine.js";
 import type { ApplyEnd, SyncEngineApplyRun, SyncEngineCleanupRun, EngineContext, EngineRunInput, SyncEngineSpec, StopControl } from "../engine-spec.js";
@@ -374,7 +374,7 @@ const ARM_TYPE = /^[A-Z][A-Za-z0-9]{0,62}(?:\.[A-Z][A-Za-z0-9]{0,62}){1,3}(?:\/[
 function assertTemplateInCanary(text: string, pinned: PilotTarget): void {
   const template = parse(text, "TEMPLATE_UNREADABLE") as { resources?: unknown };
   const resources = Array.isArray(template.resources) ? template.resources : isRecord(template.resources) ? Object.values(template.resources) : [];
-  assertCanary(pinned.canary, resources.map((resource, index) => {
+  assertProvisioning(pinned, resources.map((resource, index) => {
     const r = isRecord(resource) ? resource : {};
     return { address: typeof r.name === "string" ? r.name : "resources[" + index + "]", type: typeof r.type === "string" ? r.type : "", action: "declare", creates: true };
   }), "template");
@@ -382,7 +382,7 @@ function assertTemplateInCanary(text: string, pinned: PilotTarget): void {
 
 /** The canary allowlist on the what-if's change list (owner decision E1): every change a CREATE of a listed type, in the listed counts. */
 function assertWhatIfInCanary(changes: readonly PlanChange[], pinned: PilotTarget): void {
-  assertCanary(pinned.canary, changes.map((change) => ({ address: change.address, type: change.type, action: change.action.toLowerCase(), creates: change.action === "CREATE" })), "what-if");
+  assertProvisioning(pinned, changes.map((change) => ({ address: change.address, type: change.type, action: change.action.toLowerCase(), creates: change.action === "CREATE" })), "what-if");
 }
 
 // --- what ARM reports ------------------------------------------------------------------------------------------

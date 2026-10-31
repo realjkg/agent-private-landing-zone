@@ -16,11 +16,13 @@ import type { ApplyEnvironment } from "./types.js";
  * identity variable, no tool directory, no cloud, no network. It never enables ACT and never writes a contract; a
  * complete draft still needs the owner's reviewed commit of the contract with its `authorize` entry (docs/act-pilot-apply.md,
  * "The contract is the authorization"). The shape verdict is the contract validator's own (`inspectPilotContract`,
- * src/apply/contract.ts). The kit is stricter than the validator in exactly three ways: it requires enough approvers
+ * src/apply/contract.ts). The kit is stricter than the validator in exactly four ways: it requires enough approvers
  * allowed for PROD to reach `requiredApprovals.PROD` (the validator checks the number, not the list); it refuses values
  * that are not inputs at all (REPLACE-WITH placeholders, the examples' fake account ids and `examplefake` buckets, and
- * the examples' placeholder keys); and it requires `enabled` to be written as a boolean, as the loader does
- * (`inspectPilotContract` overrides it, so the validator alone would not notice). A region, workspace or kill switch
+ * the examples' placeholder keys); it requires `enabled` to be written as a boolean, as the loader does
+ * (`inspectPilotContract` overrides it, so the validator alone would not notice); and it reports each target's provisioning
+ * limits (or legacy canary allowlist) as an input, MISSING when a target names neither, because an APPLY there is refused
+ * (CANARY_ALLOWLIST_MISSING) whatever `authorize` says. A region, workspace or kill switch
  * path that equals a shipped example's value is a legitimate choice (`default`, `us-east-1`, `.runs/apply/KILL`), so it
  * stays PRESENT with a review NOTICE asking a person to confirm the default is intended; a notice never counts against COMPLETE.
  */
@@ -184,6 +186,7 @@ export function checkDraftContract(raw: unknown, examples: ReturnType<typeof shi
     for (const field of [...new Set([...(engineOf?.target?.locationFields ?? []), ...(spec?.boundTargetFields ?? [])])]) {
       add("targets." + env + "." + field, "the " + env + " target's " + field + " (where the " + env + " run's resources are; part of the target the run is bound to)", target[field]);
     }
+    provisioning(items, env, target);
     add("requiredApprovals." + env, "how many distinct verified approvals a " + env + " apply needs" + (env === "PROD" ? " (at least 2: the second production approver)" : ""), approvals[env]);
   }
   add("maxApprovalAgeMinutes", "how long a signed approval stays usable, in minutes", raw.maxApprovalAgeMinutes);
@@ -217,7 +220,8 @@ export function checkDraftContract(raw: unknown, examples: ReturnType<typeof shi
   // The validator's first refusal, attached to its field; a refusal that names no listed field is reported on the shape alone.
   if (!shape.ok) {
     const field = failingField(shape.reason);
-    const item = field ? items.find((x) => x.field === field) : undefined;
+    // A refusal inside a target's limits or canary (`targets.DEV.limits.resources[0].max`) belongs to that one input.
+    const item = field ? items.find((x) => x.field === field) ?? items.find((x) => /\.(limits|canary)$/.test(x.field) && (field.startsWith(x.field + ".") || field.startsWith(x.field + "["))) : undefined;
     if (item && item.status === "PRESENT") { item.status = "INVALID"; item.detail = shape.reason; }
   }
 
@@ -236,6 +240,31 @@ export function checkDraftContract(raw: unknown, examples: ReturnType<typeof shi
     provider, engine, enabledAsWritten: typeof raw.enabled === "boolean" ? raw.enabled : null, scope, shape, inputs: items, outsideContract, complete,
     notices: items.filter((item) => item.notice !== undefined).length, guarantees: CONTRACT_CHECK_GUARANTEES,
   };
+}
+
+/**
+ * What an APPLY in `env` may create, as one input: the target's provisioning `limits` (types with a maximum count each, the allowed
+ * regions, the sizes and families), or its legacy `canary` allowlist (exact types and counts), summarized in the detail so a person
+ * can read the control without opening the file. MISSING when the target names neither. The shape itself is the validator's to judge.
+ */
+function provisioning(items: ContractCheckItem[], env: ApplyEnvironment, target: Record<string, unknown>): void {
+  const input = "what an APPLY in " + env + " may create: provisioning limits (resource types with a maximum count each, optionally the allowed regions and sizes) or the legacy canary allowlist (exact types and counts)";
+  const names = (value: unknown): string => Array.isArray(value) ? value.map(String).join(", ") : "";
+  const listOf = (value: unknown): Record<string, unknown>[] => (isRecord(value) && Array.isArray(value.resources) ? value.resources.filter(isRecord) : []);
+  if (target.limits !== undefined) {
+    const limits = isRecord(target.limits) ? target.limits : {};
+    const types = listOf(limits).map((r) => String(r.type) + " at most " + String(r.max) +
+      (r.sizes !== undefined ? ", sizes " + names(r.sizes) : "") + (r.families !== undefined ? ", families " + names(r.families) : ""));
+    const regions = limits.regions === undefined ? "any region the target and its provider allow" : "regions " + names(limits.regions);
+    items.push({ field: "targets." + env + ".limits", input, status: "PRESENT", detail: "limits: " + (types.length > 0 ? types.join("; ") : "no resource types") + "; " + regions + "; create only" });
+    return;
+  }
+  if (target.canary !== undefined) {
+    const types = listOf(target.canary).map((r) => String(r.type) + " exactly " + String(r.count) + (r.retain === true ? " (retained at cleanup)" : ""));
+    items.push({ field: "targets." + env + ".canary", input, status: "PRESENT", detail: "canary allowlist: " + (types.length > 0 ? types.join("; ") : "no resource types") + "; create only" });
+    return;
+  }
+  items.push({ field: "targets." + env + ".limits", input, status: "MISSING", detail: "the target names neither limits nor a canary allowlist, so an APPLY there is refused (CANARY_ALLOWLIST_MISSING)" });
 }
 
 /** The report as a person reads it at the terminal: one line per input, then what is outside the contract and what this check never does. */
