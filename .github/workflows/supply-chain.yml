@@ -127,6 +127,8 @@ jobs:
           output: trivy-results.json
           exit-code: "1"
           trivyignores: .trivyignore.yaml
+          # Synthetic Terraform fixtures intentionally reference missing modules; scan real IaC and packaged runtime.
+          skip-dirs: test/fixtures/live/terraform
 
       - name: Upload release and qualification evidence
         if: always()
