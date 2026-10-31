@@ -474,6 +474,19 @@ test("a fixture a test reads from disk is owned by its declared test, an unowned
   assert.match(planChanged(["src/apply/orphan.ts"], files).gaps.join(" "), /src\/apply\/orphan\.ts has no importing test/);
 });
 
+test("the cost-baseline golden files are owned by the renderer's focused test, never a gap", () => {
+  const files = fixture();
+  const owner = "test/cost-baseline.test.ts";
+  const golden = Object.keys(FIXTURE_OWNERS).filter((p) => p.startsWith("test/fixtures/cost-baseline/"));
+  assert.equal(golden.length, 4);
+  for (const path of golden) {
+    assert.deepEqual(FIXTURE_OWNERS[path], [owner], path);
+    const plan = planChanged([path], new Map([...files, [owner, ""], [path, ""]]));
+    assert.deepEqual(plan.gaps, [], path);
+    assert.ok(plan.nodeTests.includes(owner), path);
+  }
+});
+
 test("the construct judge's real Terraform fixtures are owned by its focused test, never a gap", () => {
   const files = fixture();
   const owner = "test/apply-terraform-constructs.test.ts";
