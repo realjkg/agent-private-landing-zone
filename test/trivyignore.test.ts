@@ -44,15 +44,26 @@ test("every ignore names a check, files that exist, and a statement; none covers
   }
 });
 
-test("the cost-baseline ignore covers only AWS-0132, and exactly the goldens that render the export bucket", () => {
+test("the cost-baseline ignores cover only AWS-0132 and AWS-0095, each on exactly the goldens that render it", () => {
   const goldens = resolve(ROOT, "test", "fixtures", "cost-baseline");
-  const withBucket = readdirSync(goldens).sort()
-    .filter((name) => readFileSync(join(goldens, name, "main.tf"), "utf8").includes('resource "aws_s3_bucket" "cost_export"'))
+  const rendering = (predicate: (text: string) => boolean) => readdirSync(goldens).sort()
+    .filter((name) => predicate(readFileSync(join(goldens, name, "main.tf"), "utf8")))
     .map((name) => "test/fixtures/cost-baseline/" + name + "/main.tf");
-  assert.ok(withBucket.length > 0);
+  const withBucket = rendering((text) => text.includes('resource "aws_s3_bucket" "cost_export"'));
+  const unencryptedTopic = rendering((text) => text.includes('resource "aws_sns_topic" "cost_alerts"') &&
+    !text.includes("kms_master_key_id"));
+  const encryptedTopic = rendering((text) => text.includes("kms_master_key_id = aws_kms_key.cost_alerts.arn"));
+  assert.ok(withBucket.length > 0 && unencryptedTopic.length > 0);
+  assert.ok(encryptedTopic.length > 0, "a golden keeps the opt-in customer-managed key variant");
   const cost = entries().filter((entry) => entry.paths.some((path) => path.startsWith("test/fixtures/cost-baseline/")));
-  assert.deepEqual(cost.map((entry) => entry.id), ["AWS-0132"], "the topic encryption and public access findings are never ignored");
-  assert.deepEqual([...cost[0].paths].sort(), withBucket);
-  assert.match(cost[0].statement, /SSE-S3 by design/);
-  assert.match(cost[0].statement, /ADOPT_EXISTING/);
+  assert.deepEqual(cost.map((entry) => entry.id).sort(), ["AWS-0095", "AWS-0132"],
+    "the public access findings are never ignored for the cost goldens");
+  const bucket = cost.find((entry) => entry.id === "AWS-0132")!;
+  assert.deepEqual([...bucket.paths].sort(), withBucket);
+  assert.match(bucket.statement, /SSE-S3 by design/);
+  assert.match(bucket.statement, /ADOPT_EXISTING/);
+  const topic = cost.find((entry) => entry.id === "AWS-0095")!;
+  assert.deepEqual([...topic.paths].sort(), unencryptedTopic, "never the encrypted golden");
+  assert.match(topic.statement, /owner's decision of 2026-10-31/);
+  assert.match(topic.statement, /CUSTOMER_KMS/);
 });

@@ -80,48 +80,8 @@ resource "aws_budgets_budget" "cost_baseline" {
   }
 }
 
-resource "aws_kms_key" "cost_alerts" {
-  description             = "ALZ cost alerts topic ee88914a (AWS Budgets publishes with it)"
-  enable_key_rotation     = true
-  deletion_window_in_days = 30
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid       = "AccountAdministration"
-        Effect    = "Allow"
-        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
-        Action    = "kms:*"
-        Resource  = "*"
-      },
-      {
-        Sid       = "AllowAwsBudgetsToPublishEncrypted"
-        Effect    = "Allow"
-        Principal = { Service = "budgets.amazonaws.com" }
-        Action    = ["kms:GenerateDataKey*", "kms:Decrypt"]
-        Resource  = "*"
-        Condition = {
-          StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
-        }
-      },
-      {
-        Sid       = "AllowSnsToUseTheKey"
-        Effect    = "Allow"
-        Principal = { Service = "sns.amazonaws.com" }
-        Action    = ["kms:GenerateDataKey*", "kms:Decrypt"]
-        Resource  = "*"
-        Condition = {
-          StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
-        }
-      },
-    ]
-  })
-}
-
 resource "aws_sns_topic" "cost_alerts" {
-  name              = "alz-cost-alerts-ee88914a"
-  kms_master_key_id = aws_kms_key.cost_alerts.arn
+  name = "alz-cost-alerts-ee88914a"
 }
 
 resource "aws_sns_topic_policy" "cost_alerts" {

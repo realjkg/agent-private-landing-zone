@@ -109,15 +109,16 @@ test("the default baseline: notify-only budget, SNS route, new private export bu
   // N7: a member account can export its own data; only tag activation is limited to the management account.
   assert.ok(metadata.prerequisites.some((item) => /member account covers only that account's own cost and usage/.test(item)));
   assert.ok(!metadata.prerequisites.some((item) => /export run in the AWS Organizations management/.test(item)));
-  // The new topic is encrypted with a customer-managed key by default (Trivy AWS-0095), and the charge is reported.
-  assert.equal(metadata.notifications.encryption, "CUSTOMER_KMS");
-  assert.match(terraform, /kms_master_key_id = aws_kms_key\.cost_alerts\.arn/);
-  assert.ok(metadata.prerequisites.some((item) => /monthly key charge; set notifications\.encryption to NONE/.test(item)));
+  // The new topic is unencrypted by default (owner decision 2026-10-31; Trivy AWS-0095 is ignored for this golden only),
+  // and the metadata says how to opt in.
+  assert.equal(metadata.notifications.encryption, "NONE");
+  assert.doesNotMatch(terraform, /aws_kms_key|kms_master_key_id/);
+  assert.ok(metadata.prerequisites.some((item) => /not encrypted .*set notifications\.encryption to CUSTOMER_KMS/.test(item)));
   // The export bucket stays SSE-S3 (see .trivyignore.yaml, AWS-0132), and says so where it is rendered.
   assert.match(terraform, /# SSE-S3, as in the AWS Cloud Intelligence Dashboards data-exports destination bucket\./);
   // N6: per-baseline names, and the bucket is never force-destroyed.
   assert.match(metadata.naming.suffix, /^[a-f0-9]{8}$/);
-  assert.match(terraform, new RegExp('name              = "alz-cost-alerts-' + metadata.naming.suffix + '"'));
+  assert.match(terraform, new RegExp('name = "alz-cost-alerts-' + metadata.naming.suffix + '"'));
   assert.match(terraform, new RegExp('bucket        = "alz-cost-export-' + metadata.naming.suffix + '-\\$\\{'));
   assert.match(terraform, /force_destroy = false/);
   assert.equal(metadata.teardown.exportBucketForceDestroy, false);
@@ -152,9 +153,10 @@ test("adopting an existing bucket renders no bucket, and an adopted topic render
   assert.equal(metadata.naming.bucketName, "corp-billing-exports");
 });
 
-test("an explicit encryption opt-out renders an unencrypted topic and no key", () => {
+test("an explicit encryption NONE renders the same unencrypted topic as the default, and no key", () => {
   const { terraform, metadata } = renderAwsCostBaseline(resolveCostConfig({ ...base,
     notifications: { ...base.notifications, encryption: "NONE" } }));
+  assert.equal(terraform, renderAwsCostBaseline(resolveCostConfig(base)).terraform);
   assert.doesNotMatch(terraform, /aws_kms_key|kms_master_key_id/);
   assert.equal(metadata.notifications.encryption, "NONE");
   assert.equal(metadata.teardown.kmsKeyDeletionWindowDays, null);
@@ -167,7 +169,9 @@ test("KMS encryption and opt-in tag activation render the key, its policy, and t
   assert.match(terraform, /enable_key_rotation\s+= true/);
   assert.match(terraform, /kms_master_key_id = aws_kms_key\.cost_alerts\.arn/);
   assert.match(terraform, /Principal = \{ Service = "budgets\.amazonaws\.com" \}\n\s+Action\s+= \["kms:GenerateDataKey\*", "kms:Decrypt"\]/);
-  assert.match(terraform, /Principal = \{ Service = "sns\.amazonaws\.com" \}/);
+  assert.doesNotMatch(terraform, /sns\.amazonaws\.com/, "only the publisher needs the key");
+  assert.match(terraform, /ArnLike\s+= \{ "aws:SourceArn" = "arn:aws:budgets::\$\{data\.aws_caller_identity\.current\.account_id\}:\*" \}/);
+  assert.ok(metadata.prerequisites.some((item) => /new customer-managed KMS key, which carries a monthly key charge/.test(item)));
   assert.doesNotMatch(terraform, /alias\/aws\/sns/);
   assert.equal(metadata.notifications.encryption, "CUSTOMER_KMS");
   assert.equal(metadata.teardown.kmsKeyDeletionWindowDays, 30);

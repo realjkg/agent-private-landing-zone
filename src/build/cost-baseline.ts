@@ -199,10 +199,13 @@ function renderBudget(config: CostConfig, topic: string | undefined, emails: rea
   return lines;
 }
 
-/** A customer-managed key AWS Budgets can publish with; the AWS-managed SNS key cannot be used by AWS Budgets. */
+/**
+ * A customer-managed key AWS Budgets can publish with; AWS Budgets cannot use the AWS-managed SNS key. Only the
+ * publisher needs the key: SNS delivers to the email endpoints itself, so no statement for sns.amazonaws.com is
+ * rendered (review 6538175443, N2). The Budgets statement is scoped to this account's budgets.
+ */
 function renderTopicKey(suffix: string): string[] {
   const account = "data.aws_caller_identity.current.account_id";
-  const sourceAccount = '          StringEquals = { "aws:SourceAccount" = ' + account + " }";
   return [
     'resource "aws_kms_key" "cost_alerts" {',
     ...attrs(2, [["description", q("ALZ cost alerts topic " + suffix + " (AWS Budgets publishes with it)")],
@@ -220,15 +223,8 @@ function renderTopicKey(suffix: string): string[] {
       ["Principal", '{ Service = "budgets.amazonaws.com" }'], ["Action", '["kms:GenerateDataKey*", "kms:Decrypt"]'],
       ["Resource", q("*")]]),
     "        Condition = {",
-    sourceAccount,
-    "        }",
-    "      },",
-    "      {",
-    ...attrs(8, [["Sid", q("AllowSnsToUseTheKey")], ["Effect", q("Allow")],
-      ["Principal", '{ Service = "sns.amazonaws.com" }'], ["Action", '["kms:GenerateDataKey*", "kms:Decrypt"]'],
-      ["Resource", q("*")]]),
-    "        Condition = {",
-    sourceAccount,
+    '          StringEquals = { "aws:SourceAccount" = ' + account + " }",
+    '          ArnLike      = { "aws:SourceArn" = "arn:aws:budgets::${' + account + '}:*" }',
     "        }",
     "      },",
     "    ]",
@@ -569,7 +565,10 @@ export function renderAwsCostBaseline(input: CostConfig, provenance?: Provenance
   }
   if (n.route === "SNS_TOPIC" && n.encryption === "CUSTOMER_KMS") {
     prerequisites.push("The alert topic is encrypted with a new customer-managed KMS key, which carries a monthly " +
-      "key charge; set notifications.encryption to NONE to opt out.");
+      "key charge.");
+  } else if (n.route === "SNS_TOPIC") {
+    prerequisites.push("The alert topic is not encrypted (alert content is low sensitivity, and no key charge is " +
+      "added); set notifications.encryption to CUSTOMER_KMS to encrypt it with a new customer-managed key.");
   }
   if (n.route === "EXISTING_SNS_TOPIC") {
     prerequisites.push("The adopted SNS topic's policy must allow budgets.amazonaws.com to publish.");

@@ -34,6 +34,8 @@ COPY policy/ ./policy/
 COPY compose.yaml ./compose.yaml
 # test/gitignore-secrets.test.ts reads the repository's ignore rules as text.
 COPY .gitignore ./.gitignore
+# test/trivyignore.test.ts reads the supply-chain scan's ignore entries as text. Test stage only.
+COPY .trivyignore.yaml ./.trivyignore.yaml
 COPY docs/ ./docs/
 # The bootstrap tests (discovery-scope, bootstrap-azure, bootstrap-gcp) read the bootstrap packages as text. Test stage
 # only; .dockerignore keeps local state, tfvars and .terraform out of the build context.
