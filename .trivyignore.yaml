@@ -20,3 +20,6 @@ misconfigurations:
   - id: AWS-0132
     paths: ["bootstrap/aws/state.tf"]
     statement: Pilot state bucket uses SSE-S3 by design, with versioning, public access blocks and a bucket policy limiting it to the STATE and STATE_WRITE roles. A customer-managed key is the account owner's choice (docs/act-pilot-bootstrap.md) and would need key-policy access for those roles.
+  - id: AWS-0132
+    paths: ["test/fixtures/cost-baseline/defaults/main.tf", "test/fixtures/cost-baseline/budget-action/main.tf", "test/fixtures/cost-baseline/kms-and-tag-activation/main.tf"]
+    statement: Golden renders of the cost-baseline CUR 2.0 export bucket (src/build/cost-baseline.ts), compared byte for byte by test/cost-baseline.test.ts and never deployed from here. The bucket uses SSE-S3 by design, as the AWS Cloud Intelligence Dashboards data-exports destination bucket does, with public access blocks, BucketOwnerEnforced, a TLS-only deny and a bucket policy limited to bcm-data-exports.amazonaws.com and billingreports.amazonaws.com for this account. A customer-managed key would need key-policy grants for the Data Exports delivery, which the renderer does not offer. An owner who needs one adopts a bucket already configured with that key (export.mode ADOPT_EXISTING), and that golden renders no bucket.

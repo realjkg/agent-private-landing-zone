@@ -21,9 +21,10 @@ export type CostBudgetPeriod = "MONTHLY" | "QUARTERLY" | "ANNUALLY";
 export type CostNotificationRoute = "SNS_TOPIC" | "EMAIL_DIRECT" | "EXISTING_SNS_TOPIC";
 export type CostExportGranularity = "DAILY" | "HOURLY";
 /**
- * NONE: the new topic is not encrypted (the default; alert content is low sensitivity, and a customer-managed key adds
- * a monthly charge). CUSTOMER_KMS: a new customer-managed key whose policy lets AWS Budgets publish. The AWS-managed
- * `alias/aws/sns` key is never offered, because AWS Budgets cannot publish to a topic encrypted with it.
+ * CUSTOMER_KMS (the default for a new topic): a new customer-managed key whose policy lets AWS Budgets publish and SNS
+ * deliver; it adds a monthly key charge. NONE: an explicit opt-out that leaves the new topic unencrypted. The
+ * AWS-managed `alias/aws/sns` key is never offered, because AWS Budgets cannot publish to a topic encrypted with it.
+ * The adopted-topic and direct-email routes create no topic, so they are always NONE here.
  */
 export type CostTopicEncryption = "NONE" | "CUSTOMER_KMS";
 
@@ -354,7 +355,7 @@ function validateNotifications(raw: unknown, c: Collector): CostNotifications | 
     }
   }
   const encryption = c.oneOf<CostTopicEncryption>(input.encryption, "notifications.encryption",
-    ["NONE", "CUSTOMER_KMS"], "NONE");
+    ["NONE", "CUSTOMER_KMS"], route === "SNS_TOPIC" ? "CUSTOMER_KMS" : "NONE");
   if (encryption === "CUSTOMER_KMS" && route !== "SNS_TOPIC") {
     c.add("notifications.encryption", "NOT_ALLOWED", "only the SNS_TOPIC route creates a topic to encrypt");
   }

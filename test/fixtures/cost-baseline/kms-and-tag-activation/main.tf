@@ -168,6 +168,8 @@ resource "aws_s3_bucket_ownership_controls" "cost_export" {
   }
 }
 
+# SSE-S3, as in the AWS Cloud Intelligence Dashboards data-exports destination bucket. A customer-managed key
+# is not rendered; an owner who needs one adopts a bucket already configured with it (export.mode ADOPT_EXISTING).
 resource "aws_s3_bucket_server_side_encryption_configuration" "cost_export" {
   bucket = aws_s3_bucket.cost_export.id
 

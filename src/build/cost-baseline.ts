@@ -331,6 +331,8 @@ function renderExportBucket(config: CostConfig, suffix: string): string[] {
     "  }",
     "}",
     "",
+    "# SSE-S3, as in the AWS Cloud Intelligence Dashboards data-exports destination bucket. A customer-managed key",
+    "# is not rendered; an owner who needs one adopts a bucket already configured with it (export.mode ADOPT_EXISTING).",
     'resource "aws_s3_bucket_server_side_encryption_configuration" "cost_export" {',
     "  bucket = aws_s3_bucket.cost_export.id",
     "",
@@ -564,6 +566,10 @@ export function renderAwsCostBaseline(input: CostConfig, provenance?: Provenance
   ];
   if (n.route === "SNS_TOPIC" && n.emails.length > 0) {
     prerequisites.push("Each email recipient must confirm the SNS subscription before alerts reach them.");
+  }
+  if (n.route === "SNS_TOPIC" && n.encryption === "CUSTOMER_KMS") {
+    prerequisites.push("The alert topic is encrypted with a new customer-managed KMS key, which carries a monthly " +
+      "key charge; set notifications.encryption to NONE to opt out.");
   }
   if (n.route === "EXISTING_SNS_TOPIC") {
     prerequisites.push("The adopted SNS topic's policy must allow budgets.amazonaws.com to publish.");

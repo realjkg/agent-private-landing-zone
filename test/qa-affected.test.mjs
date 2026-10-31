@@ -479,6 +479,12 @@ test("the cost-baseline golden files are owned by the renderer's focused test, n
   const owner = "test/cost-baseline.test.ts";
   const golden = Object.keys(FIXTURE_OWNERS).filter((p) => p.startsWith("test/fixtures/cost-baseline/"));
   assert.equal(golden.length, 5);
+  // One module per directory (COST-1c): every golden .tf is `<variant>/main.tf`, never a flat sibling of another golden.
+  for (const path of golden.filter((p) => p.endsWith(".tf"))) {
+    assert.match(path, /^test\/fixtures\/cost-baseline\/[a-z-]+\/main\.tf$/, path);
+  }
+  const flat = "test/fixtures/cost-baseline/defaults.main.tf";
+  assert.match(planChanged([flat], new Map([...files, [owner, ""], [flat, ""]])).gaps.join(" "), /no known test owner/);
   for (const path of golden) {
     assert.deepEqual(FIXTURE_OWNERS[path], [owner], path);
     const plan = planChanged([path], new Map([...files, [owner, ""], [path, ""]]));
