@@ -29,7 +29,7 @@ provider "aws" {
   }
 }
 
-# Cross-region dependency: AWS Data Exports and Cost Explorer are served from us-east-1.
+# Cross-region dependency: AWS Data Exports is served from us-east-1.
 provider "aws" {
   alias  = "billing"
   region = "us-east-1"
@@ -81,7 +81,7 @@ resource "aws_budgets_budget" "cost_baseline" {
 }
 
 resource "aws_sns_topic" "cost_alerts" {
-  name = "alz-cost-alerts"
+  name = "alz-cost-alerts-ee88914a"
 }
 
 resource "aws_sns_topic_policy" "cost_alerts" {
@@ -111,8 +111,11 @@ resource "aws_sns_topic_subscription" "cost_alerts" {
   endpoint  = each.value
 }
 
+# force_destroy stays false: billing data is never deleted silently. Destroying a non-empty bucket fails closed,
+# and its owner empties or keeps it; the lifecycle rule below expires old exports.
 resource "aws_s3_bucket" "cost_export" {
-  bucket = "alz-cost-export-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
+  bucket        = "alz-cost-export-ee88914a-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
+  force_destroy = false
 }
 
 resource "aws_s3_bucket_public_access_block" "cost_export" {
@@ -237,12 +240,4 @@ resource "aws_bcmdataexports_export" "cur2" {
   }
 
   depends_on = [aws_s3_bucket_policy.cost_export]
-}
-
-# Activation needs the key to appear in billing data first, which can take up to 24 hours after tagging.
-resource "aws_ce_cost_allocation_tag" "required" {
-  provider = aws.billing
-  for_each = toset(["cost-center", "environment", "owner"])
-  tag_key  = each.value
-  status   = "Active"
 }

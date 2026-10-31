@@ -478,7 +478,7 @@ test("the cost-baseline golden files are owned by the renderer's focused test, n
   const files = fixture();
   const owner = "test/cost-baseline.test.ts";
   const golden = Object.keys(FIXTURE_OWNERS).filter((p) => p.startsWith("test/fixtures/cost-baseline/"));
-  assert.equal(golden.length, 4);
+  assert.equal(golden.length, 5);
   for (const path of golden) {
     assert.deepEqual(FIXTURE_OWNERS[path], [owner], path);
     const plan = planChanged([path], new Map([...files, [owner, ""], [path, ""]]));
