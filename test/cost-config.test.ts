@@ -153,6 +153,9 @@ test("thresholds are percentages, sorted, unique, and within the AWS limit of fi
   assert.deepEqual(issuesOf(budget({ period: "WEEKLY" })), ["budget.period INVALID"]);
   assert.deepEqual(issuesOf(budget({ currency: "usd" })), ["budget.currency INVALID"]);
   assert.deepEqual(issuesOf(budget({ name: "bad:name" })), ["budget.name INVALID"]);
+  // Never a leading dash: the name is an AWS CLI argument (review 6539122808, N4).
+  assert.deepEqual(issuesOf(budget({ name: "-alz" })), ["budget.name INVALID"]);
+  assert.equal(resolveCostConfig(budget({ name: "_alz.cost-1" })).budget.name, "_alz.cost-1");
 });
 
 test("a budget action is off unless explicitly enabled, and an enabled one is complete and described", () => {

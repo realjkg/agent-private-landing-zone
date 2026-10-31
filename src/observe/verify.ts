@@ -14,8 +14,21 @@ import type { Blueprint, BlueprintEntry } from "./blueprint.js";
  * cleanup, is everything deleted gone (ABSENT).
  */
 
+/**
+ * How Cloud Control names a resource type: its CloudFormation type, which state identifier is its primary identifier, and,
+ * for a type only one region serves, that region. `identifierPattern`, when set, is the only identifier shape that is read:
+ * any other value is NOT_CHECKABLE (NO_IDENTIFIER_IN_STATE), never read and never taken for ABSENT.
+ */
+export type CloudControlMapping = {
+  typeName: string;
+  identifier: "id" | "arn";
+  pendingDeletion?: { property: string; value: string };
+  region?: string;
+  identifierPattern?: RegExp;
+};
+
 /** How Cloud Control names a Terraform resource type: its CloudFormation type, and which state identifier is its primary identifier. */
-export const CLOUD_CONTROL_TYPES: Readonly<Record<string, { typeName: string; identifier: "id" | "arn"; pendingDeletion?: { property: string; value: string } }>> = {
+export const CLOUD_CONTROL_TYPES: Readonly<Record<string, CloudControlMapping>> = {
   aws_cloudwatch_log_group: { typeName: "AWS::Logs::LogGroup", identifier: "id" },
   aws_s3_bucket: { typeName: "AWS::S3::Bucket", identifier: "id" },
   aws_iam_role: { typeName: "AWS::IAM::Role", identifier: "id" },
@@ -28,6 +41,17 @@ export const CLOUD_CONTROL_TYPES: Readonly<Record<string, { typeName: string; id
   aws_vpc: { typeName: "AWS::EC2::VPC", identifier: "id" },
   aws_subnet: { typeName: "AWS::EC2::Subnet", identifier: "id" },
   aws_security_group: { typeName: "AWS::EC2::SecurityGroup", identifier: "id" },
+  // The cost baseline's CUR 2.0 export (plan item 4). Data Exports is served in us-east-1 only, whatever the run's region. Its
+  // primary identifier is the export ARN (/properties/ExportArn in the resource provider schema), which is the Terraform id and
+  // the CloudFormation physical id; an id of any other shape is never read.
+  aws_bcmdataexports_export: { typeName: "AWS::BCMDataExports::Export", identifier: "id", region: "us-east-1",
+    identifierPattern: /^arn:aws:bcm-data-exports:us-east-1:[0-9]{12}:export\/[A-Za-z0-9_-]{1,200}$/ },
+  // Not mapped, on purpose (plan item 4): aws_budgets_budget (AWS::Budgets::Budget has Cloud Control handlers, but its primary
+  // identifier /properties/Id is not shown to equal the Terraform id `<account>:<name>`, and a wrong identifier could read as
+  // ABSENT after a cleanup; the cost status reads budgets through Budgets itself), aws_budgets_budget_action (an action can
+  // change permissions; it stays the owner's), aws_ce_cost_allocation_tag (no CloudFormation type exists) and
+  // aws_sns_topic_subscription (its read handler, sns:GetSubscriptionAttributes, returns the endpoint, a new data read the
+  // owner has not accepted). Each stays NOT_CHECKABLE with NO_CLOUD_CONTROL_MAPPING.
 };
 
 /**
@@ -51,7 +75,7 @@ export const DATA_BEARING_TYPES: ReadonlySet<string> = new Set([
  * primary identifier for each of these types. A CloudFormation type the table does not name is NOT_CHECKABLE, never assumed.
  */
 const CLOUD_CONTROL_TYPE_NAMES = new Map(Object.values(CLOUD_CONTROL_TYPES).map((mapping) => [mapping.typeName, mapping]));
-export function cloudControlMappingOf(type: string): { typeName: string; identifier: "id" | "arn"; pendingDeletion?: { property: string; value: string } } | undefined {
+export function cloudControlMappingOf(type: string): CloudControlMapping | undefined {
   const byTerraformType = CLOUD_CONTROL_TYPES[type];
   if (byTerraformType) return byTerraformType;
   // A CloudFormation-typed entry: the physical id is the primary identifier; for a type whose primary identifier is an ARN (an SNS topic, an
@@ -185,9 +209,10 @@ export async function checkResource(entry: BlueprintEntry, region: string, aws: 
   const cloudFormation = /^AWS::/.test(entry.type);
   const identifier = mapping.identifier === "arn" ? entry.arn ?? (cloudFormation && entry.id?.startsWith("arn:") ? entry.id : null) : entry.id;
   if (identifier === null) return { ...base, identifier: null, existence: "NOT_CHECKABLE", reason: "NO_IDENTIFIER_IN_STATE" };
+  if (mapping.identifierPattern && !mapping.identifierPattern.test(identifier)) return { ...base, identifier, existence: "NOT_CHECKABLE", reason: "NO_IDENTIFIER_IN_STATE" };
   let result: Awaited<ReturnType<AwsCli>>;
   try {
-    result = await aws(["cloudcontrol", "get-resource", "--type-name", mapping.typeName, "--identifier", identifier, "--region", region, "--output", "json"]);
+    result = await aws(["cloudcontrol", "get-resource", "--type-name", mapping.typeName, "--identifier", identifier, "--region", mapping.region ?? region, "--output", "json"]);
   } catch {
     return { ...base, identifier, existence: "UNKNOWN", reason: "CLI_NOT_RUN" };
   }
