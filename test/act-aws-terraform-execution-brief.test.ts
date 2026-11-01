@@ -280,7 +280,7 @@ test("the cost payload's expected observe, cleanup and day-one results match the
   // B1: the export bucket keeps billing data (force_destroy false), so cleanup after a delivery is expected to fail closed.
   const bucketBlock = rendered.terraform.slice(rendered.terraform.indexOf('resource "aws_s3_bucket" "cost_export" {'));
   assert.match(bucketBlock.slice(0, bucketBlock.indexOf("\n}\n")), /^\s*force_destroy\s*=\s*false$/m);
-  assert.ok(section.includes("`force_destroy = false`") && section.includes("expected to fail closed"));
+  assert.ok(section.includes("`force_destroy = false`") && section.includes("billing data is never deleted silently"));
   assert.ok(section.includes("NOT_INDEPENDENTLY_CHECKABLE") && readFileSync("src/apply/leftovers.ts", "utf8").includes('"NOT_INDEPENDENTLY_CHECKABLE"'));
   // B2: the day-one expectation names INCOMPLETE and ATTENTION, and never "Expect WAITING on the first day".
   assert.ok(!section.includes("Expect `WAITING` on the first day"));
@@ -298,4 +298,15 @@ test("the cost payload's expected observe, cleanup and day-one results match the
   // N5: the build's own refusals.
   const build = readFileSync("src/cli/real-private-build.ts", "utf8");
   for (const code of ["SOURCE_WORKTREE_DIRTY", "AGENT_SKIP_LOCAL_MODEL"]) assert.ok(build.includes(code) && section.includes(code), code);
+});
+
+test("the cost payload's cleanup offers no partial keep: propose-cleanup has no per-resource selection (#378 review B4)", async () => {
+  const section = BRIEF.slice(BRIEF.indexOf("## Cost baseline as payload"), BRIEF.indexOf("## Stop and recovery"));
+  // The CLI's own table: propose-cleanup takes exactly these flags, none of which selects resources.
+  assert.deepEqual([...await applyFlags("propose-cleanup")].sort(), ["key", "requester", "sealed"]);
+  assert.ok(section.includes("`propose-cleanup` has no per-resource selection: it takes only `--sealed`, `--requester` and `--key`"));
+  for (const wording of [/keep the bucket/i, /siblings/i, /decided to keep/i]) assert.doesNotMatch(section, wording);
+  assert.ok(section.includes("**(a) Leave the run in place.**") && section.includes("**(b) Copy the billing data out and empty the bucket**"));
+  assert.ok(section.includes("`DeleteBucket` fails") || section.includes("`DeleteBucket` then fails"));
+  assert.ok(section.includes("`BEFORE_LAST_COLON`") && section.includes("matches parents only by identical identifier"));
 });

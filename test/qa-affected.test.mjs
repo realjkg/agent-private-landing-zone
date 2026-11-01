@@ -704,7 +704,7 @@ test("the execution brief and the inputs its doc test reads from disk select tha
   for (const path of ["docs/act-aws-terraform-execution-brief.md", "alz", "src/cli/operator.ts",
     "config/act-pilot-contract.aws-dev.example.json", "qualification/aws/act-dev1-canary/main.tf",
     "config/act-pilot-contract.aws-dev-limits.example.json", "docs/cost-baseline-deploy.md", "config/cost.example.json", "src/cost/status.ts",
-    "src/apply/leftovers.ts", "src/cli/cost.ts", "src/cli/real-private-build.ts"]) {
+    "src/cli/cost.ts", "src/cli/real-private-build.ts"]) {
     assert.deepEqual(DOC_INPUT_OWNERS[path], [BRIEF_TEST], path);
     files.set(path, "x");
     const plan = planChanged([path], files);
