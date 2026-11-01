@@ -58,8 +58,8 @@ export type WrittenCostProject = { projectRoot: string; record: CostProjectRecor
 const PLACEHOLDER = "REPLACE-WITH-PREPARE-OUTPUT";
 
 /**
- * Renders and writes the project into `projectRoot`, which must not exist yet (it is created 0700; files are 0600 and
- * written exclusively, so nothing is overwritten). `region` is the home region the build planned in.
+ * Renders and writes the project into `projectRoot`, which must not exist yet while its parent must (it is created 0700,
+ * not recursively; files are 0600 and written exclusively, so nothing is overwritten). `region` is the home region the build planned in.
  */
 export function writeCostBaselineProject(input: {
   config: CostConfig;
@@ -100,7 +100,14 @@ export function writeCostBaselineProject(input: {
     aws_region: input.region,
     unit_tags: { "alz-managed-by": PLACEHOLDER, "alz-unit": PLACEHOLDER, "alz-build": PLACEHOLDER },
   };
-  mkdirSync(projectRoot, { recursive: true, mode: 0o700 });
+  // Not recursive: the folder is created here or the write stops (EEXIST), so nothing between the check above and this call
+  // can hand the writer an existing folder or link. Its parent must already exist (the CLI's fresh run folder).
+  try {
+    mkdirSync(projectRoot, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("COST_PROJECT_EXISTS");
+    throw new Error("COST_PROJECT_FOLDER_INVALID");
+  }
   const folder = lstatSync(projectRoot);
   if (folder.isSymbolicLink() || !folder.isDirectory()) throw new Error("COST_PROJECT_FOLDER_INVALID");
   const write = (name: string, text: string) => writeFileSync(join(projectRoot, name), text, { encoding: "utf8", mode: 0o600, flag: "wx" });

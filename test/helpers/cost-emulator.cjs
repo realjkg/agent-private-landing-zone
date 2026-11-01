@@ -13,10 +13,13 @@
 //   verifies the signature and the hashes, and the reviewed lock's h1 hash, so the provider that runs is HashiCorp's.
 //
 // Usage: node cost-emulator.cjs <motoPort> <keyPem> <certPem> <providerDir> <logFile>
+// Required as a module (test/cost-project.test.ts), it starts nothing and exports the routing and the stub handlers, so the
+// always-run test checks them in-process, with no certificate and no external tool.
 "use strict";
 const crypto = require("node:crypto"), fs = require("node:fs"), http = require("node:http"), https = require("node:https"), net = require("node:net"), path = require("node:path");
-const [motoPort, keyFile, certFile, providerDir, logFile] = process.argv.slice(2);
-const log = (line) => fs.appendFileSync(logFile, line + "\n");
+const MAIN = require.main === module;
+const [motoPort, keyFile, certFile, providerDir, logFile] = MAIN ? process.argv.slice(2) : [];
+const log = (line) => { if (logFile) fs.appendFileSync(logFile, line + "\n"); };
 
 const PROVIDER = { version: "6.68.0", zip: "terraform-provider-aws_6.68.0_linux_amd64.zip", sums: "terraform-provider-aws_6.68.0_SHA256SUMS" };
 const MOTO_HOSTS = [/^sts\.us-east-1\.amazonaws\.com$/, /^sns\.us-east-1\.amazonaws\.com$/, /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.s3\.us-east-1\.amazonaws\.com$/,
@@ -115,6 +118,18 @@ function registry(host, url) {
   return { status: 404, type: "text/plain", body: "not served" };
 }
 
+/** Where one CONNECT target goes: the stub, moto, or nowhere (null, refused). Only port 443 of a listed host is ever routed. */
+function routeOf(target, stubPort, motoPortNumber) {
+  const [host, port] = String(target).split(":");
+  if (port !== "443") return null;
+  if (STUB_HOSTS.has(host)) return stubPort;
+  return MOTO_HOSTS.some((p) => p.test(host)) ? motoPortNumber : null;
+}
+
+module.exports = { routeOf, budgetsOp, exportsOp, registry, setAccount: (id) => { ACCOUNT.current = id; } };
+if (MAIN) serve();
+
+function serve() {
 const stub = https.createServer({ key: fs.readFileSync(keyFile), cert: fs.readFileSync(certFile) }, (req, res) => {
   const chunks = [];
   req.on("data", (c) => chunks.push(c));
@@ -153,8 +168,7 @@ stub.listen(0, "127.0.0.1", () => {
   const proxy = http.createServer((_req, res) => { res.writeHead(403); res.end(); });
   proxy.on("connect", (req, client, head) => {
     client.on("error", () => client.destroy());
-    const [host, port] = String(req.url).split(":");
-    const upstreamPort = port !== "443" ? null : STUB_HOSTS.has(host) ? stubPort : MOTO_HOSTS.some((p) => p.test(host)) ? Number(motoPort) : null;
+    const upstreamPort = routeOf(req.url, stubPort, Number(motoPort));
     log("CONNECT " + req.url + (upstreamPort ? "" : " REFUSED"));
     if (!upstreamPort) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
     const upstream = net.connect(upstreamPort, "127.0.0.1", () => {
@@ -168,3 +182,4 @@ stub.listen(0, "127.0.0.1", () => {
   proxy.on("clientError", (_error, socket) => socket.destroy());
   proxy.listen(0, "127.0.0.1", () => process.stdout.write(JSON.stringify({ proxyPort: proxy.address().port, stubPort }) + "\n"));
 });
+}

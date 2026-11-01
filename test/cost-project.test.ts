@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
 import test from "node:test";
 
 import { prepareApply } from "../src/apply/prepare.js";
@@ -92,6 +93,13 @@ test("negative: an existing folder, a bad region, a bad preview hash and an inva
   assert.throws(() => writeCostBaselineProject({ config: CONFIG, projectRoot: fresh("r"), region: 'us-east-2"\n' }), /COST_PROJECT_REGION_INVALID/);
   assert.throws(() => writeCostBaselineProject({ config: CONFIG, projectRoot: fresh("h"), region: "us-east-2", previewArtifactSha256: "x" }),
     /COST_PROJECT_PREVIEW_HASH_INVALID/);
+  // Not recursive (review 6561302195, N2): a missing parent is refused, and a dangling link at the leaf is never followed.
+  assert.throws(() => writeCostBaselineProject({ config: CONFIG, projectRoot: join(fresh("noparent"), "project"), region: "us-east-2" }),
+    /COST_PROJECT_FOLDER_INVALID/);
+  const dangling = fresh("dangling"), elsewhere = fresh("elsewhere");
+  symlinkSync(elsewhere, dangling);
+  assert.throws(() => writeCostBaselineProject({ config: CONFIG, projectRoot: dangling, region: "us-east-2" }), /COST_PROJECT_EXISTS/);
+  assert.ok(!existsSync(elsewhere), "nothing was created at the link's target");
   const forged = { ...CONFIG, budget: { ...CONFIG.budget, amount: '1" }' } };
   assert.throws(() => writeCostBaselineProject({ config: forged, projectRoot: fresh("c"), region: "us-east-2" }), /COST_CONFIG_INVALID/);
 });
@@ -241,71 +249,57 @@ test("real-private-build: two argv forms only, the shared driver for both scenar
   assert.ok(!/\bapply\b.*terraform|"apply"/.test(text.replace(/\.\/alz apply prepare/g, "")), "the driver never names a Terraform apply");
 });
 
-// --- the journey's emulator helper (test/helpers/cost-emulator.cjs), without moto ----------------------------------------
+// --- the journey's emulator helper (test/helpers/cost-emulator.cjs), in-process ------------------------------------------
+// Required as a module, the helper starts no server, so this needs no certificate and no external tool (the ARM64 test image
+// has no openssl). The TLS round trip through the proxy is the opt-in EMULATED suite's (test/cost-baseline-emulated-aws.test.ts).
 
-test("cost emulator helper: refuses every unlisted host, and its Budgets and Data Exports stub round-trips through the proxy over TLS", async () => {
-  const { execFileSync, spawn } = await import("node:child_process");
-  const https = await import("node:https");
-  const http = await import("node:http");
-  const dir = fresh("emu");
-  mkdirSync(dir, { recursive: true });
-  const key = join(dir, "key.pem"), cert = join(dir, "cert.pem");
-  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-keyout", key, "-out", cert, "-subj", "/CN=t",
-    "-addext", "subjectAltName=DNS:budgets.amazonaws.com,DNS:bcm-data-exports.us-east-1.api.aws,DNS:emulator.invalid"], { stdio: "ignore" });
-  const log = join(dir, "connects.log");
-  const helper = spawn(process.execPath, ["test/helpers/cost-emulator.cjs", "1", key, cert, dir, log], { stdio: ["ignore", "pipe", "inherit"] });
-  try {
-    const ports = await new Promise<{ proxyPort: number; stubPort: number }>((done, fail) => {
-      helper.stdout!.once("data", (chunk: Buffer) => done(JSON.parse(chunk.toString()) as { proxyPort: number; stubPort: number }));
-      helper.once("exit", () => fail(new Error("helper exited")));
-    });
-    const connect = (target: string) => new Promise<{ status: number; socket: import("node:net").Socket }>((done, fail) => {
-      const req = http.request({ host: "127.0.0.1", port: ports.proxyPort, method: "CONNECT", path: target });
-      req.on("connect", (res, socket) => done({ status: res.statusCode ?? 0, socket }));
-      req.on("error", fail);
-      req.end();
-    });
-    for (const refused of ["example.com:443", "sts.us-east-2.amazonaws.com:443", "budgets.amazonaws.com:80", "checkpoint-api.hashicorp.com:443"]) {
-      const answer = await connect(refused);
-      assert.equal(answer.status, 403, refused);
-      answer.socket.destroy();
-    }
-    const call = async (host: string, target: string, body: unknown): Promise<{ status: number; json: Record<string, unknown> }> => {
-      const tunnel = await connect(host + ":443");
-      assert.equal(tunnel.status, 200, host);
-      return new Promise((done, fail) => {
-        const text = JSON.stringify(body);
-        const req = https.request({ socket: tunnel.socket, servername: host, ca: readFileSync(cert), method: "POST", path: "/", agent: false,
-          headers: { host, "x-amz-target": target, "content-type": "application/x-amz-json-1.1", "content-length": String(Buffer.byteLength(text)) } }, (res) => {
-          const chunks: Buffer[] = [];
-          res.on("data", (c: Buffer) => chunks.push(c));
-          res.on("end", () => { tunnel.socket.destroy(); done({ status: res.statusCode ?? 0, json: JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown> }); });
-        });
-        req.on("error", fail);
-        req.end(text);
-      });
-    };
-    const budget = { BudgetName: "alz-cost-baseline", BudgetType: "COST", BudgetLimit: { Amount: "250.00", Unit: "USD" }, TimeUnit: "MONTHLY" };
-    const notification = { NotificationType: "ACTUAL", ComparisonOperator: "GREATER_THAN", Threshold: 80, ThresholdType: "PERCENTAGE" };
-    assert.equal((await call("budgets.amazonaws.com", "AWSBudgetServiceGateway.CreateBudget", { AccountId: "111111111111", Budget: budget, ResourceTags: [{ Key: "owner", Value: "x" }] })).status, 200);
-    assert.equal((await call("budgets.amazonaws.com", "AWSBudgetServiceGateway.CreateBudget", { AccountId: "111111111111", Budget: budget })).status, 400, "a duplicate is refused");
-    assert.equal((await call("budgets.amazonaws.com", "AWSBudgetServiceGateway.CreateNotification", { AccountId: "111111111111", BudgetName: budget.BudgetName, Notification: notification,
-      Subscribers: [{ SubscriptionType: "SNS", Address: "arn:aws:sns:us-east-1:111111111111:t" }] })).status, 200);
-    const subscribers = await call("budgets.amazonaws.com", "AWSBudgetServiceGateway.DescribeSubscribersForNotification", { AccountId: "111111111111", BudgetName: budget.BudgetName, Notification: notification });
-    assert.deepEqual(subscribers.json.Subscribers, [{ SubscriptionType: "SNS", Address: "arn:aws:sns:us-east-1:111111111111:t" }]);
-    const described = await call("budgets.amazonaws.com", "AWSBudgetServiceGateway.DescribeBudget", { AccountId: "111111111111", BudgetName: budget.BudgetName });
-    assert.ok(!("CalculatedSpend" in (described.json.Budget as object)), "a new budget reports no spend, never zero");
-    const missing = await call("budgets.amazonaws.com", "AWSBudgetServiceGateway.DescribeBudget", { AccountId: "222222222222", BudgetName: budget.BudgetName });
-    assert.equal(missing.json.__type, "NotFoundException");
-    const unknown = await call("budgets.amazonaws.com", "AWSBudgetServiceGateway.CreateBudgetAction", {});
-    assert.equal(unknown.status, 400, "an operation the stub does not implement is refused, never answered");
-    const created = await call("bcm-data-exports.us-east-1.api.aws", "AWSBillingAndCostManagementDataExports.CreateExport", { Export: { Name: "alz-cur2" } });
-    assert.match(String(created.json.ExportArn), /^arn:aws:bcm-data-exports:us-east-1:[0-9]{12}:export\/alz-cur2-/);
-    const executions = await call("bcm-data-exports.us-east-1.api.aws", "AWSBillingAndCostManagementDataExports.ListExecutions", { ExportArn: created.json.ExportArn });
-    assert.deepEqual(executions.json.Executions, [], "the stub's export never delivers");
-    const logged = readFileSync(log, "utf8");
-    assert.match(logged, /CONNECT example\.com:443 REFUSED/);
-  } finally {
-    helper.kill("SIGKILL");
-  }
+type StubAnswer = { status: number; body: string };
+type CostEmulator = {
+  routeOf(target: string, stubPort: number, motoPort: number): number | null;
+  budgetsOp(op: string, body: unknown): StubAnswer;
+  exportsOp(op: string, body: unknown): StubAnswer;
+  registry(host: string, url: string): StubAnswer;
+  setAccount(id: string): void;
+};
+const emulator = createRequire(import.meta.url)("./helpers/cost-emulator.cjs") as CostEmulator;
+
+test("cost emulator helper: routes only port 443 of the listed hosts, and refuses every other host", () => {
+  const STUB = 1, MOTO = 2;
+  for (const [target, expected] of [
+    ["budgets.amazonaws.com:443", STUB], ["bcm-data-exports.us-east-1.api.aws:443", STUB], ["registry.terraform.io:443", STUB],
+    ["releases.hashicorp.com:443", STUB], ["sts.us-east-1.amazonaws.com:443", MOTO], ["sns.us-east-1.amazonaws.com:443", MOTO],
+    ["examplefake-dev-state.s3.us-east-1.amazonaws.com:443", MOTO], ["alz-cost-export-ee88914a-111111111111-us-east-1.s3.amazonaws.com:443", MOTO],
+    ["111111111111.s3-control.us-east-1.amazonaws.com:443", MOTO], ["tagging.us-east-1.amazonaws.com:443", MOTO],
+    ["example.com:443", null], ["sts.us-east-2.amazonaws.com:443", null], ["budgets.amazonaws.com:80", null],
+    ["checkpoint-api.hashicorp.com:443", null], ["evil.budgets.amazonaws.com:443", null], ["sts.amazonaws.com:443", null],
+  ] as const) assert.equal(emulator.routeOf(target, STUB, MOTO), expected, target);
+});
+
+test("cost emulator helper: the Budgets and Data Exports stub answers the provider's calls, refuses the rest, and never invents spend or deliveries", () => {
+  const call = (answer: StubAnswer) => ({ status: answer.status, json: JSON.parse(answer.body) as Record<string, unknown> });
+  const budget = { BudgetName: "alz-cost-baseline", BudgetType: "COST", BudgetLimit: { Amount: "250.00", Unit: "USD" }, TimeUnit: "MONTHLY" };
+  const notification = { NotificationType: "ACTUAL", ComparisonOperator: "GREATER_THAN", Threshold: 80, ThresholdType: "PERCENTAGE" };
+  const account = "111111111111";
+  assert.equal(emulator.budgetsOp("CreateBudget", { AccountId: account, Budget: budget, ResourceTags: [{ Key: "owner", Value: "x" }] }).status, 200);
+  assert.equal(emulator.budgetsOp("CreateBudget", { AccountId: account, Budget: budget }).status, 400, "a duplicate is refused");
+  assert.equal(emulator.budgetsOp("CreateNotification", { AccountId: account, BudgetName: budget.BudgetName, Notification: notification,
+    Subscribers: [{ SubscriptionType: "SNS", Address: "arn:aws:sns:us-east-1:111111111111:t" }] }).status, 200);
+  const subscribers = call(emulator.budgetsOp("DescribeSubscribersForNotification", { AccountId: account, BudgetName: budget.BudgetName, Notification: notification }));
+  assert.deepEqual(subscribers.json.Subscribers, [{ SubscriptionType: "SNS", Address: "arn:aws:sns:us-east-1:111111111111:t" }]);
+  const described = call(emulator.budgetsOp("DescribeBudget", { AccountId: account, BudgetName: budget.BudgetName }));
+  assert.ok(!("CalculatedSpend" in (described.json.Budget as object)), "a new budget reports no spend, never zero");
+  const tags = call(emulator.budgetsOp("ListTagsForResource", { ResourceARN: "arn:aws:budgets::" + account + ":budget/" + budget.BudgetName }));
+  assert.deepEqual(tags.json.ResourceTags, [{ Key: "owner", Value: "x" }]);
+  assert.equal(call(emulator.budgetsOp("DescribeBudget", { AccountId: "222222222222", BudgetName: budget.BudgetName })).json.__type, "NotFoundException");
+  assert.equal(emulator.budgetsOp("CreateBudgetAction", {}).status, 400, "an operation the stub does not implement is refused, never answered");
+  emulator.setAccount(account);
+  const created = call(emulator.exportsOp("CreateExport", { Export: { Name: "alz-cur2" } }));
+  assert.match(String(created.json.ExportArn), /^arn:aws:bcm-data-exports:us-east-1:111111111111:export\/alz-cur2-/);
+  assert.deepEqual(call(emulator.exportsOp("ListExecutions", { ExportArn: created.json.ExportArn })).json.Executions, [], "the stub's export never delivers");
+  assert.equal(call(emulator.exportsOp("GetExport", { ExportArn: created.json.ExportArn + "x" })).json.__type, "ResourceNotFoundException");
+  assert.equal(emulator.exportsOp("UpdateExport", {}).status, 400);
+  // The registry serves only the reviewed provider's protocol paths; anything else is a 404.
+  assert.deepEqual(JSON.parse(emulator.registry("registry.terraform.io", "/.well-known/terraform.json").body), { "providers.v1": "/v1/providers/" });
+  assert.equal(emulator.registry("registry.terraform.io", "/v1/providers/hashicorp/random/versions").status, 404);
+  assert.equal(emulator.registry("releases.hashicorp.com", "/terraform-provider-aws/6.67.0/terraform-provider-aws_6.67.0_linux_amd64.zip").status, 404);
 });
