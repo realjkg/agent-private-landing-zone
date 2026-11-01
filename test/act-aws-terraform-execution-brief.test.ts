@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 import { runApplyCommand } from "../src/cli/apply.js";
@@ -216,4 +216,22 @@ test("the usage the CLI prints agrees with the flags it enforces, so the require
   assert.equal(usage.get("apply")!.values.get("request"), "APPLY_REQUEST.json");
   assert.equal(usage.get("seal")!.values.get("request"), "REQUEST.json");
   assert.deepEqual([...usage.get("status")!.required], []);
+});
+
+test("the cost-baseline payload section links the deploy page and matches the shipped limits example", () => {
+  assert.ok(BRIEF.includes("## Cost baseline as payload"));
+  assert.ok(BRIEF.includes("](cost-baseline-deploy.md)"));
+  assert.ok(existsSync("docs/cost-baseline-deploy.md") && existsSync("config/cost.example.json"));
+  const limitsExample = JSON.parse(readFileSync("config/act-pilot-contract.aws-dev-limits.example.json", "utf8")) as {
+    targets: { DEV: { limits: { regions: string[]; resources: { type: string }[] }; canary?: unknown } };
+  };
+  const limits = limitsExample.targets.DEV.limits;
+  assert.equal(limitsExample.targets.DEV.canary, undefined);
+  assert.deepEqual(limits.regions, ["us-east-2", "us-east-1"]);
+  // The brief tells the owner to add these two only when the matching option is on: the example leaves them out.
+  const types = limits.resources.map((entry) => entry.type);
+  for (const optIn of ["aws_kms_key", "aws_budgets_budget_action"]) {
+    assert.ok(!types.includes(optIn), optIn);
+    assert.ok(BRIEF.includes("Add `" + optIn + "` only if"), optIn);
+  }
 });

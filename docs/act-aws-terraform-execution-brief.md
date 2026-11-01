@@ -2,7 +2,7 @@
 
 Status: prefilled from `main` at `fd5fd9b`, for the owner closeout direction of 2026-10-29 (issue #39, comment 6508815426, item 5) and the earlier owner input sheet (6486480658, track B).
 
-- It covers one path, AWS Terraform, in DEV only, and one canary.
+- It covers one path, AWS Terraform, in DEV only, with one payload: the log-group canary or, under a `limits` contract, the cost baseline (see "Cost baseline as payload").
 - Everything already decided is filled in below.
 - Only the eight owner fields remain open, plus one value you fill in the contract, `policyVersion` (see "The ninth value").
 - The six-step owner sequence follows.
@@ -379,6 +379,83 @@ The cleanup owner authorizes the cleanup separately, within the maximum lifetime
 
 The pass and stop criteria of steps 4 to 6 apply unchanged.
 
+## Cost baseline as payload
+
+For the first supervised DEV run, the payload may be the AWS cost baseline instead of the log-group canary. This follows the owner direction "complete cycle of steps" (#39, 6560226568, step 3) and #376.
+
+The operator steps are in [`docs/cost-baseline-deploy.md`](cost-baseline-deploy.md), and this section does not repeat them. Only the payload and the contract's `limits` change:
+
+- steps 1 to 3 are unchanged;
+- steps 4 to 6 run against the project the build writes, not a canary copy.
+
+There is no separate path, gate, approval or authority. This section authorizes nothing either, and agents never run the live steps.
+
+### Owner checklist
+
+1. **Fill the inputs:**
+   - the eight owner fields and `policyVersion`, as above;
+   - `config/cost.json`, copied from `config/cost.example.json`. It is git-ignored because it holds recipient addresses; never post it.
+
+   The cost project has no `canary_name` variable. Its owner tag comes from `owner` in `config/cost.json`.
+2. **Use a `limits` contract.** Start the step 2 draft from `config/act-pilot-contract.aws-dev-limits.example.json`, not the canary example. Its DEV target names `limits` instead of `canary`:
+   - every type the default configuration renders;
+   - the regions `us-east-2` and `us-east-1`, the latter because Data Exports is served from there.
+
+   Add `aws_kms_key` only if you set `notifications.encryption` to `CUSTOMER_KMS`. Add `aws_budgets_budget_action` only if you enable `budgetAction`. Without its entry, either type fails closed at seal with `RESOURCE_NOT_IN_LIMITS`, before anything is consumed.
+3. **Build the project** on the trusted build host (`docs/cost-baseline-deploy.md`, section 1). This is `node`, not `./alz`; there is no guided entry yet (see the #376 notes below):
+
+   ```sh
+   ALZ_ALLOW_REAL_PRIVATE_BUILD=1 ALZ_ALLOW_TERRAFORM_PLAN=1 TF_VAR_aws_region=<home-region> \
+     node dist/cli/real-private-build.js --live-aws-read-only --scenario cost-baseline
+   ```
+
+   It writes the project to `.runs/qualification/real-private-build/<run-id>/project/` and prints the path.
+4. **Prepare twice.**
+   1. Copy the project's `terraform.tfvars.example.json` to `terraform.tfvars.json`.
+   2. Run `prepare`, and copy the three unit tags it prints into `unit_tags`.
+   3. Run `prepare` again, and use the files from that second run.
+
+   ```sh
+   ./alz apply prepare --environment DEV --project <COST_PROJECT>
+   ```
+
+5. **Qualify, seal, approve and apply** exactly as steps 4 and 5, with `--project` pointing at the cost project.
+   - The change list must create only the types and counts that `limits` admits, in the admitted regions.
+   - A type left out, a count over its `max`, or another region is refused at seal with `RESOURCE_NOT_IN_LIMITS`.
+6. **Observe:**
+
+   ```sh
+   ./alz apply observe --sealed <SEALED_PLAN>
+   ./alz cost status
+   ```
+
+   Expect `WAITING` on the first day:
+   - a new budget has no calculated spend yet;
+   - the first CUR 2.0 delivery can take up to 24 hours.
+
+   Neither one is zero spend. A budget alerts; it never caps spend.
+7. **Record acceptance.** Record acceptance items 1 to 8 of the owner-approved cost and visibility plan (#39, 6536926009) against the existing `pillar:cost` gate. Do this only once you return that gate to the release scope; today it is `OUT_OF_SCOPE` in `config/release/scope.json`. No new gate id is added.
+8. **Clean up** as in step 6, when the run is done.
+
+### Confirm live: these could not be verified offline
+
+The emulated journey (`test/cost-baseline-emulated-aws.test.ts`, EMULATED) does not show how Budgets, Data Exports or Cost Explorer really behave. Confirm each of these in the live run, and label what you observe:
+
+- **Budgets and the encrypted topic.** Check this only if you chose `CUSTOMER_KMS`. AWS Budgets must be able to publish to the encrypted alert topic under the `aws:SourceArn` condition the renderer writes.
+- **The CUR 2.0 export in a member account.** The render record states two prerequisites:
+  - an export created in the management account covers the whole organization;
+  - one created in a member account covers only that account's own cost and usage.
+
+  Confirm that member-account behavior, and the first delivery, in your DEV account.
+- **Cost-allocation tag activation.** It runs only in the AWS Organizations management account or a standalone account. It works only for keys that already appear in that account's cost-allocation tags, which can take up to 24 hours after a resource is tagged. It is off by default (`activateCostAllocationTags: false`), and the emulator cannot answer `ListCostAllocationTags`, so the status reports it `UNKNOWN`.
+- **A home region other than `us-east-1`.** The Data Exports and Cost Explorer resources use a `billing` provider in `us-east-1`, while the rest stays in the home region. The emulation did not cover that split (#376 review N3).
+- **The CLI path itself:** the build command, `prepare`, `seal`, `apply` and `./alz cost status` against a real account (#376 review N3).
+
+### Known limits from the #376 review
+
+- **N4: no guided entry yet.** No guided `./alz` or console entry runs the cost build. Run the `node` command above at the terminal.
+- **N5: two unit identities.** The unit tags in the build's preview differ from the project's `unit_tags`. Only the project's tags count: `prepare` prints them, and `seal` verifies them in the plan.
+
 ## Stop and recovery
 
 - **Kill switch.** `touch .runs/apply/KILL` stops `seal`, `qualify` and `apply`, and stops a running apply: Terraform gets a SIGINT, held until its first resource line, then its process group gets a SIGKILL after 60 seconds. `./alz apply status` reports the switch. Only you remove the file.
@@ -421,5 +498,6 @@ These stay unverified until this run (`docs/act-pilot-apply.md`, "Still UNVERIFI
 
 - Owner direction: #39, 6508815426 (item 5) and 6486480658 (track B).
 - `config/act-pilot-contract.aws-dev.example.json`; `src/apply/contract.ts`; `src/apply/unit.ts`; `src/apply/driver.ts`; `src/apply/prepare.ts`; `src/apply/providers/aws.ts`; `src/cli/ui-channel.ts`; `src/evidence-runner/act.ts`.
+- `docs/cost-baseline-deploy.md`; `config/cost.example.json`; `config/act-pilot-contract.aws-dev-limits.example.json`.
 - `docs/act-pilot-aws-terraform-g0.md`; `docs/act-pilot-apply.md`; `docs/act-pilot-bootstrap.md`; `docs/act-pilot-identity-delivery.md`; `docs/act-dev-1.md`; `docs/aws-d4-qualification.md`; `docs/evidence-runner.md`.
 - `bootstrap/aws` (`variables.tf`, `outputs.tf`, `terraform.tfvars.example`); `qualification/aws/act-dev1-canary`.
