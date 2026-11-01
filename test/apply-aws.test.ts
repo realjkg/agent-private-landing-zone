@@ -1092,6 +1092,52 @@ test("provisioning limits (AWS Terraform, owner direction 6536926009): the seal 
     ["a size unknown until apply", [create("aws_instance.later", { region: AWS_REGION }, { instance_type: true })], /does not show its size/],
   ] as const) await refuses(label, resources as unknown as unknown[], said);
   await seals("an empty plan is within every maximum", []);
+  // Review 6561233592, B1: Optional+Computed region arguments, from a REAL `show -json` (test/fixtures/plan-shapes; SYNTHETIC input,
+  // no AWS call). Left unset they plan unknown on every create; unset in the configuration is the resource's own region.
+  const real = JSON.parse(readFileSync(fileURLToPath(new URL("./fixtures/plan-shapes/aws-cross-region-6.68.0.json", import.meta.url)), "utf8")) as
+    { resource_changes: { address: string; change: { after: Record<string, unknown>; after_unknown: Record<string, unknown> } }[]; configuration_root_module: unknown };
+  const realChange = (address: string) => {
+    const found = real.resource_changes.find((change) => change.address === address);
+    assert.ok(found, address);
+    // The unit tags are judged on their own (unitOfPlan); the real plan's computed `tags_all` is set aside so this judges regions only.
+    const { tags: _tags, tags_all: _all, ...after } = found.change.after;
+    const { tags: _t, tags_all: _a, ...unknown } = found.change.after_unknown;
+    return { ...found, change: { ...found.change, after, after_unknown: unknown } };
+  };
+  const realPlan = async (address: string, configuration: unknown = real.configuration_root_module) => {
+    const w = world(contract);
+    behave({ showOnlyConfigured: true, showResources: [realChange(address)] as never, ...(configuration === undefined ? {} : { showConfigurationExtra: { root_module: configuration } }) });
+    return sealRefusal(w, "DEV");
+  };
+  const realSeals = async (address: string) => { const sealed = await realPlan(address); assert.ok(sealed.ok, address + ": " + JSON.stringify(sealed)); };
+  const realRefuses = async (address: string, said: RegExp, configuration?: unknown) => {
+    const refusal = await realPlan(address, ...(configuration === undefined ? [] : [configuration]));
+    refused(refusal as never, "RESOURCE_NOT_IN_LIMITS");
+    assert.match((refusal as { message: string }).message, said, address);
+  };
+  // The real shape of an unset witness and peer region: absent from `after`, `true` in `after_unknown`, absent from the configuration.
+  assert.equal(realChange("aws_dynamodb_table.plain").change.after_unknown.global_table_witness, true);
+  assert.equal(realChange("aws_vpc_peering_connection.same").change.after_unknown.peer_region, true);
+  await realSeals("aws_dynamodb_table.plain");
+  await realSeals("aws_vpc_peering_connection.same");
+  await realSeals("module.m[0].aws_vpc_peering_connection.inmod[\"a\"]");
+  // Set, and unknown until apply or outside the limits: refused.
+  await realRefuses("aws_dynamodb_table.witness_unknown", /does not show a region it reaches/);
+  await realRefuses("aws_dynamodb_table.witness_far", /it reaches region eu-west-3/);
+  await realRefuses("aws_vpc_peering_connection.unknown", /does not show a region it reaches/);
+  await realRefuses("aws_vpc_peering_connection.far", /it reaches region ap-south-1/);
+  // A dynamic witness is not in the configuration; its values still are in the plan, and are judged.
+  await realRefuses("aws_dynamodb_table.witness_dynamic", /it reaches region eu-west-3/);
+  await realRefuses("aws_dynamodb_table.witness_dyn_unknown_val", /does not show a region it reaches/);
+  // The documented gap: a dynamic witness whose for_each is unknown until apply plans exactly like an unset one, and is not judged.
+  assert.deepEqual([realChange("aws_dynamodb_table.witness_dyn_unknown_each").change.after.global_table_witness, realChange("aws_dynamodb_table.witness_dyn_unknown_each").change.after_unknown.global_table_witness], [undefined, true]);
+  await realSeals("aws_dynamodb_table.witness_dyn_unknown_each");
+  // Fail closed: with no configuration, or one that does not name the resource, an unknown region argument is refused.
+  await realRefuses("aws_dynamodb_table.plain", /does not show a region it reaches/, { resources: [] });
+  await realRefuses("aws_vpc_peering_connection.same", /does not show a region it reaches/, { resources: [] });
+  await realRefuses("module.m[0].aws_vpc_peering_connection.inmod[\"a\"]", /does not show a region it reaches/, { resources: (real.configuration_root_module as { resources: unknown[] }).resources });
+  // N2: a block absent from the values but unknown in `after_unknown` (a shape Terraform does not emit) is still unknown.
+  await refuses("a secret replica block absent but unknown", [create("aws_secretsmanager_secret.s", { region: AWS_REGION }, { replica: [true] })], /does not show a region it reaches/);
   // Without `regions`, a resource with no region is not judged by region.
   const unregioned = limitsContract({ resources: [{ type: "aws_cloudwatch_log_group", max: 2 }] });
   { const sealed = await plan([create("aws_cloudwatch_log_group.x")], unregioned); assert.ok(sealed.ok, JSON.stringify(sealed)); }

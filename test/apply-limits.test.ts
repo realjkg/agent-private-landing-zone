@@ -8,7 +8,7 @@ import { assertCanary, assertLimits, assertProvisioning, canaryRefusal, familyOf
 import { checkDraftContract, contractCheckLines } from "../src/apply/contract-check.js";
 import { authorizeContract, inspectPilotContract, pilotTargetSha256, repoPaths } from "../src/apply/contract.js";
 import { codeOf, reasonOf } from "../src/apply/engine.js";
-import { CROSS_REGION_ATTRIBUTES, isGlobalAwsType } from "../src/apply/engines/terraform.js";
+import { CROSS_REGION_ATTRIBUTES, isGlobalAwsType, UNSET_MEANS_OWN_REGION } from "../src/apply/engines/terraform.js";
 import type { PilotContract, PilotLimits, PilotTarget } from "../src/apply/types.js";
 import { CODE_COPY } from "../src/operator-ui/app/pilot/pilot-copy.js";
 import { AWS_REGION, awsContractJson } from "./helpers/apply-fixtures.js";
@@ -240,6 +240,10 @@ test("the reviewed global AWS types carry no region of their own; a regional fam
   assert.deepEqual(CROSS_REGION_ATTRIBUTES.aws_ecr_replication_configuration, [["replication_configuration", "rule", "destination", "region"]]);
   assert.deepEqual(CROSS_REGION_ATTRIBUTES.aws_dynamodb_global_table, [["replica", "region_name"]]);
   assert.deepEqual(CROSS_REGION_ATTRIBUTES.aws_dynamodb_table, [["replica", "region_name"], ["global_table_witness", "region_name"]]);
+  // Review 6561233592, B1: only the reviewed Optional+Computed arguments read "unset in the configuration" as the resource's own region,
+  // and each one is the first step of a path in the table.
+  assert.deepEqual(UNSET_MEANS_OWN_REGION, { aws_dynamodb_table: ["global_table_witness"], aws_vpc_peering_connection: ["peer_region"], aws_cloudformation_stack_set_instance: ["stack_set_instance_region"] });
+  for (const [type, heads] of Object.entries(UNSET_MEANS_OWN_REGION)) for (const head of heads) assert.ok(CROSS_REGION_ATTRIBUTES[type]!.some((path) => path[0] === head), type + " " + head);
   limitsStop({ regions: ["us-east-1"], resources: [{ type: "aws_dynamodb_table", max: 1 }] }, [create("aws_dynamodb_table.t", { region: "us-east-1", otherRegions: ["eu-west-1"] })], /it reaches region eu-west-1/, "other region");
   limitsStop({ regions: ["us-east-1"], resources: [{ type: "aws_dynamodb_table", max: 1 }] }, [create("aws_dynamodb_table.t", { region: "us-east-1", otherRegions: [null] })], /does not show a region it reaches/, "unknown other region");
   assertLimits({ resources: [{ type: "aws_dynamodb_table", max: 1 }] }, [create("aws_dynamodb_table.t", { region: "us-east-1", otherRegions: ["eu-west-1", null] })], "plan");
