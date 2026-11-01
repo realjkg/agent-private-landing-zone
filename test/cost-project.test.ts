@@ -225,3 +225,87 @@ test("a failing engine step stops the preview with the step's name and no eviden
     /ACTUAL_TERRAFORM_TOOL_FAILURE:init/);
   assert.ok(!existsSync(join(folder, "preview-evidence.json")));
 });
+
+// --- the build driver's text (it runs at module top level, so it is read, not imported) --------------------------------
+
+test("real-private-build: two argv forms only, the shared driver for both scenarios, the config read before any engine, the project last", () => {
+  const text = readFileSync("src/cli/real-private-build.ts", "utf8");
+  assert.ok(!/spawnSync|normalizeTerraformPlan/.test(text), "no second Terraform execution path in the CLI");
+  assert.match(text, /args\.length === 1 && args\[0\] === "--live-aws-read-only"\) return "LOG_GROUP"/);
+  assert.match(text, /args\[1\] === "--scenario" && args\[2\] === "cost-baseline"\) return "COST_BASELINE"/);
+  assert.match(text, /throw new Error\("REAL_PRIVATE_BUILD_REQUIRES_EXPLICIT_LIVE_AWS_MODE"\)/);
+  assert.match(text, /validate: async \(hcl\) => logGroupPreview\(folder, hcl, sourceCommit\)/);
+  assert.match(text, /validateCostBaseline: async \(hcl: string\) => costBaselinePreview\(folder, hcl, sourceCommit, lock\), costConfig/);
+  const order = ["localCostConfig()", "runAgentKernel(", '"qualification.json"', "writeCostBaselineProject({"].map((needle) => text.indexOf(needle));
+  assert.ok(order.every((at) => at > 0) && order.every((at, i) => i === 0 || at > order[i - 1]!), "config, then the build, then evidence, then the project: " + order);
+  assert.ok(!/\bapply\b.*terraform|"apply"/.test(text.replace(/\.\/alz apply prepare/g, "")), "the driver never names a Terraform apply");
+});
+
+// --- the journey's emulator helper (test/helpers/cost-emulator.cjs), without moto ----------------------------------------
+
+test("cost emulator helper: refuses every unlisted host, and its Budgets and Data Exports stub round-trips through the proxy over TLS", async () => {
+  const { execFileSync, spawn } = await import("node:child_process");
+  const https = await import("node:https");
+  const http = await import("node:http");
+  const dir = fresh("emu");
+  mkdirSync(dir, { recursive: true });
+  const key = join(dir, "key.pem"), cert = join(dir, "cert.pem");
+  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-keyout", key, "-out", cert, "-subj", "/CN=t",
+    "-addext", "subjectAltName=DNS:budgets.amazonaws.com,DNS:bcm-data-exports.us-east-1.api.aws,DNS:emulator.invalid"], { stdio: "ignore" });
+  const log = join(dir, "connects.log");
+  const helper = spawn(process.execPath, ["test/helpers/cost-emulator.cjs", "1", key, cert, dir, log], { stdio: ["ignore", "pipe", "inherit"] });
+  try {
+    const ports = await new Promise<{ proxyPort: number; stubPort: number }>((done, fail) => {
+      helper.stdout!.once("data", (chunk: Buffer) => done(JSON.parse(chunk.toString()) as { proxyPort: number; stubPort: number }));
+      helper.once("exit", () => fail(new Error("helper exited")));
+    });
+    const connect = (target: string) => new Promise<{ status: number; socket: import("node:net").Socket }>((done, fail) => {
+      const req = http.request({ host: "127.0.0.1", port: ports.proxyPort, method: "CONNECT", path: target });
+      req.on("connect", (res, socket) => done({ status: res.statusCode ?? 0, socket }));
+      req.on("error", fail);
+      req.end();
+    });
+    for (const refused of ["example.com:443", "sts.us-east-2.amazonaws.com:443", "budgets.amazonaws.com:80", "checkpoint-api.hashicorp.com:443"]) {
+      const answer = await connect(refused);
+      assert.equal(answer.status, 403, refused);
+      answer.socket.destroy();
+    }
+    const call = async (host: string, target: string, body: unknown): Promise<{ status: number; json: Record<string, unknown> }> => {
+      const tunnel = await connect(host + ":443");
+      assert.equal(tunnel.status, 200, host);
+      return new Promise((done, fail) => {
+        const text = JSON.stringify(body);
+        const req = https.request({ socket: tunnel.socket, servername: host, ca: readFileSync(cert), method: "POST", path: "/", agent: false,
+          headers: { host, "x-amz-target": target, "content-type": "application/x-amz-json-1.1", "content-length": String(Buffer.byteLength(text)) } }, (res) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (c: Buffer) => chunks.push(c));
+          res.on("end", () => { tunnel.socket.destroy(); done({ status: res.statusCode ?? 0, json: JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown> }); });
+        });
+        req.on("error", fail);
+        req.end(text);
+      });
+    };
+    const budget = { BudgetName: "alz-cost-baseline", BudgetType: "COST", BudgetLimit: { Amount: "250.00", Unit: "USD" }, TimeUnit: "MONTHLY" };
+    const notification = { NotificationType: "ACTUAL", ComparisonOperator: "GREATER_THAN", Threshold: 80, ThresholdType: "PERCENTAGE" };
+    assert.equal((await call("budgets.amazonaws.com", "AWSBudgetServiceGateway.CreateBudget", { AccountId: "111111111111", Budget: budget, ResourceTags: [{ Key: "owner", Value: "x" }] })).status, 200);
+    assert.equal((await call("budgets.amazonaws.com", "AWSBudgetServiceGateway.CreateBudget", { AccountId: "111111111111", Budget: budget })).status, 400, "a duplicate is refused");
+    assert.equal((await call("budgets.amazonaws.com", "AWSBudgetServiceGateway.CreateNotification", { AccountId: "111111111111", BudgetName: budget.BudgetName, Notification: notification,
+      Subscribers: [{ SubscriptionType: "SNS", Address: "arn:aws:sns:us-east-1:111111111111:t" }] })).status, 200);
+    const subscribers = await call("budgets.amazonaws.com", "AWSBudgetServiceGateway.DescribeSubscribersForNotification", { AccountId: "111111111111", BudgetName: budget.BudgetName, Notification: notification });
+    assert.deepEqual(subscribers.json.Subscribers, [{ SubscriptionType: "SNS", Address: "arn:aws:sns:us-east-1:111111111111:t" }]);
+    const described = await call("budgets.amazonaws.com", "AWSBudgetServiceGateway.DescribeBudget", { AccountId: "111111111111", BudgetName: budget.BudgetName });
+    assert.ok(!("CalculatedSpend" in (described.json.Budget as object)), "a new budget reports no spend, never zero");
+    const missing = await call("budgets.amazonaws.com", "AWSBudgetServiceGateway.DescribeBudget", { AccountId: "222222222222", BudgetName: budget.BudgetName });
+    assert.equal(missing.json.__type, "NotFoundException");
+    const unknown = await call("budgets.amazonaws.com", "AWSBudgetServiceGateway.CreateBudgetAction", {});
+    assert.equal(unknown.status, 400, "an operation the stub does not implement is refused, never answered");
+    const created = await call("bcm-data-exports.us-east-1.api.aws", "AWSBillingAndCostManagementDataExports.CreateExport", { Export: { Name: "alz-cur2" } });
+    assert.match(String(created.json.ExportArn), /^arn:aws:bcm-data-exports:us-east-1:[0-9]{12}:export\/alz-cur2-/);
+    const executions = await call("bcm-data-exports.us-east-1.api.aws", "AWSBillingAndCostManagementDataExports.ListExecutions", { ExportArn: created.json.ExportArn });
+    assert.deepEqual(executions.json.Executions, [], "the stub's export never delivers");
+    const logged = readFileSync(log, "utf8");
+    assert.match(logged, /CONNECT example\.com:443 REFUSED/);
+  } finally {
+    helper.kill("SIGKILL");
+  }
+});

@@ -76,7 +76,7 @@ const TOKEN_CANARY = "emulated-not-a-real-token-CANARY_WEB_IDENTITY";
 const POLICY = "pilot-policy-2026-11-01";
 const ZIP = "terraform-provider-aws_6.68.0_linux_amd64.zip";
 /** Every name the emulator answers; the certificate covers exactly these. */
-const SANS = ["sts.us-east-1.amazonaws.com", "sns.us-east-1.amazonaws.com", "tagging.us-east-1.amazonaws.com", "*.s3.us-east-1.amazonaws.com",
+const SANS = ["sts.us-east-1.amazonaws.com", "sns.us-east-1.amazonaws.com", "tagging.us-east-1.amazonaws.com", "*.s3.us-east-1.amazonaws.com", "*.s3.amazonaws.com",
   "*.s3-control.us-east-1.amazonaws.com", "budgets.amazonaws.com", "bcm-data-exports.us-east-1.api.aws", "registry.terraform.io",
   "releases.hashicorp.com", "emulator.invalid"];
 
@@ -281,7 +281,8 @@ describe("EMULATED cost baseline journey: real Terraform and aws provider, moto 
     assert.ok(!("path" in refusal), "no sealed plan path is returned");
   });
 
-  it("EMULATED journey: prepare, seal under the example's limits, approve, apply, then the cost status read back through the emulator", async () => {
+  // Bounded: a host the emulator does not serve makes the provider retry, so the step fails here instead of waiting forever.
+  it("EMULATED journey: prepare, seal under the example's limits, approve, apply, then the cost status read back through the emulator", { timeout: 15 * 60_000 }, async () => {
     writeLimitsContract(EXAMPLE_LIMITS);
     const project = await preparedProject();
     const sealed = await seal(project);

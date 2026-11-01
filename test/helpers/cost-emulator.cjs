@@ -20,6 +20,8 @@ const log = (line) => fs.appendFileSync(logFile, line + "\n");
 
 const PROVIDER = { version: "6.68.0", zip: "terraform-provider-aws_6.68.0_linux_amd64.zip", sums: "terraform-provider-aws_6.68.0_SHA256SUMS" };
 const MOTO_HOSTS = [/^sts\.us-east-1\.amazonaws\.com$/, /^sns\.us-east-1\.amazonaws\.com$/, /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.s3\.us-east-1\.amazonaws\.com$/,
+  // In us-east-1 the provider addresses a bucket at the legacy global endpoint.
+  /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.s3\.amazonaws\.com$/,
   /^[0-9]{12}\.s3-control\.us-east-1\.amazonaws\.com$/, /^tagging\.us-east-1\.amazonaws\.com$/];
 const STUB_HOSTS = new Set(["budgets.amazonaws.com", "bcm-data-exports.us-east-1.api.aws", "registry.terraform.io", "releases.hashicorp.com"]);
 
