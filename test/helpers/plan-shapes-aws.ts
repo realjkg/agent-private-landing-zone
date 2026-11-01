@@ -1,0 +1,816 @@
+/**
+ * Copied from a real `terraform show -json` (Terraform 1.16.5, hashicorp/aws 6.68.0 from a checksum-verified local mirror, fake static keys, every skip_* flag, the proxy at a closed port, plan -refresh=false; no AWS call). SYNTHETIC input for the seal judge; not provider qualification. Only the plan's resource_changes and configuration.root_module are kept (the sns topic the unknown values reference is dropped).
+ * Kept as a module (not a fixture file) so the affected-QA selector follows it to its tests through the import.
+ */
+export const AWS_CROSS_REGION_PLAN_6_68_0: {
+  resource_changes: { address: string; change: { after: Record<string, unknown>; after_unknown: Record<string, unknown> } }[];
+  configuration_root_module: { resources: unknown[]; module_calls?: Record<string, unknown> };
+} = {
+ "resource_changes": [
+  {
+   "address": "aws_dynamodb_table.plain",
+   "mode": "managed",
+   "type": "aws_dynamodb_table",
+   "name": "plain",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "create"
+    ],
+    "before": null,
+    "after": {
+     "attribute": [
+      {
+       "name": "id",
+       "type": "S"
+      }
+     ],
+     "billing_mode": "PAY_PER_REQUEST",
+     "deletion_protection_enabled": null,
+     "hash_key": "id",
+     "import_table": [],
+     "local_secondary_index": [],
+     "name": "plain",
+     "on_demand_throughput": [],
+     "range_key": null,
+     "region": "us-east-1",
+     "replica": [],
+     "restore_backup_arn": null,
+     "restore_date_time": null,
+     "restore_source_name": null,
+     "restore_source_table_arn": null,
+     "restore_to_latest_time": null,
+     "stream_enabled": null,
+     "table_class": null,
+     "tags": null,
+     "timeouts": null
+    },
+    "after_unknown": {
+     "arn": true,
+     "attribute": [
+      {}
+     ],
+     "global_secondary_index": true,
+     "global_table_witness": true,
+     "id": true,
+     "import_table": [],
+     "local_secondary_index": [],
+     "on_demand_throughput": [],
+     "point_in_time_recovery": true,
+     "read_capacity": true,
+     "replica": [],
+     "server_side_encryption": true,
+     "stream_arn": true,
+     "stream_label": true,
+     "stream_view_type": true,
+     "tags_all": true,
+     "ttl": true,
+     "warm_throughput": true,
+     "write_capacity": true
+    }
+   }
+  },
+  {
+   "address": "aws_dynamodb_table.witness_dyn_unknown_each",
+   "mode": "managed",
+   "type": "aws_dynamodb_table",
+   "name": "witness_dyn_unknown_each",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "create"
+    ],
+    "before": null,
+    "after": {
+     "attribute": [
+      {
+       "name": "id",
+       "type": "S"
+      }
+     ],
+     "billing_mode": "PAY_PER_REQUEST",
+     "deletion_protection_enabled": null,
+     "hash_key": "id",
+     "import_table": [],
+     "local_secondary_index": [],
+     "name": "dyneach",
+     "on_demand_throughput": [],
+     "range_key": null,
+     "region": "us-east-1",
+     "replica": [],
+     "restore_backup_arn": null,
+     "restore_date_time": null,
+     "restore_source_name": null,
+     "restore_source_table_arn": null,
+     "restore_to_latest_time": null,
+     "stream_enabled": null,
+     "table_class": null,
+     "tags": null,
+     "timeouts": null
+    },
+    "after_unknown": {
+     "arn": true,
+     "attribute": [
+      {}
+     ],
+     "global_secondary_index": true,
+     "global_table_witness": true,
+     "id": true,
+     "import_table": [],
+     "local_secondary_index": [],
+     "on_demand_throughput": [],
+     "point_in_time_recovery": true,
+     "read_capacity": true,
+     "replica": [],
+     "server_side_encryption": true,
+     "stream_arn": true,
+     "stream_label": true,
+     "stream_view_type": true,
+     "tags_all": true,
+     "ttl": true,
+     "warm_throughput": true,
+     "write_capacity": true
+    }
+   }
+  },
+  {
+   "address": "aws_dynamodb_table.witness_dyn_unknown_val",
+   "mode": "managed",
+   "type": "aws_dynamodb_table",
+   "name": "witness_dyn_unknown_val",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "create"
+    ],
+    "before": null,
+    "after": {
+     "attribute": [
+      {
+       "name": "id",
+       "type": "S"
+      }
+     ],
+     "billing_mode": "PAY_PER_REQUEST",
+     "deletion_protection_enabled": null,
+     "global_table_witness": [
+      {}
+     ],
+     "hash_key": "id",
+     "import_table": [],
+     "local_secondary_index": [],
+     "name": "dynval",
+     "on_demand_throughput": [],
+     "range_key": null,
+     "region": "us-east-1",
+     "replica": [],
+     "restore_backup_arn": null,
+     "restore_date_time": null,
+     "restore_source_name": null,
+     "restore_source_table_arn": null,
+     "restore_to_latest_time": null,
+     "stream_enabled": null,
+     "table_class": null,
+     "tags": null,
+     "timeouts": null
+    },
+    "after_unknown": {
+     "arn": true,
+     "attribute": [
+      {}
+     ],
+     "global_secondary_index": true,
+     "global_table_witness": [
+      {
+       "region_name": true
+      }
+     ],
+     "id": true,
+     "import_table": [],
+     "local_secondary_index": [],
+     "on_demand_throughput": [],
+     "point_in_time_recovery": true,
+     "read_capacity": true,
+     "replica": [],
+     "server_side_encryption": true,
+     "stream_arn": true,
+     "stream_label": true,
+     "stream_view_type": true,
+     "tags_all": true,
+     "ttl": true,
+     "warm_throughput": true,
+     "write_capacity": true
+    }
+   }
+  },
+  {
+   "address": "aws_dynamodb_table.witness_dynamic",
+   "mode": "managed",
+   "type": "aws_dynamodb_table",
+   "name": "witness_dynamic",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "create"
+    ],
+    "before": null,
+    "after": {
+     "attribute": [
+      {
+       "name": "id",
+       "type": "S"
+      }
+     ],
+     "billing_mode": "PAY_PER_REQUEST",
+     "deletion_protection_enabled": null,
+     "global_table_witness": [
+      {
+       "region_name": "eu-west-3"
+      }
+     ],
+     "hash_key": "id",
+     "import_table": [],
+     "local_secondary_index": [],
+     "name": "dyn",
+     "on_demand_throughput": [],
+     "range_key": null,
+     "region": "us-east-1",
+     "replica": [],
+     "restore_backup_arn": null,
+     "restore_date_time": null,
+     "restore_source_name": null,
+     "restore_source_table_arn": null,
+     "restore_to_latest_time": null,
+     "stream_enabled": null,
+     "table_class": null,
+     "tags": null,
+     "timeouts": null
+    },
+    "after_unknown": {
+     "arn": true,
+     "attribute": [
+      {}
+     ],
+     "global_secondary_index": true,
+     "global_table_witness": [
+      {}
+     ],
+     "id": true,
+     "import_table": [],
+     "local_secondary_index": [],
+     "on_demand_throughput": [],
+     "point_in_time_recovery": true,
+     "read_capacity": true,
+     "replica": [],
+     "server_side_encryption": true,
+     "stream_arn": true,
+     "stream_label": true,
+     "stream_view_type": true,
+     "tags_all": true,
+     "ttl": true,
+     "warm_throughput": true,
+     "write_capacity": true
+    }
+   }
+  },
+  {
+   "address": "aws_dynamodb_table.witness_far",
+   "mode": "managed",
+   "type": "aws_dynamodb_table",
+   "name": "witness_far",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "create"
+    ],
+    "before": null,
+    "after": {
+     "attribute": [
+      {
+       "name": "id",
+       "type": "S"
+      }
+     ],
+     "billing_mode": "PAY_PER_REQUEST",
+     "deletion_protection_enabled": null,
+     "global_table_witness": [
+      {
+       "region_name": "eu-west-3"
+      }
+     ],
+     "hash_key": "id",
+     "import_table": [],
+     "local_secondary_index": [],
+     "name": "far",
+     "on_demand_throughput": [],
+     "range_key": null,
+     "region": "us-east-1",
+     "replica": [],
+     "restore_backup_arn": null,
+     "restore_date_time": null,
+     "restore_source_name": null,
+     "restore_source_table_arn": null,
+     "restore_to_latest_time": null,
+     "stream_enabled": null,
+     "table_class": null,
+     "tags": null,
+     "timeouts": null
+    },
+    "after_unknown": {
+     "arn": true,
+     "attribute": [
+      {}
+     ],
+     "global_secondary_index": true,
+     "global_table_witness": [
+      {}
+     ],
+     "id": true,
+     "import_table": [],
+     "local_secondary_index": [],
+     "on_demand_throughput": [],
+     "point_in_time_recovery": true,
+     "read_capacity": true,
+     "replica": [],
+     "server_side_encryption": true,
+     "stream_arn": true,
+     "stream_label": true,
+     "stream_view_type": true,
+     "tags_all": true,
+     "ttl": true,
+     "warm_throughput": true,
+     "write_capacity": true
+    }
+   }
+  },
+  {
+   "address": "aws_dynamodb_table.witness_unknown",
+   "mode": "managed",
+   "type": "aws_dynamodb_table",
+   "name": "witness_unknown",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "create"
+    ],
+    "before": null,
+    "after": {
+     "attribute": [
+      {
+       "name": "id",
+       "type": "S"
+      }
+     ],
+     "billing_mode": "PAY_PER_REQUEST",
+     "deletion_protection_enabled": null,
+     "global_table_witness": [
+      {}
+     ],
+     "hash_key": "id",
+     "import_table": [],
+     "local_secondary_index": [],
+     "name": "unk",
+     "on_demand_throughput": [],
+     "range_key": null,
+     "region": "us-east-1",
+     "replica": [],
+     "restore_backup_arn": null,
+     "restore_date_time": null,
+     "restore_source_name": null,
+     "restore_source_table_arn": null,
+     "restore_to_latest_time": null,
+     "stream_enabled": null,
+     "table_class": null,
+     "tags": null,
+     "timeouts": null
+    },
+    "after_unknown": {
+     "arn": true,
+     "attribute": [
+      {}
+     ],
+     "global_secondary_index": true,
+     "global_table_witness": [
+      {
+       "region_name": true
+      }
+     ],
+     "id": true,
+     "import_table": [],
+     "local_secondary_index": [],
+     "on_demand_throughput": [],
+     "point_in_time_recovery": true,
+     "read_capacity": true,
+     "replica": [],
+     "server_side_encryption": true,
+     "stream_arn": true,
+     "stream_label": true,
+     "stream_view_type": true,
+     "tags_all": true,
+     "ttl": true,
+     "warm_throughput": true,
+     "write_capacity": true
+    }
+   }
+  },
+  {
+   "address": "aws_vpc_peering_connection.far",
+   "mode": "managed",
+   "type": "aws_vpc_peering_connection",
+   "name": "far",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "create"
+    ],
+    "before": null,
+    "after": {
+     "auto_accept": null,
+     "peer_region": "ap-south-1",
+     "peer_vpc_id": "vpc-22222222",
+     "region": "us-east-1",
+     "tags": null,
+     "timeouts": null,
+     "vpc_id": "vpc-11111111"
+    },
+    "after_unknown": {
+     "accept_status": true,
+     "accepter": true,
+     "id": true,
+     "peer_owner_id": true,
+     "requester": true,
+     "tags_all": true
+    }
+   }
+  },
+  {
+   "address": "aws_vpc_peering_connection.same",
+   "mode": "managed",
+   "type": "aws_vpc_peering_connection",
+   "name": "same",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "create"
+    ],
+    "before": null,
+    "after": {
+     "auto_accept": null,
+     "peer_vpc_id": "vpc-22222222",
+     "region": "us-east-1",
+     "tags": null,
+     "timeouts": null,
+     "vpc_id": "vpc-11111111"
+    },
+    "after_unknown": {
+     "accept_status": true,
+     "accepter": true,
+     "id": true,
+     "peer_owner_id": true,
+     "peer_region": true,
+     "requester": true,
+     "tags_all": true
+    }
+   }
+  },
+  {
+   "address": "aws_vpc_peering_connection.unknown",
+   "mode": "managed",
+   "type": "aws_vpc_peering_connection",
+   "name": "unknown",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "create"
+    ],
+    "before": null,
+    "after": {
+     "auto_accept": null,
+     "peer_vpc_id": "vpc-22222222",
+     "region": "us-east-1",
+     "tags": null,
+     "timeouts": null,
+     "vpc_id": "vpc-11111111"
+    },
+    "after_unknown": {
+     "accept_status": true,
+     "accepter": true,
+     "id": true,
+     "peer_owner_id": true,
+     "peer_region": true,
+     "requester": true,
+     "tags_all": true
+    }
+   }
+  },
+  {
+   "address": "module.m[0].aws_vpc_peering_connection.inmod[\"a\"]",
+   "module_address": "module.m[0]",
+   "mode": "managed",
+   "type": "aws_vpc_peering_connection",
+   "name": "inmod",
+   "index": "a",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "create"
+    ],
+    "before": null,
+    "after": {
+     "auto_accept": null,
+     "peer_vpc_id": "vpc-22222222",
+     "region": "us-east-1",
+     "tags": null,
+     "timeouts": null,
+     "vpc_id": "vpc-11111111"
+    },
+    "after_unknown": {
+     "accept_status": true,
+     "accepter": true,
+     "id": true,
+     "peer_owner_id": true,
+     "peer_region": true,
+     "requester": true,
+     "tags_all": true
+    }
+   }
+  }
+ ],
+ "configuration_root_module": {
+  "resources": [
+   {
+    "address": "aws_dynamodb_table.plain",
+    "mode": "managed",
+    "type": "aws_dynamodb_table",
+    "name": "plain",
+    "provider_config_key": "aws",
+    "expressions": {
+     "attribute": [
+      {
+       "name": {
+        "constant_value": "id"
+       },
+       "type": {
+        "constant_value": "S"
+       }
+      }
+     ],
+     "billing_mode": {
+      "constant_value": "PAY_PER_REQUEST"
+     },
+     "hash_key": {
+      "constant_value": "id"
+     },
+     "name": {
+      "constant_value": "plain"
+     }
+    },
+    "schema_version": 1
+   },
+   {
+    "address": "aws_dynamodb_table.witness_dyn_unknown_each",
+    "mode": "managed",
+    "type": "aws_dynamodb_table",
+    "name": "witness_dyn_unknown_each",
+    "provider_config_key": "aws",
+    "expressions": {
+     "attribute": [
+      {
+       "name": {
+        "constant_value": "id"
+       },
+       "type": {
+        "constant_value": "S"
+       }
+      }
+     ],
+     "billing_mode": {
+      "constant_value": "PAY_PER_REQUEST"
+     },
+     "hash_key": {
+      "constant_value": "id"
+     },
+     "name": {
+      "constant_value": "dyneach"
+     }
+    },
+    "schema_version": 1
+   },
+   {
+    "address": "aws_dynamodb_table.witness_dyn_unknown_val",
+    "mode": "managed",
+    "type": "aws_dynamodb_table",
+    "name": "witness_dyn_unknown_val",
+    "provider_config_key": "aws",
+    "expressions": {
+     "attribute": [
+      {
+       "name": {
+        "constant_value": "id"
+       },
+       "type": {
+        "constant_value": "S"
+       }
+      }
+     ],
+     "billing_mode": {
+      "constant_value": "PAY_PER_REQUEST"
+     },
+     "hash_key": {
+      "constant_value": "id"
+     },
+     "name": {
+      "constant_value": "dynval"
+     }
+    },
+    "schema_version": 1
+   },
+   {
+    "address": "aws_dynamodb_table.witness_dynamic",
+    "mode": "managed",
+    "type": "aws_dynamodb_table",
+    "name": "witness_dynamic",
+    "provider_config_key": "aws",
+    "expressions": {
+     "attribute": [
+      {
+       "name": {
+        "constant_value": "id"
+       },
+       "type": {
+        "constant_value": "S"
+       }
+      }
+     ],
+     "billing_mode": {
+      "constant_value": "PAY_PER_REQUEST"
+     },
+     "hash_key": {
+      "constant_value": "id"
+     },
+     "name": {
+      "constant_value": "dyn"
+     }
+    },
+    "schema_version": 1
+   },
+   {
+    "address": "aws_dynamodb_table.witness_far",
+    "mode": "managed",
+    "type": "aws_dynamodb_table",
+    "name": "witness_far",
+    "provider_config_key": "aws",
+    "expressions": {
+     "attribute": [
+      {
+       "name": {
+        "constant_value": "id"
+       },
+       "type": {
+        "constant_value": "S"
+       }
+      }
+     ],
+     "billing_mode": {
+      "constant_value": "PAY_PER_REQUEST"
+     },
+     "global_table_witness": [
+      {
+       "region_name": {
+        "constant_value": "eu-west-3"
+       }
+      }
+     ],
+     "hash_key": {
+      "constant_value": "id"
+     },
+     "name": {
+      "constant_value": "far"
+     }
+    },
+    "schema_version": 1
+   },
+   {
+    "address": "aws_dynamodb_table.witness_unknown",
+    "mode": "managed",
+    "type": "aws_dynamodb_table",
+    "name": "witness_unknown",
+    "provider_config_key": "aws",
+    "expressions": {
+     "attribute": [
+      {
+       "name": {
+        "constant_value": "id"
+       },
+       "type": {
+        "constant_value": "S"
+       }
+      }
+     ],
+     "billing_mode": {
+      "constant_value": "PAY_PER_REQUEST"
+     },
+     "global_table_witness": [
+      {
+       "region_name": {
+        "references": [
+         "aws_sns_topic.t.arn",
+         "aws_sns_topic.t"
+        ]
+       }
+      }
+     ],
+     "hash_key": {
+      "constant_value": "id"
+     },
+     "name": {
+      "constant_value": "unk"
+     }
+    },
+    "schema_version": 1
+   },
+   {
+    "address": "aws_vpc_peering_connection.far",
+    "mode": "managed",
+    "type": "aws_vpc_peering_connection",
+    "name": "far",
+    "provider_config_key": "aws",
+    "expressions": {
+     "peer_region": {
+      "constant_value": "ap-south-1"
+     },
+     "peer_vpc_id": {
+      "constant_value": "vpc-22222222"
+     },
+     "vpc_id": {
+      "constant_value": "vpc-11111111"
+     }
+    },
+    "schema_version": 0
+   },
+   {
+    "address": "aws_vpc_peering_connection.same",
+    "mode": "managed",
+    "type": "aws_vpc_peering_connection",
+    "name": "same",
+    "provider_config_key": "aws",
+    "expressions": {
+     "peer_vpc_id": {
+      "constant_value": "vpc-22222222"
+     },
+     "vpc_id": {
+      "constant_value": "vpc-11111111"
+     }
+    },
+    "schema_version": 0
+   },
+   {
+    "address": "aws_vpc_peering_connection.unknown",
+    "mode": "managed",
+    "type": "aws_vpc_peering_connection",
+    "name": "unknown",
+    "provider_config_key": "aws",
+    "expressions": {
+     "peer_region": {
+      "references": [
+       "aws_sns_topic.t.arn",
+       "aws_sns_topic.t"
+      ]
+     },
+     "peer_vpc_id": {
+      "constant_value": "vpc-22222222"
+     },
+     "vpc_id": {
+      "constant_value": "vpc-11111111"
+     }
+    },
+    "schema_version": 0
+   }
+  ],
+  "module_calls": {
+   "m": {
+    "source": "./mod",
+    "module": {
+     "resources": [
+      {
+       "address": "aws_vpc_peering_connection.inmod",
+       "mode": "managed",
+       "type": "aws_vpc_peering_connection",
+       "name": "inmod",
+       "provider_config_key": "aws",
+       "expressions": {
+        "peer_vpc_id": {
+         "constant_value": "vpc-22222222"
+        },
+        "vpc_id": {
+         "constant_value": "vpc-11111111"
+        }
+       },
+       "schema_version": 0
+      }
+     ]
+    }
+   }
+  }
+ }
+};

@@ -260,8 +260,9 @@ Run this on the execution host, in DEV only, with a fresh delivery and all twelv
 
 3. `qualify` asks for the target, `RUN PROJECT CODE` and `EMBED STATE_WRITE DEV`. It applies nothing. It runs:
    - `terraform version`;
-   - `init` and workspace selection, as STATE_WRITE;
+   - `init` and workspace selection, as STATE;
    - a throwaway plan as DISCOVERY, never stored;
+   - `init` and workspace selection again, as STATE_WRITE;
    - the state serial read, as STATE.
 
    **APPLY does not run during `qualify`.** So CloudTrail cannot show APPLY's provider access at this step. Expect to see:

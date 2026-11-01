@@ -280,7 +280,7 @@ const APPLY_PLAN_FILE = "alz-apply.tfplan";
 
 type Shown = {
   format_version?: unknown; errored?: unknown;
-  resource_changes?: { address?: string; type?: string; mode?: unknown; provider_name?: unknown; previous_address?: unknown; change?: { actions?: string[]; importing?: unknown; after?: unknown; after_unknown?: unknown } }[];
+  resource_changes?: { address?: string; type?: string; mode?: unknown; name?: unknown; module_address?: unknown; provider_name?: unknown; previous_address?: unknown; change?: { actions?: string[]; importing?: unknown; after?: unknown; after_unknown?: unknown } }[];
   output_changes?: Record<string, { actions?: string[] }>;
   configuration?: { provider_config?: Record<string, ProviderBlock>; root_module?: unknown };
   prior_state?: { values?: { root_module?: unknown } };
@@ -371,6 +371,7 @@ const sameActions = (actions: unknown, expected: readonly string[]): boolean =>
  */
 function assertPlanInCanary(document: Shown, pinned: PilotTarget): void {
   const entries: CanaryEntry[] = [];
+  const configured = configuredExpressions(document);
   for (const [index, found] of (Array.isArray(document.resource_changes) ? document.resource_changes : []).entries()) {
     const address = stripInvisible(typeof found?.address === "string" ? found.address : "terraform:unknown:" + index);
     const type = stripInvisible(typeof found?.type === "string" ? found.type : "unknown");
@@ -382,7 +383,7 @@ function assertPlanInCanary(document: Shown, pinned: PilotTarget): void {
     }
     const moved = typeof found?.previous_address === "string" && found.previous_address !== "";
     const creates = sameActions(actions, ["create"]) && !found?.change?.importing && !moved;
-    entries.push({ address, type, action: found?.change?.importing ? "import " + shown : moved ? "move " + shown : shown, creates, ...placementOf(found?.change, type) });
+    entries.push({ address, type, action: found?.change?.importing ? "import " + shown : moved ? "move " + shown : shown, creates, ...placementOf(found?.change, type, configured(found)) });
   }
   assertProvisioning(pinned, entries, "plan");
 }
@@ -403,11 +404,11 @@ const isUnknown = (value: unknown): boolean =>
  *   apply, empty or not text (review 6537650100, N2). When none is present: an AWS type is regional, and so null, unless it is a
  *   reviewed global type (`isGlobalAwsType`); a type of another provider is not judged by region (Azure's own location judge,
  *   `assertPlannedLocations`, holds its located types to the contract's location).
- * - `otherRegions`: the regions a resource reaches through its own arguments (`CROSS_REGION_ATTRIBUTES`: DynamoDB replicas, stack set
- *   instances, peering); unset is the resource's own region, unknown is null.
+ * - `otherRegions`: the regions a resource reaches through its own arguments (`CROSS_REGION_ATTRIBUTES`: DynamoDB, Secrets Manager
+ *   and ECR replicas, stack set instances, peering); unset is the resource's own region, unknown is null.
  * - `sizes`: the values of the type's size attribute (`TERRAFORM_SIZE_ATTRIBUTES`), null when unknown or not a list of names.
  */
-function placementOf(change: { after?: unknown; after_unknown?: unknown } | undefined, type: string): Pick<CanaryEntry, "region" | "otherRegions" | "sizes"> {
+function placementOf(change: { after?: unknown; after_unknown?: unknown } | undefined, type: string, expressions: Record<string, unknown> | undefined): Pick<CanaryEntry, "region" | "otherRegions" | "sizes"> {
   const after = isPlainRecord(change?.after) ? change.after : {};
   const unknown = isPlainRecord(change?.after_unknown) ? change.after_unknown : {};
   let region: string | null | undefined;
@@ -419,7 +420,7 @@ function placementOf(change: { after?: unknown; after_unknown?: unknown } | unde
     break;
   }
   if (region === undefined && type.startsWith("aws_") && !isGlobalAwsType(type)) region = null;
-  const otherRegions = crossRegionsOf(type, after, unknown);
+  const otherRegions = crossRegionsOf(type, after, unknown, expressions);
   const attribute = TERRAFORM_SIZE_ATTRIBUTES[type];
   let sizes: readonly string[] | null | undefined;
   if (attribute !== undefined) {
@@ -448,17 +449,69 @@ export const isGlobalAwsType = (type: string): boolean =>
 
 /**
  * The arguments through which one resource places infrastructure in another region (review 6537650100, N1): a reviewed table, judged
- * against the limits' `regions` beside the resource's own region. `[block, field]` reads the field in every element of a nested block.
- * Not covered, and documented as not judged: an S3 replication destination (a bucket ARN names no region).
+ * against the limits' `regions` beside the resource's own region. Each path is zero or more nested block names, then the field: a
+ * block's field is read in every element of the block (and of every block above it). Every path was checked against the
+ * hashicorp/aws 6.68.0 schema (`terraform providers schema -json`, 2026-11-01). Not covered, and documented as not judged: an S3
+ * replication destination (a bucket ARN names no region).
  */
-export const CROSS_REGION_ATTRIBUTES: Readonly<Record<string, readonly (readonly [string] | readonly [string, string])[]>> = {
-  aws_dynamodb_table: [["replica", "region_name"]],
+export const CROSS_REGION_ATTRIBUTES: Readonly<Record<string, readonly (readonly [string, ...string[]])[]>> = {
+  aws_dynamodb_table: [["replica", "region_name"], ["global_table_witness", "region_name"]],
+  aws_dynamodb_global_table: [["replica", "region_name"]],
+  aws_secretsmanager_secret: [["replica", "region"]],
+  aws_ecr_replication_configuration: [["replication_configuration", "rule", "destination", "region"]],
   aws_cloudformation_stack_set_instance: [["stack_set_instance_region"]],
   aws_vpc_peering_connection: [["peer_region"]],
   aws_ec2_transit_gateway_peering_attachment: [["peer_region"]],
 };
 
-function crossRegionsOf(type: string, after: Record<string, unknown>, unknown: Record<string, unknown>): (string | null)[] | undefined {
+/**
+ * The table's Optional+Computed arguments (hashicorp/aws 6.68.0): left unset, the provider fills them at apply, so the plan shows them
+ * unknown on every create although they mean the resource's own region (review 6561233592, B1). For these only, an argument the plan's
+ * configuration does not set, and that the plan shows absent and unknown as a whole, is the resource's own region. Set and unknown,
+ * or set outside the limits, is still refused. A `dynamic` block is not in `show -json`'s configuration: one whose `for_each` is
+ * unknown until apply plans exactly like an unset block, so for `global_table_witness` that one form is not judged (documented).
+ */
+export const UNSET_MEANS_OWN_REGION: Readonly<Record<string, readonly string[]>> = {
+  aws_dynamodb_table: ["global_table_witness"],
+  aws_vpc_peering_connection: ["peer_region"],
+  aws_cloudformation_stack_set_instance: ["stack_set_instance_region"],
+};
+
+/**
+ * Each managed resource's configured expressions from `show -json`'s `configuration` (every module through `module_calls`), found
+ * for a change by its module path (instance keys dropped), type and name. Undefined (read as configured, fail closed) when the
+ * configuration is absent or not the documented shape, the module address cannot be read, or two entries share the key.
+ */
+function configuredExpressions(document: Shown): (found: { module_address?: unknown; mode?: unknown; type?: unknown; name?: unknown } | undefined) => Record<string, unknown> | undefined {
+  const index = new Map<string, Record<string, unknown> | null>();
+  const visit = (module: unknown, path: string, depth: number): void => {
+    if (!isPlainRecord(module) || depth > MAX_MODULE_DEPTH) return;
+    for (const found of Array.isArray(module.resources) ? module.resources : []) {
+      if (!isPlainRecord(found) || found.mode !== "managed" || typeof found.type !== "string" || typeof found.name !== "string") continue;
+      const key = path + "|" + found.type + "|" + found.name;
+      index.set(key, index.has(key) || !isPlainRecord(found.expressions) ? null : found.expressions);
+    }
+    if (!isPlainRecord(module.module_calls)) return;
+    for (const [name, call] of Object.entries(module.module_calls)) if (isPlainRecord(call)) visit(call.module, path + "/" + name, depth + 1);
+  };
+  visit(document.configuration?.root_module, "", 0);
+  const MODULE_STEP = /^module\.([A-Za-z_][A-Za-z0-9_-]*)(?:\[(?:\d+|"(?:[^"\\]|\\.)*")\])?(?:\.|$)/;
+  return (found) => {
+    if (found?.mode !== "managed" || typeof found.type !== "string" || typeof found.name !== "string") return undefined;
+    let rest = found.module_address === undefined ? "" : typeof found.module_address === "string" ? found.module_address : undefined;
+    if (rest === undefined) return undefined;
+    let path = "";
+    while (rest !== "") {
+      const step = MODULE_STEP.exec(rest);
+      if (step === null) return undefined;
+      path += "/" + step[1];
+      rest = rest.slice(step[0].length);
+    }
+    return index.get(path + "|" + found.type + "|" + found.name) ?? undefined;
+  };
+}
+
+function crossRegionsOf(type: string, after: Record<string, unknown>, unknown: Record<string, unknown>, expressions: Record<string, unknown> | undefined): (string | null)[] | undefined {
   const paths = CROSS_REGION_ATTRIBUTES[type];
   if (paths === undefined) return undefined;
   const found: (string | null)[] = [];
@@ -468,20 +521,30 @@ function crossRegionsOf(type: string, after: Record<string, unknown>, unknown: R
     if (value === undefined || value === null || value === "") return;
     found.push(typeof value === "string" ? value : null);
   };
-  for (const path of paths) {
-    if (path.length === 1) { read(after[path[0]], unknown[path[0]]); continue; }
-    const [block, field] = path;
-    if (isUnknown(unknown[block]) && !Array.isArray(unknown[block])) { found.push(null); continue; }
-    const items = after[block];
-    if (items === undefined || items === null) continue;
-    if (!Array.isArray(items)) { found.push(null); continue; }
-    const unknownItems = Array.isArray(unknown[block]) ? unknown[block] as unknown[] : [];
+  // A block unknown as a whole (also when absent from the values: review 6561233592, N2), not a list, or with an element unknown or
+  // not an object, shows no region: null.
+  const walk = (node: Record<string, unknown>, nodeUnknown: Record<string, unknown>, path: readonly string[]): void => {
+    const [head, ...rest] = path as [string, ...string[]];
+    if (rest.length === 0) { read(node[head], nodeUnknown[head]); return; }
+    const blockUnknown = nodeUnknown[head];
+    const items = node[head];
+    if (items === undefined || items === null) { if (isUnknown(blockUnknown)) found.push(null); return; }
+    if (isUnknown(blockUnknown) && !Array.isArray(blockUnknown)) { found.push(null); return; }
+    if (!Array.isArray(items)) { found.push(null); return; }
+    const unknownItems = Array.isArray(blockUnknown) ? blockUnknown : [];
     items.forEach((item, index) => {
       const itemUnknown = unknownItems[index];
-      if (itemUnknown === true) { found.push(null); return; }
-      read(isPlainRecord(item) ? item[field] : undefined, isPlainRecord(itemUnknown) ? itemUnknown[field] : undefined);
-      if (!isPlainRecord(item)) found.push(null);
+      if (itemUnknown === true || !isPlainRecord(item)) { found.push(null); return; }
+      walk(item, isPlainRecord(itemUnknown) ? itemUnknown : {}, rest);
     });
+  };
+  const ownRegionWhenUnset = UNSET_MEANS_OWN_REGION[type] ?? [];
+  for (const path of paths) {
+    const head = path[0];
+    // Unset in the configuration, and shown absent and unknown as a whole: the provider's own default, the resource's own region.
+    if (ownRegionWhenUnset.includes(head) && expressions !== undefined && !Object.hasOwn(expressions, head)
+      && (after[head] === undefined || after[head] === null) && unknown[head] === true) continue;
+    walk(after, unknown, path);
   }
   return found;
 }

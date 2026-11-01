@@ -52,6 +52,8 @@ test("CDK: the attestation asks for describe-stacks reads only, never for a chan
   assert.match(text, /first observable at the seal and the first supervised DEV apply/);
   assert.doesNotMatch(text, /change set creation was by/);
   assert.doesNotMatch(text, /stack execution is by/);
+  // #368 review N3: a sign-in (AssumeRoleWithWebIdentity) is expected beside the reads; the writes are the decisive part.
+  assert.match(text, /Only if CloudTrail shows only those sign-ins \(AssumeRoleWithWebIdentity\) and reads, with no write by any role/);
 });
 
 test("Bicep: the attestation names the reads each identity made, and no what-if, create or delete", () => {
@@ -70,6 +72,9 @@ test("GCP API: the attestation says APPLY only signed in, and no topic was creat
   assert.match(text, /DISCOVERY\s+first-principal-0001\s+signed in and ran one Cloud Asset search; APPLY\s+second-principal-0002\s+only signed in, with no Pub\/Sub call/);
   assert.match(text, /no topic\s+was created or deleted in this run/);
   assert.doesNotMatch(text, /topic create and delete\s+APPLY/);
+  // #368 review N3: the search is a Data Access log (off by default); the always-on Admin Activity log, with no write, is decisive.
+  assert.match(text, /Cloud Asset search is a Data Access audit log entry, which is off by default/);
+  assert.match(text, /Only if the audit logs show only those sign-ins and reads, with no Admin Activity write/);
 });
 
 test("every engine's attestation ends by asking for the typed phrase, and none claims a mutation happened during qualify", () => {

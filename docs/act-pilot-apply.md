@@ -222,12 +222,17 @@ Owner direction 6536926009 (cost and visibility, plan item 3): a provisioning li
     - An `aws_` type with no region is refused, unless it is on the reviewed global list (`isGlobalAwsType`, `src/apply/engines/terraform.ts`). The list is service prefixes: IAM, Organizations, Budgets, Cost Explorer, CUR, Data Exports, Billing, Cost Optimization Hub, CloudFront, Route 53 (not Route 53 Resolver), Shield, Global Accelerator, Account and WAF Classic.
     - A global type missing from the list is refused until it joins by review, so the list fails closed.
     - A type of another provider with no region is not judged by region. Azure's own location judge already holds its located types to the contract's location.
-  - **Arguments that reach another region.** `regions` judges each resource's own region and, beyond that, a small reviewed table of arguments (`CROSS_REGION_ATTRIBUTES`):
-    - `aws_dynamodb_table` `replica[].region_name`;
+  - **Arguments that reach another region.** `regions` judges each resource's own region and, beyond that, a small reviewed table of arguments (`CROSS_REGION_ATTRIBUTES`). Each path was checked against the hashicorp/aws 6.68.0 schema (`terraform providers schema -json`, 2026-11-01):
+    - `aws_dynamodb_table` `replica[].region_name` and `global_table_witness[].region_name`;
+    - `aws_dynamodb_global_table` (the legacy 2017 global table) `replica[].region_name`;
+    - `aws_secretsmanager_secret` `replica[].region`;
+    - `aws_ecr_replication_configuration` `replication_configuration[].rule[].destination[].region`;
     - `aws_cloudformation_stack_set_instance` `stack_set_instance_region`;
     - `aws_vpc_peering_connection` and `aws_ec2_transit_gateway_peering_attachment` `peer_region`.
     
-    Each value set must be in the list, and one unknown until apply is refused. An unset value means the resource's own region.
+    Each value set must be in the list. A value unknown until apply is refused, and so is a nested block unknown as a whole. An unset value means the resource's own region.
+
+    Three of these are Optional+Computed in the schema: `global_table_witness`, the peering `peer_region` and `stack_set_instance_region`. Left unset, the provider fills them at apply, so the plan shows them unknown on every create. For these only, an argument that the plan's own configuration (`show -json` `configuration`) does not set, and that the plan shows absent and unknown as a whole, is read as the resource's own region. So a plain DynamoDB table and a same-region peering seal. Set and unknown, or set outside the list, is still refused. A resource the configuration does not name, or names twice, is read as configured, which fails closed. One form is not judged: a `dynamic "global_table_witness"` block whose `for_each` is unknown until apply. `show -json` leaves `dynamic` blocks out of the configuration, so it plans exactly like an unset witness. A `dynamic` witness with a known `for_each` is judged from its planned values. (`aws_cloudformation_stack_set_instance` is a stack container type, which the AWS provider judge refuses anyway.)
   - **Not judged by region.** An S3 replication destination (`aws_s3_bucket_replication_configuration`): its destination is a bucket ARN, which names no region. Any other cross-region argument outside the table is not judged either. Every type must still be listed in `resources`, so the owner sees each one.
   - CDK, Bicep and GCP API-native create in the target's own region, which the contract check above already holds to the list.
 - **Sizes and families.** Every value of the type's size attribute must be one of `sizes`, or belong to one of `families`. A size's family is everything before its last dot: `t3.micro` is in `t3`, and `db.r6g.large` is in `db.r6g`. A size with no dot (`Standard_B2s`, `e2-medium`) matches only by name. A size the plan does not show is refused.

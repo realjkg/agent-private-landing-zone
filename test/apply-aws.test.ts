@@ -22,6 +22,7 @@ import { targetString } from "../src/cli/teardown-driver.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { buildChildEnvironment } from "../src/tools/child-env.js";
 import { deliverSession } from "./helpers/token-delivery-fixtures.js";
+import { AWS_CROSS_REGION_PLAN_6_68_0 } from "./helpers/plan-shapes-aws.js";
 import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
 import { SOURCE_COMMIT,
   AWS_DEV_TARGET, AWS_PROD_TARGET, AWS_QA_TARGET, AWS_REGION, ENGINE_VERSION, NOW, POLICY, awsContractJson, awsIdentityEnv, awsRoleArn, awsTargetOf,
@@ -1029,7 +1030,8 @@ test("provisioning limits (AWS Terraform, owner direction 6536926009): the seal 
   const contract = limitsContract({
     regions: [AWS_REGION, "us-east-2"],
     resources: [{ type: "aws_cloudwatch_log_group", max: 2 }, { type: "aws_instance", max: 1, families: ["t3"] }, { type: "aws_eks_node_group", max: 1, families: ["t3"] },
-      { type: "aws_budgets_budget", max: 1 }, { type: "aws_dynamodb_table", max: 1 }, { type: "aws_vpc_peering_connection", max: 1 }],
+      { type: "aws_budgets_budget", max: 1 }, { type: "aws_dynamodb_table", max: 1 }, { type: "aws_vpc_peering_connection", max: 1 },
+      { type: "aws_secretsmanager_secret", max: 1 }, { type: "aws_ecr_replication_configuration", max: 1 }, { type: "aws_dynamodb_global_table", max: 1 }],
   });
   // Only the resources each case names (no default log group), so every planned value is the case's own.
   const plan = async (resources: unknown[], over: unknown = contract) => {
@@ -1063,6 +1065,25 @@ test("provisioning limits (AWS Terraform, owner direction 6536926009): the seal 
   await refuses("a replica region unknown until apply", [create("aws_dynamodb_table.t", { region: AWS_REGION, replica: [{}] }, { replica: [{ region_name: true }] })], /does not show a region it reaches/);
   await seals("a same-region peering", [create("aws_vpc_peering_connection.p", { region: AWS_REGION })]);
   await refuses("a peer in another region", [create("aws_vpc_peering_connection.p", { region: AWS_REGION, peer_region: "ap-south-1" })], /it reaches region ap-south-1/);
+  // HYG-1: Secrets Manager replicas, ECR replication destinations (three blocks deep), legacy DynamoDB global table replicas and a
+  // DynamoDB witness (hashicorp/aws 6.68.0 schema paths).
+  await seals("a secret replica in an allowed region", [create("aws_secretsmanager_secret.s", { region: AWS_REGION, replica: [{ region: "us-east-2" }] }, { replica: [{}] })]);
+  await refuses("a secret replica in another region", [create("aws_secretsmanager_secret.s", { region: AWS_REGION, replica: [{ region: "eu-central-1" }] }, { replica: [{}] })], /it reaches region eu-central-1/);
+  await refuses("a secret replica region unknown until apply", [create("aws_secretsmanager_secret.s", { region: AWS_REGION, replica: [{}] }, { replica: [{ region: true }] })], /does not show a region it reaches/);
+  await refuses("secret replicas unknown as a whole", [create("aws_secretsmanager_secret.s", { region: AWS_REGION }, { replica: true })], /does not show a region it reaches/);
+  await seals("a secret with no replica", [create("aws_secretsmanager_secret.s", { region: AWS_REGION, replica: [] }, { replica: [] })]);
+  const ecr = (destinations: unknown[], unknownDestinations: unknown[]) => create("aws_ecr_replication_configuration.r", {
+    region: AWS_REGION, replication_configuration: [{ rule: [{ destination: destinations, repository_filter: [] }] }],
+  }, { replication_configuration: [{ rule: [{ destination: unknownDestinations, repository_filter: [] }] }] });
+  await seals("an ECR destination in an allowed region", [ecr([{ region: "us-east-2", registry_id: "123456789012" }], [{}])]);
+  await refuses("an ECR destination in another region", [ecr([{ region: "us-east-2", registry_id: "123456789012" }, { region: "ap-northeast-1", registry_id: "123456789012" }], [{}, {}])], /it reaches region ap-northeast-1/);
+  await refuses("an ECR destination region unknown until apply", [ecr([{ registry_id: "123456789012" }], [{ region: true }])], /does not show a region it reaches/);
+  await refuses("ECR rules unknown as a whole", [create("aws_ecr_replication_configuration.r", { region: AWS_REGION, replication_configuration: [{}] }, { replication_configuration: [{ rule: true }] })], /does not show a region it reaches/);
+  await seals("a legacy global table replica in an allowed region", [create("aws_dynamodb_global_table.g", { region: AWS_REGION, replica: [{ region_name: AWS_REGION }, { region_name: "us-east-2" }] }, { replica: [{}, {}] })]);
+  await refuses("a legacy global table replica in another region", [create("aws_dynamodb_global_table.g", { region: AWS_REGION, replica: [{ region_name: "sa-east-1" }] }, { replica: [{}] })], /it reaches region sa-east-1/);
+  await refuses("a legacy global table replica region unknown until apply", [create("aws_dynamodb_global_table.g", { region: AWS_REGION, replica: [{}] }, { replica: [{ region_name: true }] })], /does not show a region it reaches/);
+  await refuses("a DynamoDB witness in another region", [create("aws_dynamodb_table.t", { region: AWS_REGION, global_table_witness: [{ region_name: "eu-west-3" }] }, { global_table_witness: [{}] })], /it reaches region eu-west-3/);
+  await refuses("a DynamoDB witness region unknown until apply", [create("aws_dynamodb_table.t", { region: AWS_REGION, global_table_witness: [{}] }, { global_table_witness: [{ region_name: true }] })], /does not show a region it reaches/);
   for (const [label, resources, said] of [
     ["a type not allowed", [create("aws_iam_role.app")], /aws_iam_role\.app: type aws_iam_role is not in the provisioning limits/],
     ["a count over its maximum", ["a", "b", "c"].map((n) => create("aws_cloudwatch_log_group." + n, { region: AWS_REGION })), /aws_cloudwatch_log_group: the plan creates 3, the provisioning limits allow at most 2/],
@@ -1072,6 +1093,51 @@ test("provisioning limits (AWS Terraform, owner direction 6536926009): the seal 
     ["a size unknown until apply", [create("aws_instance.later", { region: AWS_REGION }, { instance_type: true })], /does not show its size/],
   ] as const) await refuses(label, resources as unknown as unknown[], said);
   await seals("an empty plan is within every maximum", []);
+  // Review 6561233592, B1: Optional+Computed region arguments, from a REAL `show -json` (test/helpers/plan-shapes-aws.ts; SYNTHETIC input,
+  // no AWS call). Left unset they plan unknown on every create; unset in the configuration is the resource's own region.
+  const real = AWS_CROSS_REGION_PLAN_6_68_0;
+  const realChange = (address: string) => {
+    const found = real.resource_changes.find((change) => change.address === address);
+    assert.ok(found, address);
+    // The unit tags are judged on their own (unitOfPlan); the real plan's computed `tags_all` is set aside so this judges regions only.
+    const { tags: _tags, tags_all: _all, ...after } = found.change.after;
+    const { tags: _t, tags_all: _a, ...unknown } = found.change.after_unknown;
+    return { ...found, change: { ...found.change, after, after_unknown: unknown } };
+  };
+  const realPlan = async (address: string, configuration: unknown = real.configuration_root_module) => {
+    const w = world(contract);
+    behave({ showOnlyConfigured: true, showResources: [realChange(address)] as never, ...(configuration === undefined ? {} : { showConfigurationExtra: { root_module: configuration } }) });
+    return sealRefusal(w, "DEV");
+  };
+  const realSeals = async (address: string) => { const sealed = await realPlan(address); assert.ok(sealed.ok, address + ": " + JSON.stringify(sealed)); };
+  const realRefuses = async (address: string, said: RegExp, configuration?: unknown) => {
+    const refusal = await realPlan(address, ...(configuration === undefined ? [] : [configuration]));
+    refused(refusal as never, "RESOURCE_NOT_IN_LIMITS");
+    assert.match((refusal as { message: string }).message, said, address);
+  };
+  // The real shape of an unset witness and peer region: absent from `after`, `true` in `after_unknown`, absent from the configuration.
+  assert.equal(realChange("aws_dynamodb_table.plain").change.after_unknown.global_table_witness, true);
+  assert.equal(realChange("aws_vpc_peering_connection.same").change.after_unknown.peer_region, true);
+  await realSeals("aws_dynamodb_table.plain");
+  await realSeals("aws_vpc_peering_connection.same");
+  await realSeals("module.m[0].aws_vpc_peering_connection.inmod[\"a\"]");
+  // Set, and unknown until apply or outside the limits: refused.
+  await realRefuses("aws_dynamodb_table.witness_unknown", /does not show a region it reaches/);
+  await realRefuses("aws_dynamodb_table.witness_far", /it reaches region eu-west-3/);
+  await realRefuses("aws_vpc_peering_connection.unknown", /does not show a region it reaches/);
+  await realRefuses("aws_vpc_peering_connection.far", /it reaches region ap-south-1/);
+  // A dynamic witness is not in the configuration; its values still are in the plan, and are judged.
+  await realRefuses("aws_dynamodb_table.witness_dynamic", /it reaches region eu-west-3/);
+  await realRefuses("aws_dynamodb_table.witness_dyn_unknown_val", /does not show a region it reaches/);
+  // The documented gap: a dynamic witness whose for_each is unknown until apply plans exactly like an unset one, and is not judged.
+  assert.deepEqual([realChange("aws_dynamodb_table.witness_dyn_unknown_each").change.after.global_table_witness, realChange("aws_dynamodb_table.witness_dyn_unknown_each").change.after_unknown.global_table_witness], [undefined, true]);
+  await realSeals("aws_dynamodb_table.witness_dyn_unknown_each");
+  // Fail closed: with no configuration, or one that does not name the resource, an unknown region argument is refused.
+  await realRefuses("aws_dynamodb_table.plain", /does not show a region it reaches/, { resources: [] });
+  await realRefuses("aws_vpc_peering_connection.same", /does not show a region it reaches/, { resources: [] });
+  await realRefuses("module.m[0].aws_vpc_peering_connection.inmod[\"a\"]", /does not show a region it reaches/, { resources: real.configuration_root_module.resources });
+  // N2: a block absent from the values but unknown in `after_unknown` (a shape Terraform does not emit) is still unknown.
+  await refuses("a secret replica block absent but unknown", [create("aws_secretsmanager_secret.s", { region: AWS_REGION }, { replica: [true] })], /does not show a region it reaches/);
   // Without `regions`, a resource with no region is not judged by region.
   const unregioned = limitsContract({ resources: [{ type: "aws_cloudwatch_log_group", max: 2 }] });
   { const sealed = await plan([create("aws_cloudwatch_log_group.x")], unregioned); assert.ok(sealed.ok, JSON.stringify(sealed)); }
