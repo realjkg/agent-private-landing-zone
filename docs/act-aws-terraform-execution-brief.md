@@ -426,16 +426,43 @@ There is no separate path, gate, approval or authority. This section authorizes 
 
    ```sh
    ./alz apply observe --sealed <SEALED_PLAN>
-   ./alz cost status
+   ./alz cost status --account <DEV_ACCOUNT_ID> --unit <UNIT_ID> --region <HOME_REGION>
    ```
+
+   - `--account` is required.
+   - `--unit` (the `alz-unit` value `prepare` printed) and `--region` turn on the tag check. Without them, `tags.state` is `UNKNOWN` (`NOT_REQUESTED`).
+   - `--export-arn <arn>` is optional. Without it, the export is looked up by `export.exportName` from `config/cost.json`.
+
+   `./alz cost status` reads with the AWS sign-in of the terminal it runs in, read-only (`src/cli/cost.ts`). Run it in a separate shell with a read-only sign-in for the DEV account, not in the shell that holds the `ALZ_*` identity variables.
+
+   It prints a short summary, with recipient emails masked, and saves the full typed status to `.runs/cost/status.json` (owner-only). Do not post that file: it holds the recipients.
 
    Expect `WAITING` on the first day:
    - a new budget has no calculated spend yet;
    - the first CUR 2.0 delivery can take up to 24 hours.
 
    Neither one is zero spend. A budget alerts; it never caps spend.
-7. **Record acceptance.** Record acceptance items 1 to 8 of the owner-approved cost and visibility plan (#39, 6536926009) against the existing `pillar:cost` gate. Do this only once you return that gate to the release scope; today it is `OUT_OF_SCOPE` in `config/release/scope.json`. No new gate id is added.
+7. **Record acceptance.** Record the minimum acceptance items 1 to 8 below against the existing `pillar:cost` gate. Do this only once you return that gate to the release scope; today it is `OUT_OF_SCOPE` in `config/release/scope.json`. No new gate id is added.
 8. **Clean up** as in step 6, when the run is done.
+
+### Minimum acceptance for the first AWS implementation (items 1 to 8)
+
+These are the owner's own minimum acceptance items (owner message, 2026-10-31; #39, 6536926009).
+
+- The field names below are those of the status `./alz cost status` saves (`CostStatus` in `src/cost/status.ts`).
+- Every value in that status is labeled `OBSERVED` (read from AWS in this call), `ESTIMATE` (with its basis named) or `UNKNOWN` (with the reason).
+- Where the product reads nothing, the evidence is yours, from the AWS console, and is labeled as your observation.
+
+| # | Item | Where the evidence comes from |
+| --- | --- | --- |
+| 1 | A deployed budget with the intended amount, filters, and recipients | `./alz cost status`: `budget.state` `PRESENT`, plus `budget.limit`, `budget.period`, `budget.filters` and each `budget.notifications[].subscribers[].address`, compared with `budget` and `notifications` in `config/cost.json`. |
+| 2 | Confirmed notification subscriptions and a safe test of the notification route | **Not read by the product.** `budget.notifications[].subscribers[].confirmation` is always `UNKNOWN`: `NOT_REPORTED_BY_AWS` for an email recipient (Budgets has no such API), and `NOT_READ` for an SNS topic (the status does not read SNS). The status does show that the notifications and subscribers exist, and `budget.hasActualAlert` and `budget.hasForecastAlert`. Confirm the subscription yourself: in the AWS console under SNS, Subscriptions, or by the confirmation email each recipient accepts. Then make a safe test of the route, for example a test message published to the alert topic from the SNS console. The product offers no test send. |
+| 3 | Required tags present on supported deployed resources | `./alz cost status --account <DEV_ACCOUNT_ID> --unit <UNIT_ID> --region <HOME_REGION>`: `tags.state` `ALL_PRESENT`, with each `tags.resources[]` entry's `present` and `missing` against `tags.required` (the keys of `tags` in `config/cost.json`). Coverage is `UNIT_TAGGED_RESOURCES_ONLY`: the tagging API lists only resources that carry the unit's tag, and `NO_RESOURCES_FOUND` is not a pass. `./alz apply observe` and `seal` (the unit tags on every created, taggable resource) add to this. |
+| 4 | Cost-allocation tag activation status reported | `./alz cost status`: `costAllocationTags.state` (`ALL_ACTIVE`, `INACTIVE` or `UNKNOWN`) and each key's `status` and `lastUpdated`. The item asks for the status to be **reported**, not for activation. `UNKNOWN` with `TAG_KEY_NOT_YET_IN_BILLING` is an honest report. Activation is off by default and runs only in a management or standalone account (see "Confirm live"). |
+| 5 | A valid export configuration and observed first delivery, or an explicit waiting state | `./alz cost status`: `export.configValid` (with `export.configProblems`), `export.destination`, `export.health`, and `export.state`. `DELIVERED` comes with `export.lastDelivery`; `WAITING` means nothing has been delivered yet and nothing failed. Also `freshness.state` and `freshness.latestDelivery`. `STALE`, `FAILED` and `MISSING` fail this item. |
+| 6 | Configured provisioning limits tested against allowed and refused examples | The seal judge on the contract's `targets.DEV.limits` (`src/apply/canary.ts`). The `limits` in `config/cost.json` are data that nothing enforces by themselves. **Allowed:** the cost project's `seal` succeeds, and its change list shows only admitted types, counts and regions. **Refused:** a `seal` of a project that creates something outside the limits stops with `RESOURCE_NOT_IN_LIMITS`, before anything is sealed or any approval is consumed. One ready example: a `seal` of the log-group canary copy under the cost `limits` contract is expected to stop this way, because `aws_cloudwatch_log_group` is not in the limits example. The emulated suite shows the same refusal, and is EMULATED evidence only. |
+| 7 | If analytics is selected, successful ingestion and dashboard refresh with timestamps | **Not applicable to this run.** Analytics is phase 2, and `analytics` is `OFF` in `config/cost.example.json`. `freshness.analyticsIngestion` and `freshness.dashboardRefresh` are `UNKNOWN` with `NOT_SELECTED` (or `PHASE_2_NOT_READ` if selected). Record the item as not applicable. |
+| 8 | Clear separation between observed billing, estimates, and unknown values | The labels themselves:<br>- `budget.actualSpend` is `OBSERVED`, or `UNKNOWN` when Budgets has not calculated it yet, never zero;<br>- `budget.forecastedSpend` is an `ESTIMATE` with its basis;<br>- `budget.spendCalculatedAt` is always `UNKNOWN` (`NOT_REPORTED_BY_AWS`);<br>- `freshness.billingPeriod` is an `ESTIMATE` from the capture clock;<br>- `budget.hardSpendCap` is `false`;<br>- `overall` is one of `OBSERVED_COMPLETE`, `WAITING`, `STALE`, `ATTENTION` and `INCOMPLETE`.<br><br>Record the saved status's labels as they are, without upgrading any. |
 
 ### Confirm live: these could not be verified offline
 

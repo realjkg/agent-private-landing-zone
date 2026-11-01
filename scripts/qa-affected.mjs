@@ -83,6 +83,12 @@ export const DOC_INPUT_OWNERS = {
   "src/cli/operator.ts": [BRIEF_TEST],
   "config/act-pilot-contract.aws-dev.example.json": [BRIEF_TEST],
   "qualification/aws/act-dev1-canary/main.tf": [BRIEF_TEST],
+  // The cost-baseline payload section (BRIEF-2): the limits example, the deploy page it links, and the cost example and status
+  // fields it names, all read by text.
+  "config/act-pilot-contract.aws-dev-limits.example.json": [BRIEF_TEST],
+  "docs/cost-baseline-deploy.md": [BRIEF_TEST],
+  "config/cost.example.json": [BRIEF_TEST],
+  "src/cost/status.ts": [BRIEF_TEST],
 };
 
 // Fixtures a test reads from disk (not imported), so the import closure never selects their owner.

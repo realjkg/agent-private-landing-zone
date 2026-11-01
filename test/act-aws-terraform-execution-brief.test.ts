@@ -183,7 +183,11 @@ test("every ./alz command and flag the brief names exists in the CLI", async () 
       assert.ok(specs, shown + ": takes no subcommand");
       const spec = specs.find((candidate) => candidate.command!.sub === sub);
       assert.ok(spec, shown + ": no such subcommand");
-      for (const word of rest) if (word.startsWith("--")) assert.ok(spec.cli.split(/\s+/).includes(word), shown + ": no flag " + word);
+      const documented = spec.cli.replace(/[[\]]/g, "").split(/\s+/);
+      for (const word of rest) if (word.startsWith("--")) assert.ok(documented.includes(word), shown + ": no flag " + word);
+      // Each flag the catalog line shows outside brackets is required for a full invocation.
+      const required = spec.cli.replace(/\[[^\]]*\]/g, "").split(/\s+/).filter((word) => word.startsWith("--"));
+      if (rest.length > 0) for (const flag of required) assert.ok(rest.includes(flag), shown + ": missing the required " + flag);
     }
   }
 });
@@ -233,5 +237,24 @@ test("the cost-baseline payload section links the deploy page and matches the sh
   for (const optIn of ["aws_kms_key", "aws_budgets_budget_action"]) {
     assert.ok(!types.includes(optIn), optIn);
     assert.ok(BRIEF.includes("Add `" + optIn + "` only if"), optIn);
+  }
+});
+
+test("the brief lists the owner's minimum acceptance items 1 to 8 for the cost baseline, each with its evidence source", () => {
+  const items = [
+    "A deployed budget with the intended amount, filters, and recipients",
+    "Confirmed notification subscriptions and a safe test of the notification route",
+    "Required tags present on supported deployed resources",
+    "Cost-allocation tag activation status reported",
+    "A valid export configuration and observed first delivery, or an explicit waiting state",
+    "Configured provisioning limits tested against allowed and refused examples",
+    "If analytics is selected, successful ingestion and dashboard refresh with timestamps",
+    "Clear separation between observed billing, estimates, and unknown values",
+  ];
+  items.forEach((item, index) => assert.ok(BRIEF.includes("| " + (index + 1) + " | " + item + " |"), "acceptance item " + (index + 1)));
+  // The evidence names fields the saved status really has.
+  const status = readFileSync("src/cost/status.ts", "utf8");
+  for (const field of ["hasActualAlert", "spendCalculatedAt", "hardSpendCap", "configValid", "analyticsIngestion", "UNIT_TAGGED_RESOURCES_ONLY", "NOT_REPORTED_BY_AWS", "NOT_SELECTED"]) {
+    assert.ok(status.includes(field) && BRIEF.includes(field), field);
   }
 });
