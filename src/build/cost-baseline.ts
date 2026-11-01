@@ -162,7 +162,10 @@ function tagMap(indent: number, tags: Readonly<Record<string, string>>): string[
   return attrs(indent, Object.entries(tags).map(([key, value]) => [q(key), q(value)] as const));
 }
 
-function defaultTagsBlock(tags: Readonly<Record<string, string>>): string[] {
+function defaultTagsBlock(tags: Readonly<Record<string, string>>, form: RenderForm = "PREVIEW"): string[] {
+  if (form === "PILOT_PROJECT") {
+    return ["  default_tags {", "    tags = merge({", ...tagMap(6, tags), "    }, var.unit_tags)", "  }"];
+  }
   return ["  default_tags {", "    tags = {", ...tagMap(6, tags), "    }", "  }"];
 }
 
@@ -491,9 +494,40 @@ function createsOf(config: CostConfig, keys: readonly string[]): CostBaselineCre
  * required cost tags; with it they also hold the deletion-unit tags (src/apply/unit.ts, src/teardown/unit.ts).
  */
 export function renderAwsCostBaseline(input: CostConfig, provenance?: ProvenanceTags): CostBaselineRender {
+  return renderForm(input, "PREVIEW", provenance);
+}
+
+/**
+ * The same baseline as a pilot project (`./alz apply prepare --project`), in the shape of the committed AWS canary
+ * (qualification/aws/act-dev1-canary): an empty `backend "s3" {}` block, which the product's backend override replaces
+ * at seal, and a `unit_tags` variable with the canary's validation, merged into both providers' `default_tags`, so the
+ * operator copies the three tags `prepare` prints instead of editing HCL. Every resource and data block is the preview's,
+ * line for line; only the terraform block, the variables and the two `default_tags` maps differ (test/cost-project.test.ts).
+ * The deletion-unit tags therefore come from the pilot unit, never from a build's provenance tags.
+ */
+export function renderAwsCostBaselineProject(input: CostConfig): CostBaselineRender {
+  return renderForm(input, "PILOT_PROJECT");
+}
+
+type RenderForm = "PREVIEW" | "PILOT_PROJECT";
+
+/** The canary's `unit_tags` variable (qualification/aws/act-dev1-canary/main.tf), unchanged. */
+const UNIT_TAGS_VARIABLE = [
+  'variable "unit_tags" {',
+  "  type = map(string)",
+  "  validation {",
+  '    condition     = join(",", sort(keys(var.unit_tags))) == "alz-build,alz-managed-by,alz-unit"',
+  '    error_message = "Provide exactly the three unit tags that ./alz apply prepare prints: alz-build, alz-managed-by and alz-unit."',
+  "  }",
+  "}",
+  "",
+];
+
+function renderForm(input: CostConfig, form: RenderForm, provenance?: ProvenanceTags): CostBaselineRender {
   // Re-validate the caller's value: nothing unchecked reaches the HCL text.
   const config = resolveCostConfig(input);
   const unitTags = checkedProvenance(provenance);
+  const project = form === "PILOT_PROJECT";
   const defaultTags = Object.fromEntries(Object.entries({ ...config.tags, ...unitTags })
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   const keys = [...COST_REQUIRED_TAG_KEYS].sort();
@@ -515,16 +549,18 @@ export function renderAwsCostBaseline(input: CostConfig, provenance?: Provenance
     '      version = "' + COST_BASELINE_AWS_PROVIDER_VERSION + '"',
     "    }",
     "  }",
+    ...(project ? ['  backend "s3" {}'] : []),
     "}",
     "",
     'variable "aws_region" {',
     "  type = string",
     "}",
     "",
+    ...(project ? UNIT_TAGS_VARIABLE : []),
     'provider "aws" {',
     "  region = var.aws_region",
     "",
-    ...defaultTagsBlock(defaultTags),
+    ...defaultTagsBlock(defaultTags, form),
     "}",
     "",
     "# Cross-region dependency: AWS Data Exports" + (activate ? " and Cost Explorer are" : " is") + " served from " +
@@ -532,7 +568,7 @@ export function renderAwsCostBaseline(input: CostConfig, provenance?: Provenance
     'provider "aws" {',
     ...attrs(2, [["alias", q("billing")], ["region", q(COST_BILLING_API_REGION)]]),
     "",
-    ...defaultTagsBlock(defaultTags),
+    ...defaultTagsBlock(defaultTags, form),
     "}",
     "",
     'data "aws_caller_identity" "current" {}',
