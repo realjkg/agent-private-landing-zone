@@ -403,8 +403,8 @@ const isUnknown = (value: unknown): boolean =>
  *   apply, empty or not text (review 6537650100, N2). When none is present: an AWS type is regional, and so null, unless it is a
  *   reviewed global type (`isGlobalAwsType`); a type of another provider is not judged by region (Azure's own location judge,
  *   `assertPlannedLocations`, holds its located types to the contract's location).
- * - `otherRegions`: the regions a resource reaches through its own arguments (`CROSS_REGION_ATTRIBUTES`: DynamoDB replicas, stack set
- *   instances, peering); unset is the resource's own region, unknown is null.
+ * - `otherRegions`: the regions a resource reaches through its own arguments (`CROSS_REGION_ATTRIBUTES`: DynamoDB, Secrets Manager
+ *   and ECR replicas, stack set instances, peering); unset is the resource's own region, unknown is null.
  * - `sizes`: the values of the type's size attribute (`TERRAFORM_SIZE_ATTRIBUTES`), null when unknown or not a list of names.
  */
 function placementOf(change: { after?: unknown; after_unknown?: unknown } | undefined, type: string): Pick<CanaryEntry, "region" | "otherRegions" | "sizes"> {
@@ -448,11 +448,16 @@ export const isGlobalAwsType = (type: string): boolean =>
 
 /**
  * The arguments through which one resource places infrastructure in another region (review 6537650100, N1): a reviewed table, judged
- * against the limits' `regions` beside the resource's own region. `[block, field]` reads the field in every element of a nested block.
- * Not covered, and documented as not judged: an S3 replication destination (a bucket ARN names no region).
+ * against the limits' `regions` beside the resource's own region. Each path is zero or more nested block names, then the field: a
+ * block's field is read in every element of the block (and of every block above it). Every path was checked against the
+ * hashicorp/aws 6.68.0 schema (`terraform providers schema -json`, 2026-11-01). Not covered, and documented as not judged: an S3
+ * replication destination (a bucket ARN names no region).
  */
-export const CROSS_REGION_ATTRIBUTES: Readonly<Record<string, readonly (readonly [string] | readonly [string, string])[]>> = {
-  aws_dynamodb_table: [["replica", "region_name"]],
+export const CROSS_REGION_ATTRIBUTES: Readonly<Record<string, readonly (readonly [string, ...string[]])[]>> = {
+  aws_dynamodb_table: [["replica", "region_name"], ["global_table_witness", "region_name"]],
+  aws_dynamodb_global_table: [["replica", "region_name"]],
+  aws_secretsmanager_secret: [["replica", "region"]],
+  aws_ecr_replication_configuration: [["replication_configuration", "rule", "destination", "region"]],
   aws_cloudformation_stack_set_instance: [["stack_set_instance_region"]],
   aws_vpc_peering_connection: [["peer_region"]],
   aws_ec2_transit_gateway_peering_attachment: [["peer_region"]],
@@ -468,21 +473,23 @@ function crossRegionsOf(type: string, after: Record<string, unknown>, unknown: R
     if (value === undefined || value === null || value === "") return;
     found.push(typeof value === "string" ? value : null);
   };
-  for (const path of paths) {
-    if (path.length === 1) { read(after[path[0]], unknown[path[0]]); continue; }
-    const [block, field] = path;
-    if (isUnknown(unknown[block]) && !Array.isArray(unknown[block])) { found.push(null); continue; }
-    const items = after[block];
-    if (items === undefined || items === null) continue;
-    if (!Array.isArray(items)) { found.push(null); continue; }
-    const unknownItems = Array.isArray(unknown[block]) ? unknown[block] as unknown[] : [];
+  // A block unknown as a whole, not a list, or with an element unknown or not an object, shows no region: null.
+  const walk = (node: Record<string, unknown>, nodeUnknown: Record<string, unknown>, path: readonly string[]): void => {
+    const [head, ...rest] = path as [string, ...string[]];
+    if (rest.length === 0) { read(node[head], nodeUnknown[head]); return; }
+    const blockUnknown = nodeUnknown[head];
+    if (isUnknown(blockUnknown) && !Array.isArray(blockUnknown)) { found.push(null); return; }
+    const items = node[head];
+    if (items === undefined || items === null) return;
+    if (!Array.isArray(items)) { found.push(null); return; }
+    const unknownItems = Array.isArray(blockUnknown) ? blockUnknown : [];
     items.forEach((item, index) => {
       const itemUnknown = unknownItems[index];
-      if (itemUnknown === true) { found.push(null); return; }
-      read(isPlainRecord(item) ? item[field] : undefined, isPlainRecord(itemUnknown) ? itemUnknown[field] : undefined);
-      if (!isPlainRecord(item)) found.push(null);
+      if (itemUnknown === true || !isPlainRecord(item)) { found.push(null); return; }
+      walk(item, isPlainRecord(itemUnknown) ? itemUnknown : {}, rest);
     });
-  }
+  };
+  for (const path of paths) walk(after, unknown, path);
   return found;
 }
 

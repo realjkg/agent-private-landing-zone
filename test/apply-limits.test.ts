@@ -233,7 +233,13 @@ test("the reviewed global AWS types carry no region of their own; a regional fam
     assert.ok(!isGlobalAwsType(type), type);
   }
   // The arguments that reach another region are a reviewed table; S3 replication (a bucket ARN names no region) is not in it, and documented as not judged.
-  assert.deepEqual(Object.keys(CROSS_REGION_ATTRIBUTES).sort(), ["aws_cloudformation_stack_set_instance", "aws_dynamodb_table", "aws_ec2_transit_gateway_peering_attachment", "aws_vpc_peering_connection"]);
+  assert.deepEqual(Object.keys(CROSS_REGION_ATTRIBUTES).sort(), ["aws_cloudformation_stack_set_instance", "aws_dynamodb_global_table", "aws_dynamodb_table", "aws_ec2_transit_gateway_peering_attachment",
+    "aws_ecr_replication_configuration", "aws_secretsmanager_secret", "aws_vpc_peering_connection"]);
+  // The reviewed paths, each checked against the hashicorp/aws 6.68.0 schema: nested blocks first, then the field that names a region.
+  assert.deepEqual(CROSS_REGION_ATTRIBUTES.aws_secretsmanager_secret, [["replica", "region"]]);
+  assert.deepEqual(CROSS_REGION_ATTRIBUTES.aws_ecr_replication_configuration, [["replication_configuration", "rule", "destination", "region"]]);
+  assert.deepEqual(CROSS_REGION_ATTRIBUTES.aws_dynamodb_global_table, [["replica", "region_name"]]);
+  assert.deepEqual(CROSS_REGION_ATTRIBUTES.aws_dynamodb_table, [["replica", "region_name"], ["global_table_witness", "region_name"]]);
   limitsStop({ regions: ["us-east-1"], resources: [{ type: "aws_dynamodb_table", max: 1 }] }, [create("aws_dynamodb_table.t", { region: "us-east-1", otherRegions: ["eu-west-1"] })], /it reaches region eu-west-1/, "other region");
   limitsStop({ regions: ["us-east-1"], resources: [{ type: "aws_dynamodb_table", max: 1 }] }, [create("aws_dynamodb_table.t", { region: "us-east-1", otherRegions: [null] })], /does not show a region it reaches/, "unknown other region");
   assertLimits({ resources: [{ type: "aws_dynamodb_table", max: 1 }] }, [create("aws_dynamodb_table.t", { region: "us-east-1", otherRegions: ["eu-west-1", null] })], "plan");

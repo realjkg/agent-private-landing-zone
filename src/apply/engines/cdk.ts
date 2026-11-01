@@ -986,7 +986,7 @@ export const CDK: SyncEngineSpec = {
       "  this run's calls     describe-stacks only, as DISCOVERY, CHANGESET  " + changeSet + "  and APPLY  " + apply,
       "  no change set        was created or executed by any role in this run",
       "That CHANGESET cannot execute and APPLY cannot create a change set is shown by the roles' IAM policies, not by this run. Who creates and who executes a change set is first observable at the seal and the first supervised DEV apply.",
-      "Only if the logs show only those reads, and the IAM policies show that separation, type (anything else writes nothing):",
+      "Only if CloudTrail shows only those sign-ins (AssumeRoleWithWebIdentity) and reads, with no write by any role, and the IAM policies show that separation, type (anything else writes nothing):",
     ],
     applyNote: "It executes exactly the sealed change set, never a new one, with the APPLY identity. It never deletes a stack or a change set.",
     cleanupNote: "It removes exactly the approved logical ids from the sealed template through one UPDATE change set, created by CHANGESET and executed by APPLY. The stack itself is never deleted; retiring it is the owner's separate decision.",

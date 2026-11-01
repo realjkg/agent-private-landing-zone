@@ -50,3 +50,14 @@ test("production confinement stays separate from development; signing has no PR 
   assert.ok(seccomp.archMap.some((a: any) => a.architecture === "SCMP_ARCH_AARCH64"));
   assert.ok(seccomp.archMap.some((a: any) => a.architecture === "SCMP_ARCH_X86_64"));
 });
+
+test("every Trivy scan uses the one action pin and the one pinned scanner version", () => {
+  // The action's default scanner version drifts; each scan names the same reviewed Trivy release (supply-chain.yml, owner commit 7b8e853).
+  const workflows = [".github/workflows/supply-chain.yml", ".github/workflows/container-hardening.yml", ".github/workflows/container-release.yml"];
+  const steps = workflows.flatMap((path) => [...read(path).matchAll(/uses: aquasecurity\/trivy-action@(\S+)[^\n]*\n\s+with:\n((?:\s{10}\S[^\n]*\n)+)/g)].map((m) => ({ path, pin: m[1], inputs: m[2] })));
+  assert.equal(steps.length, 4);
+  for (const step of steps) {
+    assert.equal(step.pin, "ed142fd0673e97e23eac54620cfb913e5ce36c25", step.path);
+    assert.match(step.inputs, /^\s+version: v0\.76\.1$/m, step.path);
+  }
+});

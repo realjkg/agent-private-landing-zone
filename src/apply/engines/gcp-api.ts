@@ -731,7 +731,8 @@ export function gcpApiEngine(given: GcpApiOptions = {}): GcpApiEngineSpec {
         "  this run's calls     DISCOVERY  " + discovery + "  signed in and ran one Cloud Asset search; APPLY  " + apply + "  only signed in, with no Pub/Sub call",
         "  no topic             was created or deleted in this run",
         "That DISCOVERY cannot write and that APPLY (which creates and deletes the topic at apply and cleanup) holds only topic create and delete is shown by the custom roles, not by this run.",
-        "Only if the audit logs show only those calls, and the custom roles show that, type (anything else writes nothing):",
+        "The Cloud Asset search is a Data Access audit log entry, which is off by default, so it may not appear. The decisive part is the always-on Admin Activity log: no write by either identity in this run.",
+        "Only if the audit logs show only those sign-ins and reads, with no Admin Activity write, and the custom roles show that, type (anything else writes nothing):",
       ],
       applyNote: "It sends one PUT that creates exactly the sealed topic, with the unit's labels and " + STORAGE_POLICY_PROPERTY + " = [the contract's region], as APPLY. " +
         "It is never sent again; the result is judged by DISCOVERY reads of that topic. This sets and reads back one Pub/Sub property; it is not a data-residency claim.",

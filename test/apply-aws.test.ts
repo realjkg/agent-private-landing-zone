@@ -1029,7 +1029,8 @@ test("provisioning limits (AWS Terraform, owner direction 6536926009): the seal 
   const contract = limitsContract({
     regions: [AWS_REGION, "us-east-2"],
     resources: [{ type: "aws_cloudwatch_log_group", max: 2 }, { type: "aws_instance", max: 1, families: ["t3"] }, { type: "aws_eks_node_group", max: 1, families: ["t3"] },
-      { type: "aws_budgets_budget", max: 1 }, { type: "aws_dynamodb_table", max: 1 }, { type: "aws_vpc_peering_connection", max: 1 }],
+      { type: "aws_budgets_budget", max: 1 }, { type: "aws_dynamodb_table", max: 1 }, { type: "aws_vpc_peering_connection", max: 1 },
+      { type: "aws_secretsmanager_secret", max: 1 }, { type: "aws_ecr_replication_configuration", max: 1 }, { type: "aws_dynamodb_global_table", max: 1 }],
   });
   // Only the resources each case names (no default log group), so every planned value is the case's own.
   const plan = async (resources: unknown[], over: unknown = contract) => {
@@ -1063,6 +1064,25 @@ test("provisioning limits (AWS Terraform, owner direction 6536926009): the seal 
   await refuses("a replica region unknown until apply", [create("aws_dynamodb_table.t", { region: AWS_REGION, replica: [{}] }, { replica: [{ region_name: true }] })], /does not show a region it reaches/);
   await seals("a same-region peering", [create("aws_vpc_peering_connection.p", { region: AWS_REGION })]);
   await refuses("a peer in another region", [create("aws_vpc_peering_connection.p", { region: AWS_REGION, peer_region: "ap-south-1" })], /it reaches region ap-south-1/);
+  // HYG-1: Secrets Manager replicas, ECR replication destinations (three blocks deep), legacy DynamoDB global table replicas and a
+  // DynamoDB witness (hashicorp/aws 6.68.0 schema paths).
+  await seals("a secret replica in an allowed region", [create("aws_secretsmanager_secret.s", { region: AWS_REGION, replica: [{ region: "us-east-2" }] }, { replica: [{}] })]);
+  await refuses("a secret replica in another region", [create("aws_secretsmanager_secret.s", { region: AWS_REGION, replica: [{ region: "eu-central-1" }] }, { replica: [{}] })], /it reaches region eu-central-1/);
+  await refuses("a secret replica region unknown until apply", [create("aws_secretsmanager_secret.s", { region: AWS_REGION, replica: [{}] }, { replica: [{ region: true }] })], /does not show a region it reaches/);
+  await refuses("secret replicas unknown as a whole", [create("aws_secretsmanager_secret.s", { region: AWS_REGION }, { replica: true })], /does not show a region it reaches/);
+  await seals("a secret with no replica", [create("aws_secretsmanager_secret.s", { region: AWS_REGION, replica: [] }, { replica: [] })]);
+  const ecr = (destinations: unknown[], unknownDestinations: unknown[]) => create("aws_ecr_replication_configuration.r", {
+    region: AWS_REGION, replication_configuration: [{ rule: [{ destination: destinations, repository_filter: [] }] }],
+  }, { replication_configuration: [{ rule: [{ destination: unknownDestinations, repository_filter: [] }] }] });
+  await seals("an ECR destination in an allowed region", [ecr([{ region: "us-east-2", registry_id: "123456789012" }], [{}])]);
+  await refuses("an ECR destination in another region", [ecr([{ region: "us-east-2", registry_id: "123456789012" }, { region: "ap-northeast-1", registry_id: "123456789012" }], [{}, {}])], /it reaches region ap-northeast-1/);
+  await refuses("an ECR destination region unknown until apply", [ecr([{ registry_id: "123456789012" }], [{ region: true }])], /does not show a region it reaches/);
+  await refuses("ECR rules unknown as a whole", [create("aws_ecr_replication_configuration.r", { region: AWS_REGION, replication_configuration: [{}] }, { replication_configuration: [{ rule: true }] })], /does not show a region it reaches/);
+  await seals("a legacy global table replica in an allowed region", [create("aws_dynamodb_global_table.g", { region: AWS_REGION, replica: [{ region_name: AWS_REGION }, { region_name: "us-east-2" }] }, { replica: [{}, {}] })]);
+  await refuses("a legacy global table replica in another region", [create("aws_dynamodb_global_table.g", { region: AWS_REGION, replica: [{ region_name: "sa-east-1" }] }, { replica: [{}] })], /it reaches region sa-east-1/);
+  await refuses("a legacy global table replica region unknown until apply", [create("aws_dynamodb_global_table.g", { region: AWS_REGION, replica: [{}] }, { replica: [{ region_name: true }] })], /does not show a region it reaches/);
+  await refuses("a DynamoDB witness in another region", [create("aws_dynamodb_table.t", { region: AWS_REGION, global_table_witness: [{ region_name: "eu-west-3" }] }, { global_table_witness: [{}] })], /it reaches region eu-west-3/);
+  await refuses("a DynamoDB witness region unknown until apply", [create("aws_dynamodb_table.t", { region: AWS_REGION, global_table_witness: [{}] }, { global_table_witness: [{ region_name: true }] })], /does not show a region it reaches/);
   for (const [label, resources, said] of [
     ["a type not allowed", [create("aws_iam_role.app")], /aws_iam_role\.app: type aws_iam_role is not in the provisioning limits/],
     ["a count over its maximum", ["a", "b", "c"].map((n) => create("aws_cloudwatch_log_group." + n, { region: AWS_REGION })), /aws_cloudwatch_log_group: the plan creates 3, the provisioning limits allow at most 2/],

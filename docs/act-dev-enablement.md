@@ -149,6 +149,8 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
     ./alz apply record-live --sealed <SEALED_PLAN>                       # type LIVE DEV <12 chars>; commit the file it writes
     ```
 
+    This apply is the APPLY provider-access check that step 12 defers. Watch CloudTrail for the run: resources created by APPLY, state reads and writes by STATE_WRITE (and STATE), and no state access by APPLY.
+
 14. **Cleanup**, authorized separately by the cleanup owner:
 
     ```bash
@@ -245,7 +247,7 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
    Do not export `AZURE_*`, `ARM_USE_*` other than `ARM_USE_OIDC` (including `ARM_USE_MSI` and `ARM_USE_AZUREAD`), or any `ARM_CLIENT_CERTIFICATE*` variable. Entra ID state authentication needs no variable: the product turns it on in its own backend file (`use_azuread_auth = true`; `docs/act-pilot-apply.md`, Azure). `ARM_STORAGE_USE_AZUREAD` is the azurerm provider's variable and the Terraform backend never reads it.
 9. **Wait for engineering:** backend pinning, #287/#289, Z2, and Z3 if you bootstrap with one subscription.
 10. **Authorization commit.** As for AWS step 11, with branch name `act-dev-azure-enable`. If the AWS contract is committed at the time, this replaces it (see "One contract, one cloud at a time").
-11. **G2 qualification.** As for AWS step 12. The attestation is `SEPARATED <STATE_WRITE client id> <APPLY client id>`, checked in the Entra sign-in logs and the storage logs.
+11. **G2 qualification.** As for AWS step 12. The attestation is `SEPARATED <STATE_WRITE client id> <APPLY client id>`, checked in the Entra sign-in logs and the storage logs. Qualify runs nothing as APPLY, so APPLY's provider access is checked at the DEV apply (step 12): in the Azure activity log, resources created by APPLY; in the storage logs, state written by STATE_WRITE, and no state access by APPLY.
 12. **DEV apply, cleanup, G3 and G5.** The same commands as AWS steps 13 to 15. Cleanup never deletes a resource group, an identity, the state backend or deployment history (`docs/act-pilot-plan.md`, "Cleanup of pilot-created resources").
 
 ## Kill switch (both clouds)
