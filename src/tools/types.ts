@@ -46,6 +46,15 @@ export type ToolName =
   | "aws_org_list_scps"
   | "aws_config_recorders"
   | "aws_cloudtrail_trails"
+  /** Read-only cost status reads (src/tools/aws-cost-reads.ts): Budgets, Data Exports, cost-allocation tags, unit tags. */
+  | "aws_budgets_describe_budgets"
+  | "aws_budgets_describe_notifications"
+  | "aws_budgets_describe_subscribers"
+  | "aws_bcm_list_exports"
+  | "aws_bcm_get_export"
+  | "aws_bcm_list_executions"
+  | "aws_ce_list_cost_allocation_tags"
+  | "aws_tagging_get_resources"
   | "azure_version"
   | "azure_account_show"
   | "azure_management_groups"
@@ -60,7 +69,22 @@ export type ToolRequest = {
   workspace?: string;
   /** Optional, validated AWS Control Tower operation UUID for read-only polling. */
   operationIdentifier?: string;
+  /** Cost reads only (src/tools/aws-cost-reads.ts); each tool accepts exactly its own fields, validated there. */
+  accountId?: string;
+  budgetName?: string;
+  notification?: BudgetNotificationKey;
+  exportArn?: string;
+  unitId?: string;
+  region?: string;
   input?: AdapterInput;
+};
+
+/** One budget notification, as Budgets identifies it. The threshold is a plain decimal string, never a float. */
+export type BudgetNotificationKey = {
+  notificationType: "ACTUAL" | "FORECASTED";
+  comparisonOperator: "GREATER_THAN" | "LESS_THAN" | "EQUAL_TO";
+  threshold: string;
+  thresholdType: "PERCENTAGE" | "ABSOLUTE_VALUE";
 };
 
 export type ToolResult = {

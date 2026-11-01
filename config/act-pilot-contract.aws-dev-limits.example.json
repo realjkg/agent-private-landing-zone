@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "enabled": false,
+  "provider": "AWS",
+  "engine": "TERRAFORM",
+  "embedStateWrite": true,
+  "policyVersion": "REPLACE-WITH-REVIEWED-POLICY-VERSION",
+  "enabledEnvironments": ["DEV"],
+  "targets": {
+    "DEV": {
+      "accountId": "111111111111",
+      "region": "us-east-2",
+      "backend": "examplefake-dev-state/pilot/dev.tfstate",
+      "workspace": "default",
+      "limits": {
+        "regions": ["us-east-2", "us-east-1"],
+        "resources": [
+          { "type": "aws_budgets_budget", "max": 2 },
+          { "type": "aws_sns_topic", "max": 1 },
+          { "type": "aws_sns_topic_policy", "max": 1 },
+          { "type": "aws_sns_topic_subscription", "max": 5 },
+          { "type": "aws_s3_bucket", "max": 1 },
+          { "type": "aws_s3_bucket_policy", "max": 1 },
+          { "type": "aws_s3_bucket_ownership_controls", "max": 1 },
+          { "type": "aws_s3_bucket_public_access_block", "max": 1 },
+          { "type": "aws_s3_bucket_server_side_encryption_configuration", "max": 1 },
+          { "type": "aws_s3_bucket_lifecycle_configuration", "max": 1 },
+          { "type": "aws_bcmdataexports_export", "max": 1 },
+          { "type": "aws_ce_cost_allocation_tag", "max": 5 }
+        ]
+      }
+    }
+  },
+  "requiredApprovals": {
+    "DEV": 1
+  },
+  "maxApprovalAgeMinutes": 30,
+  "approvers": [
+    {
+      "id": "REPLACE-WITH-OWNER-APPROVER",
+      "publicKeyPem": "REPLACE-WITH-ED25519-PUBLIC-KEY",
+      "environments": ["DEV"]
+    }
+  ],
+  "killSwitchPath": ".runs/apply/KILL"
+}

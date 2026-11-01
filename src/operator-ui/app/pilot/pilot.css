@@ -228,6 +228,15 @@
   color: var(--pilot-bad);
 }
 
+/* Advisory items only (financial controls): not yet verified, or needs attention. Never a stop. */
+.pilot-badge-neutral {
+  color: var(--muted);
+}
+
+.pilot-badge-warn {
+  color: var(--pilot-warn);
+}
+
 .pilot-facts {
   display: grid;
   grid-template-columns: max-content 1fr;
@@ -385,3 +394,71 @@
 .paths-details { margin: 6px 0 4px; overflow-wrap: anywhere; }
 .paths-blockers { margin: 4px 0; padding-left: 18px; }
 .pilot-environments-off ul { margin: 6px 0; padding-left: 18px; }
+
+/* Cost and visibility panel. Every value's label (OBSERVED, ESTIMATE, UNKNOWN, CONFIGURED) is printed as text; the styles below
+   only add emphasis, so color is never the only cue. */
+.cost-panel h3 {
+  margin: 20px 0 6px;
+  font-size: 18px;
+}
+
+.cost-panel dl {
+  display: grid;
+  grid-template-columns: minmax(10rem, max-content) 1fr;
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.cost-panel dt {
+  color: var(--muted);
+}
+
+.cost-panel dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.cost-panel ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.cost-label {
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+.cost-value[data-label="UNKNOWN"] {
+  font-style: italic;
+}
+
+.cost-note,
+.cost-summary {
+  border-left: 3px solid var(--accent);
+  padding-left: 12px;
+}
+
+.cost-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-top: 8px;
+}
+
+.cost-table caption {
+  text-align: left;
+  margin-bottom: 4px;
+}
+
+.cost-table th,
+.cost-table td {
+  border-top: 1px solid var(--edge);
+  padding: 4px 8px 4px 0;
+  text-align: left;
+  vertical-align: top;
+}
+
+@media (max-width: 640px) {
+  .cost-panel dl {
+    grid-template-columns: 1fr;
+  }
+}

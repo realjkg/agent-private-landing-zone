@@ -11,6 +11,9 @@ coverage/
 # The owner's evidence-runner configuration (./alz evidence init); the committed template is config/evidence-runner.example.json
 config/evidence-runner.json
 
+# The operator's cost configuration (./alz cost status, the Cost and visibility panel): it holds alert recipient addresses
+config/cost.json
+
 # Private keys and certificates (for example a GitHub App private key): never commit
 *.pem
 *.key

@@ -202,8 +202,9 @@ test("the guard fails on an invented cli form, a missing source, a bad handoff o
 
 test("the broker allowlist and the driver exclusion hold", () => {
   const posture = getToolSecurityPosture();
-  assert.equal(posture.allowedTools.length, 41);
-  // The two additions are read-only Control Tower operation status tools.
+  assert.equal(posture.allowedTools.length, 49);
+  // The two additions are read-only Control Tower operation status tools; the eight after them are the read-only cost
+  // status reads (src/tools/aws-cost-reads.ts).
   assert.ok(posture.allowedTools.includes("aws_controltower_list_landing_zone_operations"));
   assert.ok(posture.allowedTools.includes("aws_controltower_get_landing_zone_operation"));
   assert.deepEqual(posture.mutationTools, []);

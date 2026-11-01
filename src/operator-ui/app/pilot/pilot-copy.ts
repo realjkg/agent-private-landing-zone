@@ -433,6 +433,7 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   ACT_NOT_AUTHORIZED: { why: "The owner's reviewed pilot rules do not allow this kind of change in this environment.", next: "Ask the pilot owner whether to allow it. Only their reviewed change to the rules can. Nothing was changed." },
   CANARY_ALLOWLIST_MISSING: { why: "The owner's pilot rules allow changes in this environment but do not list the exact resources a change may create there.", next: "Ask the pilot owner to add the list of resource types and counts to the reviewed pilot rules. Nothing was changed." },
   RESOURCE_NOT_IN_CANARY: { why: "The plan would do more than create exactly the resources the owner's pilot rules list: an extra or missing resource, a wrong count, or a change to something that already exists.", next: "Read the reason shown, change the project so it creates exactly the listed resources and nothing else, then prepare a new preview. Nothing was changed." },
+  RESOURCE_NOT_IN_LIMITS: { why: "The plan would create something the owner's provisioning limits do not allow: a resource type that is not listed, more of a type than its maximum, a region that is not allowed, or a size that is not allowed. Or it would change something that already exists.", next: "Read the reason shown, change the project so it stays within the limits, then prepare a new preview. Only the owner's reviewed change to the pilot rules can change the limits. Nothing was changed." },
   ACT_AUTHORIZATION_CHANGED: { why: "The owner's pilot rules changed after this change was prepared and approved, so the approvals no longer cover it.", next: "Prepare the change again under the current rules and collect new approvals. Nothing was used up." },
   NOT_IMPLEMENTED: { why: "The pilot rules name a cloud and tool combination that this version cannot run yet.", next: "Ask the pilot owner which supported combination to use. Nothing was changed." },
   IDENTITY_TARGET_MISMATCH: { why: "One of the separate sign-ins points at a different account than the pilot rules name for this environment.", next: "Correct that sign-in's account in the terminal where you started the console, restart the console, then run the readiness check again." },
@@ -612,7 +613,16 @@ export function describeCheck(item: PreflightCheck, environment: PilotEnvironmen
     return { known: true, label: "The owner's reviewed rules allow changes in " + environment, wrong: "The pilot is switched off, or the owner's reviewed rules do not allow changes in " + environment + ". This is the normal state until the owner allows it.", fix: "Ask the pilot owner to review the rules and allow this environment. Nothing you do here can allow it." };
   }
   if (name.startsWith("financial controls")) {
-    return { known: true, informational: true, label: "Spending limits are not checked here: the owner confirms the budget alert or cost limit separately", wrong: "", fix: "" };
+    // Advisory, never a stop: one plain label per state (review 6539995646, N2). A budget alerts; it never caps spend.
+    const FINANCIAL: Record<PreflightCheck["state"], string> = {
+      READY: "Budget, alerts, tags and cost export were read and look right (advisory: a budget alerts, it never caps spend)",
+      UNVERIFIED: "Budget and alerts not confirmed yet (advisory): no current cost read, or AWS has no data yet. See Cost and visibility",
+      MISSING: "Budget not found in the account (advisory, does not stop a change). See Cost and visibility",
+      INVALID: "Budget or alerts need attention: a recipient, alert, tag or the cost export (advisory). See Cost and visibility",
+      UNAVAILABLE: "Cost data unavailable or stale: a read did not answer or the export stopped delivering (advisory). See Cost and visibility",
+      BLOCKED: "Cost status could not be judged (advisory). See Cost and visibility",
+    };
+    return { known: true, informational: true, label: FINANCIAL[item.state] ?? FINANCIAL.UNVERIFIED, wrong: "", fix: "" };
   }
   if (name.startsWith("identities configured")) {
     return { known: true, label: "Each separate sign-in is set up on its own", wrong: "A sign-in is missing, two are the same, or one could fall back to your own account.", fix: "In the terminal where you started the console, set the missing sign-in details (the walkthrough lists them), restart the console, and check again." };

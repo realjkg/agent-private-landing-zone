@@ -13,6 +13,12 @@ import {
 import {
   runAllowlistedProcess,
 } from "./process.js";
+import {
+  AWS_COST_READ_TOOLS,
+  awsCostReadArgs,
+  carriesCostParameter,
+  isAwsCostReadTool,
+} from "./aws-cost-reads.js";
 
 import {
   getIaCAdapter,
@@ -62,6 +68,7 @@ const SAFE_TOOLS = new Set([
   "aws_org_list_scps",
   "aws_config_recorders",
   "aws_cloudtrail_trails",
+  ...AWS_COST_READ_TOOLS,
   "azure_version",
   "azure_account_show",
   "azure_management_groups",
@@ -331,6 +338,13 @@ export function executeTool(
       ],
     };
 
+    if (isAwsCostReadTool(request.tool)) {
+      const built = awsCostReadArgs(request);
+      if ("reason" in built) return blocked(request, built.reason);
+      return runAllowlistedProcess(request.tool, "aws", built.args, workspace);
+    }
+    if (carriesCostParameter(request))
+      return blocked(request,"Cost read fields are accepted only by the cost read tools.");
     if (request.tool === "aws_controltower_get_landing_zone_operation") {
       const identifier=request.operationIdentifier;
       if (!identifier || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(identifier))

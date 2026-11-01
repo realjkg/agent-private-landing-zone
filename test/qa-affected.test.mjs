@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, w
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { CANARY_OWNERS, TERRAFORM_CANARY_UNIT_TEST, diffCommand, EXIT_OVER_CAP, FIXTURE_OWNERS, importsOf, PACKAGE_OWNERS, PACKAGE_TREE_OWNERS, planChanged, routeOf, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
+import { BRIEF_TEST, CANARY_OWNERS, DOC_INPUT_OWNERS, TERRAFORM_CANARY_UNIT_TEST, diffCommand, EXIT_OVER_CAP, FIXTURE_OWNERS, importsOf, PACKAGE_OWNERS, PACKAGE_TREE_OWNERS, planChanged, routeOf, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
 
 function fixture() {
   return new Map([
@@ -311,6 +311,14 @@ test("CI builds operator HTML before HTTP inventory guards", () => {
   assert.deepEqual(plan.gaps, []);
 });
 
+test("a .trivyignore.yaml change selects its focused test, and without that test it is a gap", () => {
+  const files = new Map([...fixture(), ["test/trivyignore.test.ts", "test()"]]);
+  const plan = planChanged([".trivyignore.yaml"], files);
+  assert.deepEqual(plan.nodeTests, ["test/trivyignore.test.ts"]);
+  assert.deepEqual(plan.gaps, []);
+  assert.match(planChanged([".trivyignore.yaml"], fixture()).gaps.join(" "), /\.trivyignore\.yaml has no focused test owner/);
+});
+
 test("a .gitignore change selects the secret-rule test and leaves no coverage gap", () => {
   const files = new Map([...fixture(), ["test/gitignore-secrets.test.ts", "test()"]]);
   const plan = planChanged([".gitignore"], files);
@@ -472,6 +480,25 @@ test("a fixture a test reads from disk is owned by its declared test, an unowned
   assert.match(deleted.notes.join(" "), /src\/apply\/gone\.ts was deleted/);
   files.set("src/apply/orphan.ts", "export const x = 1;");
   assert.match(planChanged(["src/apply/orphan.ts"], files).gaps.join(" "), /src\/apply\/orphan\.ts has no importing test/);
+});
+
+test("the cost-baseline golden files are owned by the renderer's focused test, never a gap", () => {
+  const files = fixture();
+  const owner = "test/cost-baseline.test.ts";
+  const golden = Object.keys(FIXTURE_OWNERS).filter((p) => p.startsWith("test/fixtures/cost-baseline/"));
+  assert.equal(golden.length, 5);
+  // One module per directory (COST-1c): every golden .tf is `<variant>/main.tf`, never a flat sibling of another golden.
+  for (const path of golden.filter((p) => p.endsWith(".tf"))) {
+    assert.match(path, /^test\/fixtures\/cost-baseline\/[a-z-]+\/main\.tf$/, path);
+  }
+  const flat = "test/fixtures/cost-baseline/defaults.main.tf";
+  assert.match(planChanged([flat], new Map([...files, [owner, ""], [flat, ""]])).gaps.join(" "), /no known test owner/);
+  for (const path of golden) {
+    assert.deepEqual(FIXTURE_OWNERS[path], [owner], path);
+    const plan = planChanged([path], new Map([...files, [owner, ""], [path, ""]]));
+    assert.deepEqual(plan.gaps, [], path);
+    assert.ok(plan.nodeTests.includes(owner), path);
+  }
 });
 
 test("the construct judge's real Terraform fixtures are owned by its focused test, never a gap", () => {
@@ -658,4 +685,23 @@ test("a change under the shipped config/ or policy/ tree selects the package tes
     const root = Object.keys(PACKAGE_TREE_OWNERS).find((r) => path.startsWith(r));
     for (const owner of PACKAGE_TREE_OWNERS[root]) assert.ok(planChanged([path], files).nodeTests.includes(owner), path + " selects " + owner);
   }
+});
+
+test("the execution brief and the inputs its doc test reads from disk select that test, even for a docs-only change; a missing owner is a gap", () => {
+  const files = fixture();
+  files.set(BRIEF_TEST, "test()");
+  assert.ok(readdirSync("test").includes(BRIEF_TEST.slice("test/".length)), BRIEF_TEST + " exists");
+  for (const path of ["docs/act-aws-terraform-execution-brief.md", "alz", "src/cli/operator.ts",
+    "config/act-pilot-contract.aws-dev.example.json", "qualification/aws/act-dev1-canary/main.tf"]) {
+    assert.deepEqual(DOC_INPUT_OWNERS[path], [BRIEF_TEST], path);
+    files.set(path, "x");
+    const plan = planChanged([path], files);
+    assert.ok(plan.nodeTests.includes(BRIEF_TEST), path + " selects " + BRIEF_TEST);
+  }
+  // Another document is still skipped: the rule names exact paths, not docs/.
+  files.set("docs/act-dev-1.md", "x");
+  assert.ok(!planChanged(["docs/act-dev-1.md"], files).nodeTests.includes(BRIEF_TEST));
+  // Without the test, the brief is a coverage gap rather than a silent skip.
+  files.delete(BRIEF_TEST);
+  assert.match(planChanged(["docs/act-aws-terraform-execution-brief.md"], files).gaps.join(" "), /no doc test owner/);
 });

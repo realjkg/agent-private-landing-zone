@@ -892,6 +892,9 @@ const BROKER_ALLOWLIST: readonly string[] = [
   "ansible_preview", "ansible_syntax_check", "ansible_version", "aws_cloudtrail_trails", "aws_config_recorders",
   "aws_controltower_get_landing_zone_operation", "aws_controltower_list_landing_zone_operations",
   "aws_controltower_list_landing_zones", "aws_org_describe", "aws_org_list_scps", "aws_sts_identity", "aws_version",
+  "aws_bcm_get_export", "aws_bcm_list_executions", "aws_bcm_list_exports", "aws_budgets_describe_budgets",
+  "aws_budgets_describe_notifications", "aws_budgets_describe_subscribers", "aws_ce_list_cost_allocation_tags",
+  "aws_tagging_get_resources",
   "azure_account_show", "azure_management_groups", "azure_policy_assignments", "azure_version", "bicep_build",
   "bicep_lint", "bicep_version", "bicep_what_if", "cdk_preview", "cdk_synth", "cdk_version", "cloudformation_preview",
   "cloudformation_validate", "cloudformation_version", "crossplane_preview", "crossplane_validate", "crossplane_version",
@@ -899,9 +902,9 @@ const BROKER_ALLOWLIST: readonly string[] = [
   "query_environment", "show_evidence", "terraform_fmt_check", "terraform_plan", "terraform_validate", "terraform_version",
 ];
 
-test("the broker allowlist is exactly the 41 reviewed tools, contains no driver tool, and the broker cannot reach the driver", () => {
+test("the broker allowlist is exactly the 49 reviewed tools, contains no driver tool, and the broker cannot reach the driver", () => {
   const { allowedTools } = getToolSecurityPosture();
-  assert.equal(BROKER_ALLOWLIST.length, 41);
+  assert.equal(BROKER_ALLOWLIST.length, 49);
   assert.deepEqual(allowedTools, [...BROKER_ALLOWLIST].sort());
   for (const tool of allowedTools) {
     assert.doesNotMatch(tool, /destroy|driver|teardown|preview_only|run_preview|apply|force/i, tool);

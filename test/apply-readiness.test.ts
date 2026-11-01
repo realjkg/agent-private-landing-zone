@@ -6,7 +6,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { assessReadiness, type ReadinessInput, type ReadinessReport } from "../src/apply/readiness.js";
+import { assessReadiness, costReadiness, COST_STATUS_MAX_AGE_HOURS, FINANCIAL_CHECK, type ReadinessInput, type ReadinessReport } from "../src/apply/readiness.js";
+import type { PilotContract } from "../src/apply/types.js";
+import { writeCostSnapshot } from "../src/cost/local.js";
+import { costStatusOf, type CostVariant } from "./helpers/cost-fixtures.js";
 import { cdkContractJson, cdkIdentityEnv } from "./helpers/cdk-fixtures.js";
 import {
   awsContractJson, awsIdentityEnv, contractJson, identityEnv, installFakeTerraform, NOW, testFixtureForgeQualificationEvidence, writeReviewedContract,
@@ -32,7 +35,7 @@ async function world(contract: (kill: string) => unknown = (kill) => contractJso
   if (qualified) await testFixtureForgeQualificationEvidence(vault, undefined, qualified);
   const input: ReadinessInput = {
     environment: "DEV", contractPath, qualificationDir: vault, toolDirs: [toolDir],
-    env: qualified === "AWS" ? awsIdentityEnv("DEV") : identityEnv("DEV"), now: () => NOW,
+    env: qualified === "AWS" ? awsIdentityEnv("DEV") : identityEnv("DEV"), now: () => NOW, costStatusPath: join(dir, "cost-status.json"),
   };
   return { input, kill, contractPath };
 }
@@ -44,9 +47,9 @@ test("a qualified machine is ready for both clouds, with nothing next and no res
     const report = await assessReadiness(input);
     assert.equal(report.ready, true, cloud + ": " + JSON.stringify(report.checks.filter((c) => !c.ok)));
     assert.equal(report.next, null);
-    // Every item is READY except the advisory financial controls item, which reports honestly that nothing checks a budget and never stops a run.
+    // Every item is READY except the advisory financial controls item: with no cost status read it is UNVERIFIED, and it never stops a run.
     assert.ok(report.checks.every((c) => c.responsible === undefined && (c.state === "READY" || (c.advisory === true && c.ok))));
-    assert.deepEqual(report.checks.filter((c) => c.advisory).map((c) => [c.check, c.state]), [["financial controls (budget alerts or cost cap)", "UNVERIFIED"]]);
+    assert.deepEqual(report.checks.filter((c) => c.advisory).map((c) => [c.check, c.state]), [[FINANCIAL_CHECK, "UNVERIFIED"]]);
   }
 });
 
@@ -125,4 +128,74 @@ test("an environment other than DEV, QA or PROD is refused, and readiness grants
   const source = readFileSync(fileURLToPath(new URL("../src/apply/readiness.ts", import.meta.url)), "utf8");
   assert.doesNotMatch(source, /child_process|\bspawn\b|\bexecFile\b/);
   for (const banned of ["./driver.js", "./seal.js", "./approval.js", "./ledger.js", "./engines/", "../cli/"]) assert.ok(!source.includes('from "' + banned), banned);
+});
+
+// --- the advisory financial controls item (plan item 5): a real state from the saved cost status, never a stop ---------------
+
+const AWS_CONTRACT = { provider: "AWS", targets: { DEV: { accountId: "111111111111" } } } as unknown as PilotContract;
+const READ_AT = new Date("2026-10-31T13:00:00Z");
+
+test("financial controls: each cost status maps to an honest readiness state, and none is a stop", async () => {
+  const expected: Record<CostVariant, string> = { observed: "READY", waiting: "UNVERIFIED", stale: "UNAVAILABLE", incomplete: "UNAVAILABLE", attention: "INVALID", missing: "MISSING" };
+  for (const [variant, state] of Object.entries(expected) as [CostVariant, string][]) {
+    const status = await costStatusOf(variant);
+    const at = variant === "stale" ? new Date(Date.parse(status.capturedAt) + 3_600_000) : READ_AT;
+    const result = costReadiness({ state: "OK", status }, AWS_CONTRACT, "DEV", at);
+    assert.equal(result.state, state, variant + ": " + result.detail);
+    assert.doesNotMatch(result.detail, /111111111111|finops@example\.com/, "names, never values");
+  }
+  assert.match(costReadiness({ state: "OK", status: await costStatusOf("observed") }, AWS_CONTRACT, "DEV", READ_AT).detail, /never caps spend/);
+  assert.match(costReadiness({ state: "OK", status: await costStatusOf("waiting") }, AWS_CONTRACT, "DEV", READ_AT).detail, /No data yet is not zero spend/);
+  assert.match(costReadiness({ state: "OK", status: await costStatusOf("attention") }, AWS_CONTRACT, "DEV", READ_AT).detail, /an alert has no recipient/);
+});
+
+test("financial controls: nothing read, an unreadable file, another account, an old read or a non-AWS contract is UNVERIFIED", async () => {
+  const status = await costStatusOf("observed");
+  assert.match(costReadiness({ state: "NONE" }, AWS_CONTRACT, "DEV", READ_AT).detail, /No cost status has been read.*\.\/alz cost status/);
+  assert.equal(costReadiness({ state: "UNREADABLE" }, AWS_CONTRACT, "DEV", READ_AT).state, "UNVERIFIED");
+  assert.equal(costReadiness({ state: "OK", status: { ...status, accountId: "222222222222" } }, AWS_CONTRACT, "DEV", READ_AT).state, "UNVERIFIED");
+  assert.equal(costReadiness({ state: "OK", status }, AWS_CONTRACT, "QA", READ_AT).state, "UNVERIFIED", "no QA target: not this environment's account");
+  const late = new Date(Date.parse(status.capturedAt) + (COST_STATUS_MAX_AGE_HOURS + 1) * 3_600_000);
+  assert.match(costReadiness({ state: "OK", status }, AWS_CONTRACT, "DEV", late).detail, /not within the last 24 hours/);
+  assert.equal(costReadiness({ state: "OK", status }, { ...AWS_CONTRACT, provider: "AZURE" } as PilotContract, "DEV", READ_AT).state, "UNVERIFIED");
+});
+
+test("financial controls through assessReadiness: a saved observed status for the DEV account is READY, advisory, and an attention status never blocks", async () => {
+  const { input } = await world((k) => awsContractJson(k), "AWS");
+  for (const [variant, state] of [["observed", "READY"], ["missing", "MISSING"]] as const) {
+    writeCostSnapshot({ ...(await costStatusOf(variant)), capturedAt: NOW.toISOString() }, input.costStatusPath!);
+    const report = await assessReadiness(input);
+    const financial = item(report, "financial controls");
+    assert.deepEqual([financial.state, financial.ok, financial.advisory, financial.responsible], [state, true, true, undefined]);
+    assert.equal(report.ready, true, "the financial item never stops a run");
+    assert.equal(report.next, null);
+  }
+});
+
+test("B2: a shallow or malformed saved status never throws and is never READY: UNVERIFIED through assessReadiness, still advisory", async () => {
+  const { input } = await world((k) => awsContractJson(k), "AWS");
+  const shallow = (overall: string) => ({ kind: "ALZ_COST_STATUS", source: "AWS_API_READ_ONLY", accountId: "111111111111", capturedAt: NOW.toISOString(), overall,
+    advisory: true, actEnabled: false, budget: { state: "PRESENT", hardSpendCap: false }, tags: { state: "x" }, costAllocationTags: { state: "x" }, export: { state: "x" }, freshness: { state: "x" } });
+  const observed = { ...(await costStatusOf("observed")), capturedAt: NOW.toISOString() };
+  for (const content of [
+    { schemaVersion: 1, kind: "ALZ_COST_STATUS_SNAPSHOT", status: shallow("OBSERVED_COMPLETE") },
+    { schemaVersion: 1, kind: "ALZ_COST_STATUS_SNAPSHOT", status: shallow("ATTENTION") },
+    { schemaVersion: 2, kind: "ALZ_COST_STATUS_SNAPSHOT", status: observed },
+    observed,
+  ]) {
+    writeFileSync(input.costStatusPath!, JSON.stringify(content));
+    const report = await assessReadiness(input);
+    const financial = item(report, "financial controls");
+    assert.deepEqual([financial.state, financial.ok, financial.advisory], ["UNVERIFIED", true, true], JSON.stringify(content).slice(0, 80));
+    assert.equal(report.ready, true);
+  }
+  // A directory where the file should be is unreadable, not a throw.
+  rmSync(input.costStatusPath!, { force: true });
+  mkdirSync(input.costStatusPath!);
+  assert.equal(item(await assessReadiness(input), "financial controls").state, "UNVERIFIED");
+  // costReadiness itself is total: handed a malformed status directly, it answers UNVERIFIED.
+  const malformed = costReadiness({ state: "OK", status: { ...shallow("ATTENTION"), capturedAt: READ_AT.toISOString() } as never }, AWS_CONTRACT, "DEV", READ_AT);
+  assert.deepEqual(malformed.state, "UNVERIFIED");
+  assert.match(malformed.detail, /could not be judged/, "reached the judgment and was caught there, not refused earlier");
+  assert.equal(costReadiness({ state: "OK", status: null as never }, AWS_CONTRACT, "DEV", READ_AT).state, "UNVERIFIED");
 });

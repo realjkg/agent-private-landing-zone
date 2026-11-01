@@ -19,6 +19,15 @@ import {
 // time from harmless parts, so this file holds no key, token or contract that a scanner could mistake for a real one.
 
 const repository = fileURLToPath(new URL("../", import.meta.url));
+/**
+ * The owner's own files under config/, by the rule scripts/release-stage.sh and .dockerignore apply: the pilot contract, its
+ * drafts and the retired pin (act-pilot-contract* but the disabled *.example.json shapes), and config/evidence-runner.json.
+ * The owner's reviewed commit may put the contract in the checkout; it never reaches the package or the image.
+ */
+const ownerOwned = (path: string): boolean => {
+  const base = path.split("/").pop() ?? "";
+  return (path.startsWith("config/") && base.startsWith("act-pilot-contract") && !base.endsWith(".example.json")) || path === "config/evidence-runner.json";
+};
 const tsx = resolve(repository, "node_modules/.bin/tsx");
 const cli = resolve(repository, "src/cli/release-package.ts");
 /** The shell the staging tests run the script with: bash on PATH, or Apple's /bin/bash 3.2 in the macOS job (ALZ_STAGE_SHELL). */
@@ -176,7 +185,14 @@ test("the shipped content's own names and patterns are not mistaken for secrets"
     realFiles.push(...readdirSync(qualification, { recursive: true }).map((n) => "qualification/" + String(n))
       .filter((path) => /(?:\.terraform\.lock\.hcl|package-lock\.json|\.example\.json)$/.test(path)));
   }
-  for (const path of realFiles) assert.deepEqual(contentExclusions(path, readFileSync(join(repository, path))), [], path);
+  for (const path of realFiles) {
+    // An owner file in the checkout is not shipped content: the stage leaves it out and, by name, the guard refuses it.
+    if (ownerOwned(path)) {
+      assert.ok(pathExclusions(path).some((x) => x.code === "PILOT_CONTRACT" || x.code === "OWNER_CONFIGURATION"), path + " is refused by name");
+      continue;
+    }
+    assert.deepEqual(contentExclusions(path, readFileSync(join(repository, path))), [], path);
+  }
   const sbom = { bomFormat: "CycloneDX", specVersion: "1.5", components: [{ name: "zod", hashes: [{ alg: "SHA-512", content: "a".repeat(128) }],
     externalReferences: [{ type: "distribution", url: "https://registry.npmjs.org/zod/-/zod-3.0.0.tgz", hashes: [{ alg: "SHA-512", content: "b".repeat(128) }] }] }] };
   assert.deepEqual(contentExclusions("sbom.cdx.json", Buffer.from(JSON.stringify(sbom))), []);
@@ -451,9 +467,10 @@ test("the runtime image cannot hold the owner's files: .dockerignore keeps them 
   for (const owned of ["config/act-pilot-contract.json", "config/act-pilot-contract.sha256", "config/act-pilot-contract.aws-dev.draft.json", "config/evidence-runner.json"]) {
     assert.ok(dockerIgnored(patterns, owned), owned + " is kept out of the image");
   }
-  // Every committed configuration file still reaches the image.
+  // Every other configuration file in the checkout still reaches the image; an owner file there (the owner's reviewed contract) never does.
   for (const name of readdirSync(join(repository, "config"), { recursive: true }).map(String)) {
-    if (statSync(join(repository, "config", name)).isFile()) assert.equal(dockerIgnored(patterns, "config/" + name), false, "config/" + name);
+    const path = "config/" + name;
+    if (statSync(join(repository, "config", name)).isFile()) assert.equal(dockerIgnored(patterns, path), ownerOwned(path), path);
   }
   const dockerfile = readFileSync(join(repository, "Dockerfile"), "utf8");
   const runtime = dockerfile.slice(dockerfile.lastIndexOf("FROM "));

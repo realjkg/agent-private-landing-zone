@@ -14,6 +14,7 @@ import { APPLY_BACKEND_CONFIG_FILE, APPLY_INIT_ARGV } from "../src/apply/terrafo
 import type { ApplyEnvironment, PilotContract } from "../src/apply/types.js";
 import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
 import { targetString } from "../src/cli/teardown-driver.js";
+import { pathExclusions } from "../src/release/package-exclusions.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { SOURCE_COMMIT,
   AWS_REGION, DEV_TARGET, NOW, POLICY, awsContractJson, awsIdentityEnv, awsRoleArn, awsTargetOf, approvalFor as approval, behave as behaveIn, callsOf, contractJson,
@@ -89,7 +90,7 @@ const reasonOf = (contract: unknown): string => {
 
 // --- the contract field ---------------------------------------------------------------------------
 
-test("the field is required true for Terraform (owner decision 6486426552): absent and false are refused at load, true loads and is bound by the contract hash; the Terraform examples state it; no contract is shipped", () => {
+test("the field is required true for Terraform (owner decision 6486426552): absent and false are refused at load, true loads and is bound by the contract hash; the Terraform examples state it; the field package ships no contract", () => {
   const w = world(contractJson(KILL));
   const on = loadedContract(w) as PilotContract;
   assert.equal(on.enabled, true, JSON.stringify(on));
@@ -100,12 +101,13 @@ test("the field is required true for Terraform (owner decision 6486426552): abse
   }
   for (const bad of ["true", 1, null, "yes", [], {}]) assert.match(reasonOf(contractJson(KILL, { embedStateWrite: bad })), /embedStateWrite: expected true or false/);
   assert.equal((loadPilotContract(...(() => { const aws = world(awsContractJson(KILL), "AWS"); return [aws.contractPath] as const; })()) as PilotContract).embedStateWrite, true);
-  // The Terraform examples state the binding; the CDK example, which has no state backend, does not. The repository ships no contract and no pin.
+  // The Terraform examples state the binding; the CDK example, which has no state backend, does not. The field package ships no
+  // contract (the owner's reviewed commit may put one in the checkout), and the retired pin never exists.
   for (const name of ["act-pilot-contract.example.json", "act-pilot-contract.aws.example.json", "act-pilot-contract.aws-dev.example.json", "act-pilot-contract.azure-dev.example.json"]) {
     assert.match(readFileSync(fileURLToPath(new URL("../config/" + name, import.meta.url)), "utf8"), /"embedStateWrite": true/, name);
   }
   assert.ok(!readFileSync(fileURLToPath(new URL("../config/act-pilot-contract.aws-cdk.example.json", import.meta.url)), "utf8").includes("embedStateWrite"));
-  assert.equal(existsSync(fileURLToPath(new URL("../config/act-pilot-contract.json", import.meta.url))), false, "no contract is shipped");
+  assert.ok(pathExclusions("config/act-pilot-contract.json").some((x) => x.code === "PILOT_CONTRACT"), "the field package refuses the owner's contract");
   assert.equal(existsSync(fileURLToPath(new URL("../config/act-pilot-contract.sha256", import.meta.url))), false, "the retired pin is gone");
 });
 

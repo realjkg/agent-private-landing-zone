@@ -7,6 +7,8 @@
 // The session token is held in this module's memory only: never in storage, a cookie, the address bar or a log. Reloading the page
 // forgets it, and the person pastes it again. It travels in one request header, to the console's own origin.
 
+import { isCostStatus } from "../../../cost/shape.js";
+
 export type PilotEnvironment = "DEV" | "QA" | "PROD";
 export type PilotPath = "UI" | "CLI";
 export type PilotStep = "preflight" | "prepare" | "seal" | "approve" | "apply" | "observe" | "propose-cleanup" | "cleanup" | "verify-cleanup";
@@ -223,4 +225,71 @@ export async function fetchPilotPaths(): Promise<PilotReply<PathsReport>> {
   const reply = await send<unknown>("GET", "/paths");
   if (!reply.ok) return reply;
   return isPathsReport(reply.body) ? { ok: true, body: reply.body } : { ok: false, code: "PILOT_PATHS_UNREADABLE", message: "" };
+}
+
+// --- cost and visibility (GET /pilot/cost; src/cli/ui-channel.ts CostVisibility, src/cost/status.ts CostStatus) ---------------------
+
+/** Every value the cost status reports carries its label: read from AWS, AWS's (or the clock's) estimate, or not known and why. */
+export type CostLabeled<T> = { label: "OBSERVED"; value: T } | { label: "ESTIMATE"; value: T; basis: string } | { label: "UNKNOWN"; reason: string };
+export type CostMoney = { amount: string; unit: string };
+export type CostSubscriber = { type: "EMAIL" | "SNS"; address: string; confirmation: CostLabeled<"CONFIRMED" | "PENDING"> };
+export type CostNotification = {
+  notificationType: "ACTUAL" | "FORECASTED"; comparisonOperator: string; threshold: string; thresholdType: "PERCENTAGE" | "ABSOLUTE_VALUE";
+  alarmState: CostLabeled<"OK" | "ALARM">; subscribers: CostLabeled<CostSubscriber[]>;
+};
+export type CostOverall = "OBSERVED_COMPLETE" | "WAITING" | "STALE" | "ATTENTION" | "INCOMPLETE";
+export type CostStatusView = {
+  kind: "ALZ_COST_STATUS"; accountId: string; capturedAt: string; overall: CostOverall;
+  budget: {
+    name: string; state: "PRESENT" | "MISSING" | "UNKNOWN"; limit: CostLabeled<CostMoney>; period: CostLabeled<string>;
+    filters: CostLabeled<Record<string, string[]>>; actualSpend: CostLabeled<CostMoney>; forecastedSpend: CostLabeled<CostMoney>;
+    notifications: CostLabeled<CostNotification[]>; hasActualAlert: CostLabeled<boolean>; hasForecastAlert: CostLabeled<boolean>; hardSpendCap: false;
+  };
+  tags: { state: "ALL_PRESENT" | "MISSING" | "NO_RESOURCES_FOUND" | "UNKNOWN"; required: string[]; resources: CostLabeled<{ arn: string; present: string[]; missing: string[] }[]> };
+  costAllocationTags: { state: "ALL_ACTIVE" | "INACTIVE" | "UNKNOWN"; tags: { key: string; status: CostLabeled<string>; lastUpdated: CostLabeled<string> }[] };
+  export: {
+    state: "DELIVERED" | "WAITING" | "STALE" | "FAILED" | "MISSING" | "UNKNOWN" | "NOT_REQUESTED"; name: CostLabeled<string>; configValid: CostLabeled<boolean>;
+    configProblems: string[]; destination: CostLabeled<{ bucket: string; prefix: string; region: string }>; health: CostLabeled<string>;
+    lastExecution: CostLabeled<{ id: string; state: string; statusCode: string; at: string; reason?: string }>; lastDelivery: CostLabeled<string>;
+  };
+  freshness: { state: "FRESH" | "WAITING" | "STALE" | "UNKNOWN"; billingPeriod: CostLabeled<string>; latestDelivery: CostLabeled<string>; staleAfterHours: number;
+    analyticsIngestion: CostLabeled<string>; dashboardRefresh: CostLabeled<string> };
+  advisory: true; actEnabled: false;
+};
+export type CostConfigView = {
+  label: "CONFIGURED"; owner: string; tags: Record<string, string>;
+  budget: { name: string; amount: string; currency: string; period: string; actualThresholds: number[]; forecastThresholds: number[]; control: "ALERT_ONLY" | "ALERT_AND_BUDGET_ACTION" };
+  budgetAction: { enabled: false } | { enabled: true; effect: string; approvalModel: "MANUAL" | "AUTOMATIC"; thresholdPercent: number };
+  notifications: { route: string; emails: string[]; snsTopicArn: string | null; encryption: string };
+  limits: { allowedRegions: string[]; resourceFamilies: string[]; sizes: Record<string, string[]>; quantities: Record<string, number> };
+  review: { reviewBy: string; expiresOn: string | null };
+  export: { mode: string; exportName: string; bucket: string | null; prefix: string; granularity: string; retentionDays: number | null };
+  costAllocationTagActivation: "REQUESTED" | "NOT_REQUESTED";
+  analytics: "OFF" | "ON";
+};
+export type ContractLimitsView = { resources: { type: string; max: number; sizes?: string[]; families?: string[] }[]; regions?: string[] };
+export type CostVisibility = {
+  label: "COST_VISIBILITY"; readOnly: true; advisory: true; actEnabled: false; command: string;
+  status: { state: "NONE" | "UNREADABLE" | "UNKNOWN" } | { state: "OK"; cost: CostStatusView };
+  config: { state: "NONE" | "UNKNOWN" } | { state: "INVALID"; issues: { path: string; code: string }[] } | { state: "OK"; summary: CostConfigView };
+  contractLimits: { state: "DISABLED" | "UNKNOWN" } | { state: "OK"; environments: { environment: PilotEnvironment; limits: ContractLimitsView | null; canary: boolean }[] };
+};
+
+/** The same deep check the local reader uses (src/cost/shape.ts, browser-safe): a status not exactly as written is not data. */
+const isCostStatusView = (value: unknown): value is CostStatusView => isCostStatus(value);
+
+/** True only for a reply with the panel's shape. A status that is not well formed is shown as unreadable, never as data. */
+export function isCostVisibility(value: unknown): value is CostVisibility {
+  if (!isObject(value) || value.label !== "COST_VISIBILITY" || value.readOnly !== true || value.actEnabled !== false) return false;
+  const { status, config, contractLimits } = value;
+  return isObject(status) && (status.state !== "OK" || isCostStatusView(status.cost)) &&
+    isObject(config) && (config.state !== "OK" || (isObject(config.summary) && isObject(config.summary.budget) && isObject(config.summary.limits))) &&
+    isObject(contractLimits) && (contractLimits.state !== "OK" || Array.isArray(contractLimits.environments));
+}
+
+/** Read-only: the saved cost status, the cost configuration and the contract's limits. It reads AWS never; `./alz cost status` does. */
+export async function fetchCostVisibility(): Promise<PilotReply<CostVisibility>> {
+  const reply = await send<unknown>("GET", "/cost");
+  if (!reply.ok) return reply;
+  return isCostVisibility(reply.body) ? { ok: true, body: reply.body } : { ok: false, code: "COST_VISIBILITY_UNREADABLE", message: "" };
 }

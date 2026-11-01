@@ -124,6 +124,17 @@ export const governanceOperations: readonly OperationSpec[] = [
     evidenceBasis: "ADVISORY — computed only from the pasted entries; no billing or cloud access",
     inputs: [json("input", "Economics input JSON", "Shaped like config/economics.example.json.")],
   }, "economics", "input"),
+  {
+    id: "cost-status", family: "governance", safety: "HANDOFF", title: "Cost and visibility status",
+    summary: "Reads the budget, alerts, required tags, cost-allocation tags and cost export from AWS, read-only, and saves them for the Cost and visibility panel.",
+    cli: "./alz cost status --account <12-digit account> [--unit <unit> --region <region>] [--export-arn <arn>]",
+    evidenceBasis: "LIVE AWS READ-ONLY — budget, alerts, tags and cost export; advisory, a budget alerts and never caps spend; no change, ACT stays disabled",
+    cliScript: "src/cli/cost.ts", command: { group: "cost", sub: "status", args: ["status"] },
+    inputs: [{ kind: "text", name: "account", label: "AWS account", pattern: "[0-9]{12}", maxLength: 12, example: "111111111111",
+      help: "The account the cost baseline was deployed to." }],
+    handoff: { reason: "It reads AWS with the sign-in in your own terminal, which the console never holds. The Pilot apply area's Cost and visibility panel then shows what it read.",
+      command: "./alz cost status --account {account}", env: ["AWS_PROFILE"] },
+  },
   read({
     id: "health", title: "Runtime health and readiness",
     summary: "Prints a one-shot health snapshot, readiness checks and the effective observability settings.",

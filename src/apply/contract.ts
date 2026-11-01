@@ -15,7 +15,7 @@ import { ENGINE_IDS, engineOf, engineSpec, type EngineSpec } from "./engine-spec
 import { applyEvidenceProblems, qualificationEvidenceProblems, type QualificationEvidence } from "./evidence.js";
 import { accountFieldsOf, PROVIDER_IDS, providerSpec, specOf, type ProviderSpec } from "./provider.js";
 import { ACT_OPERATIONS, type ActOperation } from "./types.js";
-import type { ApplyEnvironment, ApplyEvidence, ApplyRefusalCode, ApplyResult, ApproverEntry, PilotCanary, PilotContract, PilotTarget } from "./types.js";
+import type { ApplyEnvironment, ApplyEvidence, ApplyRefusalCode, ApplyResult, ApproverEntry, PilotCanary, PilotContract, PilotLimits, PilotTarget } from "./types.js";
 
 /**
  * The pilot release contract (docs/act-pilot-plan.md, authority model 9). This
@@ -83,14 +83,16 @@ const integer = (value: unknown, path: string, min: number, max: number): number
 
 /**
  * A target in the contract's provider's shape: its account fields, then the backend and the workspace, the provider's optional fields
- * when stated (GCP: `parent`), the engine's own fields (CDK: the capabilities it may use), and the optional canary allowlist.
+ * when stated (GCP: `parent`), the engine's own fields (CDK: the capabilities it may use), and the optional canary allowlist or
+ * provisioning limits (one of the two, never both).
  */
 function target(value: unknown, path: string, spec: ProviderSpec, engine: EngineSpec): PilotTarget {
   const fields = Object.entries(spec.accountFields);
   const optional = Object.entries(spec.optionalTargetFields ?? {});
   const extra = Object.entries(engine.target?.fields ?? {});
-  const r = object(value, path, [...fields.map(([name]) => name), "backend", "workspace", ...extra.map(([name]) => name)], [...optional.map(([name]) => name), "canary"]);
+  const r = object(value, path, [...fields.map(([name]) => name), "backend", "workspace", ...extra.map(([name]) => name)], [...optional.map(([name]) => name), "canary", "limits"]);
   const flag = (name: string, ok: (v: unknown) => boolean): unknown => ok(r[name]) ? r[name] : bad(path + "." + name + ": invalid");
+  if (r.canary !== undefined && r.limits !== undefined) bad(path + ".limits: a target names either a canary allowlist or provisioning limits, not both");
   return {
     ...Object.fromEntries(fields.map(([name, ok]) => [name, text(r[name], path + "." + name, ok)])),
     backend: text(r.backend, path + ".backend", engine.target?.backendOk ?? spec.backendOk),
@@ -100,7 +102,69 @@ function target(value: unknown, path: string, spec: ProviderSpec, engine: Engine
     ...Object.fromEntries(extra.map(([name, ok]) => [name, flag(name, ok)])),
     // Absent stays absent, so a target that never names one hashes as it always did; an APPLY for it is refused (`authorizeContract`).
     ...(r.canary !== undefined ? { canary: canaryOf(r.canary, path + ".canary", engine) } : {}),
+    // The same for the provisioning limits: absent stays absent, so a canary target hashes exactly as it did before limits existed.
+    ...(r.limits !== undefined ? { limits: limitsOf(r.limits, path + ".limits", engine, spec, r) } : {}),
   } as PilotTarget;
+}
+
+/** At most this many regions, and this many sizes or families on one type, in one target's limits. */
+const MAX_LIMIT_REGIONS = 50;
+const MAX_LIMIT_SIZES = 50;
+/** A size or family as a provider names it (`t3.micro`, `t3`, `db.r6g`, `Standard_B2s`, `e2-medium`): a plain name, never a wildcard or a pattern. */
+const SIZE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** A list of 1 to `max` distinct strings, each accepted by `ok`. */
+function distinctNames(value: unknown, path: string, max: number, ok: (v: string) => boolean): string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > max) return bad(path + ": expected a list of 1 to " + max + " names");
+  const names = value.map((item, index) => text(item, path + "[" + index + "]", ok));
+  if (new Set(names).size !== names.length) bad(path + ": a name is listed twice");
+  return names;
+}
+
+/**
+ * The provisioning limits (owner direction 6536926009, plan item 3; `PilotLimits`): `{ resources: [{ type, max, sizes?, families? }],
+ * regions? }`. Each type is an exact resource type of the contract's engine (`EngineSpec.canaryTypeOk`, the canary's own type rule),
+ * named once, with a `max` from 1 (within the engine's own per-run bound, `canaryCountMax`); `sizes` and `families` only for a type in
+ * the engine's size table (`EngineSpec.limitSizeAttributes`); `regions` in the provider's own region or location form, and including
+ * the target's own region or location, so the limits never contradict where the target runs. No `retain`: a retained sentinel stays a
+ * canary-only form. No other key at any level. An engine with no type rule takes no limits.
+ */
+function limitsOf(value: unknown, path: string, engine: EngineSpec, spec: ProviderSpec, target: Record<string, unknown>): PilotLimits {
+  const r = object(value, path, ["resources"], ["regions"]);
+  const typeOk = engine.canaryTypeOk ?? bad(path + ": the " + engine.id + " engine takes no provisioning limits");
+  const list = r.resources;
+  if (!Array.isArray(list) || list.length === 0 || list.length > MAX_CANARY_TYPES) return bad(path + ".resources: expected a list of 1 to " + MAX_CANARY_TYPES + " resource types");
+  const seen = new Set<string>();
+  const resources = list.map((item, index) => {
+    const p = path + ".resources[" + index + "]";
+    const entry = object(item, p, ["type", "max"], ["sizes", "families"]);
+    const type = text(entry.type, p + ".type", (v) => typeOk(v));
+    if (seen.has(type)) bad(p + ".type: " + type + " is listed twice");
+    seen.add(type);
+    const max = integer(entry.max, p + ".max", 1, MAX_CANARY_COUNT);
+    if (engine.canaryCountMax !== undefined && max > engine.canaryCountMax) {
+      bad(p + ".max: the " + engine.id + " engine creates at most " + engine.canaryCountMax + " " + type + " per run, so its limit is at most " + engine.canaryCountMax);
+    }
+    const sized = entry.sizes !== undefined || entry.families !== undefined;
+    if (sized && engine.limitSizeAttributes?.[type] === undefined) {
+      bad(p + ": the " + engine.id + " engine does not read the size of " + type + " from its plan, so its limits cannot name sizes or families for it");
+    }
+    return {
+      type, max,
+      ...(entry.sizes !== undefined ? { sizes: distinctNames(entry.sizes, p + ".sizes", MAX_LIMIT_SIZES, (v) => SIZE_NAME.test(v)) } : {}),
+      ...(entry.families !== undefined ? { families: distinctNames(entry.families, p + ".families", MAX_LIMIT_SIZES, (v) => SIZE_NAME.test(v)) } : {}),
+    };
+  });
+  if (r.regions === undefined) return { resources };
+  // The provider's own form for a region (AWS and GCP `region`) or a location (Azure `location`).
+  const field = spec.accountFields.region !== undefined ? "region" : spec.optionalTargetFields?.location !== undefined ? "location" : undefined;
+  const regionOk = field === "region" ? spec.accountFields.region : field === "location" ? spec.optionalTargetFields?.location : undefined;
+  if (!field || !regionOk) return bad(path + ".regions: the " + spec.id + " provider names no region for a target");
+  const regions = distinctNames(r.regions, path + ".regions", MAX_LIMIT_REGIONS, regionOk);
+  const own = target[field];
+  if (typeof own !== "string") return bad(path + ".regions: the target names no " + field + ", so the allowed regions cannot include it");
+  if (!regions.some((region) => region.toLowerCase() === own.toLowerCase())) bad(path + ".regions: the target's own " + field + " (" + own + ") is not in the allowed regions");
+  return { resources, regions };
 }
 
 /** At most this many types, and this many of one type, in one canary allowlist. */
@@ -360,8 +424,9 @@ export type Authorization = { operation: ActOperation; contractSha256: string; a
 /**
  * The canonical hash of one environment's full target (review of #313, R1): provider, every account field (account or
  * subscription, tenant, region, project), the engine's location fields (Bicep: `resourceGroup`, where its deployment stack
- * is) and the provider's optional fields when the target states them (GCP: `parent`), backend, workspace and, when the target names one, its canary allowlist (owner decision E1), so changing the allowlist
- * is a target change. Sealed into the plan and recorded in the apply evidence, so a cleanup or removal runs only where the run
+ * is) and the provider's optional fields when the target states them (GCP: `parent`), backend, workspace and, when the target names one, its canary allowlist (owner decision E1)
+ * or its provisioning limits (owner direction 6536926009), so changing the allowlist or the limits is a target change; a target with neither
+ * hashes as #313 defined it. Sealed into the plan and recorded in the apply evidence, so a cleanup or removal runs only where the run
  * ran, under the allowlist it ran under, even when it is authorized by a later contract. Undefined when the contract has no
  * target for the environment.
  */
@@ -387,6 +452,7 @@ export function targetSha256Of(spec: ProviderSpec, engineTarget: EngineSpec["tar
   return sha256(canonicalJson({
     provider: spec.id, ...account, ...Object.fromEntries(located), backend: target.backend, workspace: target.workspace,
     ...(target.canary !== undefined ? { canary: target.canary } : {}),
+    ...(target.limits !== undefined ? { limits: target.limits } : {}),
   } as never));
 }
 
@@ -426,11 +492,11 @@ export function authorizeContract(contract: PilotContract, env: ApplyEnvironment
     return refuse("ACT_NOT_AUTHORIZED", "Not AUTHORIZED: the reviewed pilot contract does not authorize " + operation + " for " + contract.provider + " " + contract.engine + " " + env +
       ". Nothing ran. Only the owner's reviewed commit of the contract's authorize entry can authorize it.");
   }
-  // Owner decision E1: an APPLY names, in the same reviewed contract, exactly what it may create. No allowlist, no APPLY (fail closed).
-  if (operation === "APPLY" && contract.targets[env]?.canary === undefined) {
+  // Owner decision E1: an APPLY names, in the same reviewed contract, what it may create: a canary allowlist or provisioning limits. Neither, no APPLY (fail closed).
+  if (operation === "APPLY" && contract.targets[env]?.canary === undefined && contract.targets[env]?.limits === undefined) {
     return refuse("CANARY_ALLOWLIST_MISSING", "The reviewed pilot contract authorizes APPLY for " + contract.provider + " " + contract.engine + " " + env +
-      ", but that target names no canary allowlist (targets." + env + ".canary: the exact resource types and counts the apply may create). Nothing ran. " +
-      "Only the owner's reviewed commit of the contract can add it.");
+      ", but that target names no canary allowlist and no provisioning limits (targets." + env + ".canary: the exact resource types and counts the apply may create; or targets." + env +
+      ".limits: the types it may create with a maximum count each, and optionally the regions and sizes). Nothing ran. Only the owner's reviewed commit of the contract can add them.");
   }
   return { ok: true, authorization: { operation, contractSha256: pilotContractSha256(contract), authorizationSha256: authorizationSha256Of(entry), entry } };
 }

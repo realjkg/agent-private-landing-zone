@@ -1,0 +1,36 @@
+{
+  "owner": "platform-team",
+  "notifications": {
+    "route": "SNS_TOPIC",
+    "emails": ["finops@example.com"]
+  },
+  "tags": {
+    "cost-center": "cc-1234",
+    "environment": "dev"
+  },
+  "budget": {
+    "name": "alz-cost-baseline",
+    "amount": "250.00",
+    "currency": "USD",
+    "period": "MONTHLY",
+    "actualThresholds": [80, 100],
+    "forecastThresholds": [100]
+  },
+  "budgetAction": { "enabled": false },
+  "limits": {
+    "allowedRegions": ["us-east-2"],
+    "resourceFamilies": [],
+    "sizes": {},
+    "quantities": {}
+  },
+  "review": { "reviewBy": "2027-01-31" },
+  "export": {
+    "mode": "NEW_BUCKET",
+    "exportName": "alz-cur2",
+    "prefix": "cur2",
+    "granularity": "DAILY",
+    "retentionDays": 400
+  },
+  "activateCostAllocationTags": false,
+  "analytics": "OFF"
+}

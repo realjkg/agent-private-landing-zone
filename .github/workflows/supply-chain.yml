@@ -118,6 +118,7 @@ jobs:
       - name: Scan vulnerabilities and IaC configuration
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: v0.76.1
           scan-type: fs
           scan-ref: .
           scanners: vuln,misconfig
@@ -126,6 +127,8 @@ jobs:
           output: trivy-results.json
           exit-code: "1"
           trivyignores: .trivyignore.yaml
+          # Synthetic Terraform fixtures intentionally reference missing modules; scan real IaC and packaged runtime.
+          skip-dirs: test/fixtures/live/terraform
 
       - name: Upload release and qualification evidence
         if: always()
@@ -183,6 +186,7 @@ jobs:
       - name: Scan final runtime image for vulnerabilities and misconfigurations
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: v0.76.1
           scan-type: image
           image-ref: agent-private-landing-zone:ci-arm64
           scanners: vuln,misconfig

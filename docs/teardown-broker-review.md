@@ -117,3 +117,13 @@ The governing boundary: the operator authorizes the preview, the driver enforces
 ## Not proposed
 
 An agent-callable destroy tool; executing a destroy (Phase 2 needs your separate, explicit approval); any change to the broker, its allowlist or its capabilities; renaming anything to avoid the mutation-token check.
+
+## Later additions: the cost status reads (2026-10-31)
+
+Plan item 4 of the owner's cost-and-visibility direction (issue #39, comment 6536926009) adds eight read-only AWS tools. `src/tools/aws-cost-reads.ts` builds each argv and `test/aws-cost-reads.test.ts` pins it.
+
+- **The tools.** Budgets: `describe-budgets`, `describe-notifications-for-budget` and `describe-subscribers-for-notification`. Data Exports, in `us-east-1`: `list-exports`, `get-export` and `list-executions`. Cost Explorer: `list-cost-allocation-tags --type UserDefined`. The tagging API: `get-resources`, filtered on the deletion unit's tag only.
+- **Arguments.** Every argument is a constant or a request field that passes an exact pattern: a 12-digit account, a budget name with no separator or leading dash, a `us-east-1` export ARN, a unit id, a region, and a notification built from enumerated parts. Each tool refuses any field it does not take, and the other AWS tools refuse the cost fields.
+- **Gates.** Cloud-read capability is required, as for every provider read. No tool name carries a mutation token, so `mutationTools` stays empty.
+- **What the answers contain.** The Budgets answers include the subscriber addresses the budget's owner configured. This is recorded with its scope and purpose in the `costStatus` allow of `bootstrap/aws/discovery-policy.json`.
+- **Authority.** Nothing here writes, deletes or previews a deletion.

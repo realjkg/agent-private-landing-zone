@@ -29,15 +29,18 @@ export type AwsLeafBasis =
   /** The owner declared it deletable when this run created it (decision 6431744115, item 3), and nothing more than that list. */
   | "OWNER_DECISION"
   /** A common leaf, justified one by one in its reason. */
-  | "COMMON_LEAF";
+  | "COMMON_LEAF"
+  /** The landing zone's cost baseline creates it (owner direction 6536926009, plan items 2 and 3): budget alert routes and the billing export. */
+  | "COST_BASELINE";
 
 /**
  * How an attachment or setting names the resource it modifies, read from its own identifier in the state (design review 6434540427, B3):
  * SAME (the identifier is the parent's, as for an S3 bucket's settings and policy or an SQS queue's policy), BEFORE_FIRST_COLON or
- * BEFORE_FIRST_COMMA (`<parent>:<child>`, `<parent>,<role>`), AFTER_LAST_COLON (`<target>:<parent>`), or NOT_IN_STATE (the parent is not
- * in the identifier at all, so it can never be shown to be deleted and the entry is always held).
+ * BEFORE_FIRST_COMMA (`<parent>:<child>`, `<parent>,<role>`), AFTER_LAST_COLON (`<target>:<parent>`), BEFORE_LAST_COLON (`<parent ARN>:<child>`,
+ * as an SNS subscription's ARN is its topic's ARN followed by the subscription id), or NOT_IN_STATE (the parent is not in the identifier at
+ * all, so it can never be shown to be deleted and the entry is always held).
  */
-export type AwsParentKey = "SAME" | "BEFORE_FIRST_COLON" | "BEFORE_FIRST_COMMA" | "AFTER_LAST_COLON" | "NOT_IN_STATE";
+export type AwsParentKey = "SAME" | "BEFORE_FIRST_COLON" | "BEFORE_FIRST_COMMA" | "AFTER_LAST_COLON" | "BEFORE_LAST_COLON" | "NOT_IN_STATE";
 
 export type AwsLeafEntry = {
   /** What the object is. */
@@ -95,6 +98,7 @@ export function serviceControlPolicyProblem(entry: LeafObject): string | undefin
 }
 
 const BUCKETS = ["aws_s3_bucket", "awscc_s3_bucket", "AWS::S3::Bucket"] as const;
+const TOPICS = ["aws_sns_topic", "awscc_sns_topic", "AWS::SNS::Topic"] as const;
 
 export const AWS_LEAF_TYPES: readonly AwsLeafEntry[] = [
   // The pilot's own journeys.
@@ -127,7 +131,7 @@ export const AWS_LEAF_TYPES: readonly AwsLeafEntry[] = [
     what: "an SNS topic",
     reason: "a topic and its subscriptions; deleting it deploys or deletes no other resource",
     basis: "PILOT_JOURNEY",
-    types: ["aws_sns_topic", "awscc_sns_topic", "AWS::SNS::Topic"],
+    types: [...TOPICS],
   },
   {
     what: "an SSM parameter",
@@ -241,6 +245,33 @@ export const AWS_LEAF_TYPES: readonly AwsLeafEntry[] = [
     reason: "one application user in a pool; deleting it removes that user only (owner: deletable when run-created)",
     basis: "OWNER_DECISION",
     types: ["aws_cognito_user", "awscc_cognito_user_pool_user", "AWS::Cognito::UserPoolUser"],
+  },
+  // The cost baseline (owner direction 6536926009). Its budget (aws_budgets_budget), topic (aws_sns_topic) and export bucket with its
+  // settings and policy (aws_s3_bucket and its siblings) are listed above. Not seeded, on purpose: `aws_ce_cost_allocation_tag`. Its
+  // "delete" deactivates a cost allocation tag for the whole account (organization-wide in a management account), and a planned "create"
+  // of a tag that was already active does not prove the run activated it, with no parent in the state to tie it to the run; so a cleanup
+  // holds it for a person (TYPE_UNREVIEWED) instead of switching off a tag the account's billing reports may rely on.
+  // Nor `aws_budgets_budget_action`, the opt-in budget action: it holds an execution role and can apply an IAM or SCP policy or stop
+  // instances when it fires, so whether a cleanup may remove one, and what it may already have done, stays the owner's decision.
+  {
+    what: "an SNS topic subscription",
+    reason: "one subscription of an endpoint to a topic; deleted only with its topic, because deleting the topic removes every subscription, a pending (unconfirmed) one included, which an unsubscribe cannot",
+    basis: "COST_BASELINE",
+    parent: { types: TOPICS, key: "BEFORE_LAST_COLON" },
+    types: ["aws_sns_topic_subscription", "AWS::SNS::Subscription"],
+  },
+  {
+    what: "an SNS topic policy",
+    reason: "the access policy on its topic (for a budget alert route, the statement that lets AWS Budgets publish); deleted only with the topic, because creating one overwrites the policy a topic had",
+    basis: "COST_BASELINE",
+    parent: { types: TOPICS, key: "SAME" },
+    types: ["aws_sns_topic_policy"],
+  },
+  {
+    what: "a Data Exports (CUR 2.0) export",
+    reason: "one export definition; deleting it stops future deliveries and deletes no delivered report and no bucket (the bucket is its own entry above, and holds the data)",
+    basis: "COST_BASELINE",
+    types: ["aws_bcmdataexports_export", "AWS::BCMDataExports::Export"],
   },
   // Common leaves; each data-bearing one carries a material-risk note in the proposal (src/apply/cleanup-proposal.ts, MATERIAL_RISKS), which a test enforces.
   {

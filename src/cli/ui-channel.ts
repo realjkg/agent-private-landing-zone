@@ -10,7 +10,9 @@ import { authorizationEntryOf, isKillSwitchActive, loadPilotContract, pilotContr
 import { proposalLines, verifyCleanupProposal, type CleanupProposal } from "../apply/cleanup-proposal.js";
 import { verifyReviewBundle } from "../apply/seal.js";
 import { ENVIRONMENTS, stripInvisible } from "../apply/constants.js";
-import type { ApplyEnvironment, PlanChange, PreviewProvenance, SealedPlan } from "../apply/types.js";
+import type { ApplyEnvironment, PilotLimits, PlanChange, PreviewProvenance, SealedPlan } from "../apply/types.js";
+import { costConfigSummary, costPaths, readCostSnapshot, readLocalCostConfig, type CostConfigSummary } from "../cost/local.js";
+import type { CostStatus } from "../cost/status.js";
 import { deploymentPaths, rememberedReadiness, type CurrentContract, type PathEnvironment, type RememberedReadiness } from "../release/pilot-paths.js";
 import { runApplyCommand, type ApplyCliDeps, type ApplyReport } from "./apply.js";
 import type { AskExpectation, HumanTerminal, PhraseKind } from "./teardown-driver.js";
@@ -213,6 +215,25 @@ export type PilotRouterOptions = {
   cli?: PilotChannelDeps;
   /** Where a signed approval is saved for the operator. Default: .runs/apply/approvals under the repository. */
   approvalsDir?: string;
+  /** The cost configuration and saved cost status GET /pilot/cost reads. Default: config/cost.json and .runs/cost/status.json under `root`. */
+  cost?: { configPath?: string; statusPath?: string };
+};
+
+/**
+ * What GET /pilot/cost returns (the "Cost and visibility" panel; plan item 5). Read-only: the saved status the last `./alz cost status`
+ * read (typed, with full addresses for the local operator), the cost configuration as configured, and the provisioning limits the
+ * contract's seal judge enforces. Each part that cannot be read is UNKNOWN or UNREADABLE, never a passing value and never an error page.
+ */
+export type CostVisibility = {
+  label: "COST_VISIBILITY";
+  readOnly: true;
+  advisory: true;
+  actEnabled: false;
+  /** The terminal command that reads AWS; the console never runs it. */
+  command: string;
+  status: { state: "NONE" | "UNREADABLE" | "UNKNOWN" } | { state: "OK"; cost: CostStatus };
+  config: { state: "NONE" | "UNKNOWN" } | { state: "INVALID"; issues: { path: string; code: string }[] } | { state: "OK"; summary: CostConfigSummary };
+  contractLimits: { state: "DISABLED" | "UNKNOWN" } | { state: "OK"; environments: { environment: ApplyEnvironment; limits: PilotLimits | null; canary: boolean }[] };
 };
 
 export type PilotRouter = {
@@ -278,6 +299,24 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
       authorized: entries.map(({ environment, entry }) => ({ environment, operations: [...entry.operations] })),
       approved: entries.map(({ environment }) => ({ environment, requiredApprovals: loaded.requiredApprovals[environment] ?? 0 })),
     };
+  };
+  const costFiles = { ...costPaths(options.root), ...(options.cost?.configPath ? { config: options.cost.configPath } : {}), ...(options.cost?.statusPath ? { status: options.cost.statusPath } : {}) };
+  const costVisibility = (): CostVisibility => {
+    let status: CostVisibility["status"];
+    try { const snapshot = readCostSnapshot(costFiles.status); status = snapshot.state === "OK" ? { state: "OK", cost: snapshot.status } : snapshot; }
+    catch { status = { state: "UNKNOWN" }; }
+    let config: CostVisibility["config"];
+    try { const local = readLocalCostConfig(costFiles.config); config = local.state === "OK" ? { state: "OK", summary: costConfigSummary(local.config) } : local; }
+    catch { config = { state: "UNKNOWN" }; }
+    let contractLimits: CostVisibility["contractLimits"];
+    try {
+      const loaded = loadPilotContract(options.cli?.contractPath ?? repoPaths().contract);
+      contractLimits = "reason" in loaded ? { state: "DISABLED" } : { state: "OK", environments: ENVIRONMENTS.flatMap((environment) => {
+        const target = loaded.targets[environment];
+        return target ? [{ environment, limits: target.limits ? structuredClone(target.limits) : null, canary: target.canary !== undefined }] : [];
+      }) };
+    } catch { contractLimits = { state: "UNKNOWN" }; }
+    return { label: "COST_VISIBILITY", readOnly: true, advisory: true, actEnabled: false, command: "./alz cost status --account <account>", status, config, contractLimits };
   };
   const absolute = (path: string): string => resolve(options.root, path);
   const running = (): boolean => run !== undefined && run.done === undefined;
@@ -452,6 +491,12 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
       try { report = deploymentPaths(options.root, [...readinessByEnvironment.values()], currentContract()); }
       catch { throw new Bad(503, "PILOT_PATHS_UNAVAILABLE", "The release records for the deployment paths cannot be read on this computer."); }
       send(res, context.headers, 200, report);
+      return;
+    }
+    if (req.method === "GET" && url === PILOT_BASE + "/cost") {
+      // Read-only: two local files and the contract, never a cloud call. The session token is required, as for every pilot route with data.
+      if (!authenticated) throw new Bad(401, "PILOT_TOKEN_REQUIRED", "The session token is missing or wrong. Paste the token printed in the terminal where you started the console.");
+      send(res, context.headers, 200, costVisibility());
       return;
     }
     if (req.method !== "POST") throw new Bad(405, "PILOT_METHOD_NOT_ALLOWED", "That is not allowed here.");
