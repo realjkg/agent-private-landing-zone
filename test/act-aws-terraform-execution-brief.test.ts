@@ -4,6 +4,10 @@ import test from "node:test";
 
 import { runApplyCommand } from "../src/cli/apply.js";
 import { parseEvidenceArgs } from "../src/cli/evidence.js";
+import { readCostStatus } from "../src/cost/status.js";
+import { renderAwsCostBaselineProject } from "../src/build/cost-baseline.js";
+import { resolveCostConfig } from "../src/design/cost.js";
+import { CLOUD_CONTROL_TYPES } from "../src/observe/verify.js";
 import type { HumanTerminal } from "../src/cli/teardown-driver.js";
 import { operationGroups } from "../src/operations/registry.js";
 
@@ -257,4 +261,41 @@ test("the brief lists the owner's minimum acceptance items 1 to 8 for the cost b
   for (const field of ["hasActualAlert", "spendCalculatedAt", "hardSpendCap", "configValid", "analyticsIngestion", "UNIT_TAGGED_RESOURCES_ONLY", "NOT_REPORTED_BY_AWS", "NOT_SELECTED"]) {
     assert.ok(status.includes(field) && BRIEF.includes(field), field);
   }
+});
+
+test("the cost payload's expected observe, cleanup and day-one results match the code (#378 review B1-B3)", async () => {
+  const section = BRIEF.slice(BRIEF.indexOf("## Cost baseline as payload"), BRIEF.indexOf("## Stop and recovery"));
+  // B1: the rendered types with no Cloud Control mapping are UNVERIFIABLE at observe.
+  const config = resolveCostConfig({ ...JSON.parse(readFileSync("config/cost.example.json", "utf8")), activateCostAllocationTags: true });
+  const rendered = renderAwsCostBaselineProject(config);
+  const createdTypes = new Set(rendered.metadata.creates.map((entry) => entry.type));
+  const unmapped = [...createdTypes].filter((type) => !Object.hasOwn(CLOUD_CONTROL_TYPES, type)).sort();
+  // Every unmapped rendered type is named as UNVERIFIABLE, and every mapped one as checkable.
+  assert.ok(unmapped.includes("aws_budgets_budget") && unmapped.includes("aws_sns_topic_subscription") && unmapped.includes("aws_ce_cost_allocation_tag"));
+  const observeText = section.slice(section.indexOf("**Observe (`./alz apply observe`):**"), section.indexOf("**Cost status on day one:**"));
+  const [mappedPart, unmappedPart] = observeText.split("Every other rendered type records");
+  for (const type of unmapped) assert.ok(unmappedPart.includes("`" + type + "`") && !mappedPart.includes("`" + type + "`"), type);
+  for (const type of [...createdTypes].filter((type) => Object.hasOwn(CLOUD_CONTROL_TYPES, type))) assert.ok(mappedPart.includes("`" + type + "`"), type);
+  assert.ok(section.includes("UNVERIFIABLE") && section.includes("NO_CLOUD_CONTROL_MAPPING"));
+  // B1: the export bucket keeps billing data (force_destroy false), so cleanup after a delivery is expected to fail closed.
+  const bucketBlock = rendered.terraform.slice(rendered.terraform.indexOf('resource "aws_s3_bucket" "cost_export" {'));
+  assert.match(bucketBlock.slice(0, bucketBlock.indexOf("\n}\n")), /^\s*force_destroy\s*=\s*false$/m);
+  assert.ok(section.includes("`force_destroy = false`") && section.includes("expected to fail closed"));
+  assert.ok(section.includes("NOT_INDEPENDENTLY_CHECKABLE") && readFileSync("src/apply/leftovers.ts", "utf8").includes('"NOT_INDEPENDENTLY_CHECKABLE"'));
+  // B2: the day-one expectation names INCOMPLETE and ATTENTION, and never "Expect WAITING on the first day".
+  assert.ok(!section.includes("Expect `WAITING` on the first day"));
+  assert.ok(section.includes("`overall` is expected to read `INCOMPLETE`") && section.includes("`ATTENTION`"));
+  // B3: under the default route the budget's subscriber is the topic.
+  assert.equal(JSON.parse(readFileSync("config/cost.example.json", "utf8")).notifications.route, "SNS_TOPIC");
+  assert.ok(section.includes("Under the default `SNS_TOPIC` route") && section.includes("`EMAIL_DIRECT`"));
+  // N4: --unit and --region together, refused before any read.
+  let reads = 0;
+  await assert.rejects(readCostStatus({ accountId: "111111111111", budgetName: "alz-cost-baseline", requiredTagKeys: [], unitId: "alzu-0" } as never,
+    async () => { reads += 1; return {}; }), /COST_STATUS_UNIT_NEEDS_REGION/);
+  assert.equal(reads, 0);
+  assert.ok(section.includes("COST_STATUS_UNIT_NEEDS_REGION") && section.includes("COST_STATUS_EXPORT_ACCOUNT_MISMATCH"));
+  assert.ok(readFileSync("src/cli/cost.ts", "utf8").includes("COST_STATUS_EXPORT_ACCOUNT_MISMATCH"));
+  // N5: the build's own refusals.
+  const build = readFileSync("src/cli/real-private-build.ts", "utf8");
+  for (const code of ["SOURCE_WORKTREE_DIRTY", "AGENT_SKIP_LOCAL_MODEL"]) assert.ok(build.includes(code) && section.includes(code), code);
 });

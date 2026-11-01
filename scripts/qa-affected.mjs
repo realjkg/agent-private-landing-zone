@@ -89,6 +89,10 @@ export const DOC_INPUT_OWNERS = {
   "docs/cost-baseline-deploy.md": [BRIEF_TEST],
   "config/cost.example.json": [BRIEF_TEST],
   "src/cost/status.ts": [BRIEF_TEST],
+  // The refusal codes and dispositions the payload's expected results cite, read by text (#378 review B1, N4, N5).
+  "src/apply/leftovers.ts": [BRIEF_TEST],
+  "src/cli/cost.ts": [BRIEF_TEST],
+  "src/cli/real-private-build.ts": [BRIEF_TEST],
 };
 
 // Fixtures a test reads from disk (not imported), so the import closure never selects their owner.
