@@ -2,7 +2,7 @@
 
 Status: prefilled from `main` at `fd5fd9b`, for the owner closeout direction of 2026-10-29 (issue #39, comment 6508815426, item 5) and the earlier owner input sheet (6486480658, track B).
 
-- It covers one path, AWS Terraform, in DEV only, and one canary.
+- It covers one path, AWS Terraform, in DEV only, with one payload: the log-group canary or, under a `limits` contract, the cost baseline (see "Cost baseline as payload").
 - Everything already decided is filled in below.
 - Only the eight owner fields remain open, plus one value you fill in the contract, `policyVersion` (see "The ninth value").
 - The six-step owner sequence follows.
@@ -379,6 +379,179 @@ The cleanup owner authorizes the cleanup separately, within the maximum lifetime
 
 The pass and stop criteria of steps 4 to 6 apply unchanged.
 
+## Cost baseline as payload
+
+For the first supervised DEV run, the payload may be the AWS cost baseline instead of the log-group canary. This follows the owner direction "complete cycle of steps" (#39, 6560226568, step 3) and #376.
+
+The operator steps are in [`docs/cost-baseline-deploy.md`](cost-baseline-deploy.md), and this section does not repeat them. What changes:
+
+- steps 1 to 3 are unchanged, except that the contract uses `limits`;
+- steps 4 to 6 run against the project the build writes, not a canary copy;
+- **the pass criteria of steps 5 and 6 are replaced** by "Expected results for this payload" below. Three of the canary's criteria cannot hold for this payload, by design:
+  - "exactly one `aws_cloudwatch_log_group`";
+  - "`observe` is VERIFIED";
+  - "`verify-cleanup` reports COMPLETE".
+
+There is no separate path, gate, approval or authority. This section authorizes nothing either, and agents never run the live steps.
+
+### Owner checklist
+
+1. **Fill the inputs:**
+   - the eight owner fields and `policyVersion`, as above;
+   - `config/cost.json`, copied from `config/cost.example.json`. It is git-ignored because it holds recipient addresses; never post it.
+
+   The cost project has no `canary_name` variable. Its owner tag comes from `owner` in `config/cost.json`.
+2. **Use a `limits` contract.** Start the step 2 draft from `config/act-pilot-contract.aws-dev-limits.example.json`, not the canary example. Its DEV target names `limits` instead of `canary`:
+   - every type the default configuration renders;
+   - the regions `us-east-2` and `us-east-1`, the latter because Data Exports is served from there.
+
+   Add `aws_kms_key` only if you set `notifications.encryption` to `CUSTOMER_KMS`. Add `aws_budgets_budget_action` only if you enable `budgetAction`. Without its entry, either type fails closed with `RESOURCE_NOT_IN_LIMITS`, before anything is consumed.
+3. **Build the project** on the trusted build host (`docs/cost-baseline-deploy.md`, section 1). This is `node`, not `./alz`; there is no guided entry yet (see the #376 notes below). It needs:
+   - a built `dist/` (`./alz bootstrap`);
+   - a clean worktree, or it stops with `SOURCE_WORKTREE_DIRTY`. The git-ignored `config/cost.json` does not count;
+   - `AGENT_SKIP_LOCAL_MODEL` unset.
+
+   ```sh
+   ALZ_ALLOW_REAL_PRIVATE_BUILD=1 ALZ_ALLOW_TERRAFORM_PLAN=1 TF_VAR_aws_region=<home-region> \
+     node dist/cli/real-private-build.js --live-aws-read-only --scenario cost-baseline
+   ```
+
+   It writes the project to `.runs/qualification/real-private-build/<run-id>/project/` and prints the path.
+4. **Prepare twice.**
+   1. Copy the project's `terraform.tfvars.example.json` to `terraform.tfvars.json`.
+   2. Run `prepare`, and copy the three unit tags it prints into `unit_tags`.
+   3. Run `prepare` again, and use the files from that second run.
+
+   ```sh
+   ./alz apply prepare --environment DEV --project <COST_PROJECT>
+   ```
+
+5. **Qualify, seal, approve and apply** as steps 4 and 5, with `--project` pointing at the cost project.
+   - The change list must create only the types, counts and regions that `limits` admits.
+   - Under a limits contract, the same judge runs at three points, and each refuses with `RESOURCE_NOT_IN_LIMITS` where the canary path says `RESOURCE_NOT_IN_CANARY`: the qualification plan, `seal`, and the apply's re-derivation of the change list. A type left out, a count over its `max`, and a region outside `regions` are all refused.
+6. **Observe:**
+
+   ```sh
+   ./alz apply observe --sealed <SEALED_PLAN>
+   ./alz cost status --account <DEV_ACCOUNT_ID> --unit <UNIT_ID> --region <HOME_REGION>
+   ```
+
+   - `--account` is required.
+   - `--unit` (the `alz-unit` value `prepare` printed) and `--region` turn on the tag check, and must be given together (`COST_STATUS_UNIT_NEEDS_REGION`). Without both, `tags.state` is `UNKNOWN` (`NOT_REQUESTED`).
+   - `--export-arn <arn>` is optional, and must name an export in the `--account` account (`COST_STATUS_EXPORT_ACCOUNT_MISMATCH`). Without it, the export is looked up by `export.exportName` from `config/cost.json`.
+   - `./alz cost status` reads with the AWS sign-in of the terminal it runs in, read-only (`src/cli/cost.ts`). Run it in a separate shell with a read-only sign-in for the DEV account, not in the shell that holds the `ALZ_*` identity variables.
+   - It prints a short summary, with recipient emails masked, and saves the full typed status to `.runs/cost/status.json` (owner-only). Do not post that file: it holds the recipients.
+7. **Record acceptance.** Record the minimum acceptance items 1 to 8 below against the existing `pillar:cost` gate. Do this only once you return that gate to the release scope; today it is `OUT_OF_SCOPE` in `config/release/scope.json`. No new gate id is added.
+8. **Clean up** with the step 6 commands, against the expected results below, when the run is done.
+
+### Expected results for this payload (they replace the pass criteria of steps 5 and 6)
+
+**Step 5 (seal and apply):**
+
+- **Pass:** the change list creates only admitted types within their `max`, in `us-east-2` and `us-east-1`; `apply` ends `SUCCEEDED`; the unit tags are on every created, taggable resource.
+- **Stop:** `RESOURCE_NOT_IN_LIMITS`, or any outcome other than `SUCCEEDED`, as in step 5.
+
+**Observe (`./alz apply observe`):** it cannot be VERIFIED for this payload, by design. Cloud Control mappings exist (`CLOUD_CONTROL_TYPES` in `src/observe/verify.ts`) only for these rendered types:
+
+- `aws_s3_bucket`;
+- `aws_sns_topic`;
+- `aws_bcmdataexports_export`;
+- `aws_kms_key`, if you turned it on.
+
+Every other rendered type records `UNVERIFIABLE`, with `NO_CLOUD_CONTROL_MAPPING`:
+
+- the budget, `aws_budgets_budget`;
+- the subscriptions, `aws_sns_topic_subscription`;
+- the topic policy, `aws_sns_topic_policy`;
+- the five bucket settings: `aws_s3_bucket_policy`, `aws_s3_bucket_ownership_controls`, `aws_s3_bucket_public_access_block`, `aws_s3_bucket_server_side_encryption_configuration` and `aws_s3_bucket_lifecycle_configuration`;
+- `aws_ce_cost_allocation_tag`, which is rendered only when activation is on.
+
+**Pass:**
+
+- the mapped resources are VERIFIED;
+- only the unmapped types are UNVERIFIABLE;
+- nothing is missing, misplaced or unexpected;
+- the budget is confirmed by `./alz cost status` instead, with `budget.state` `PRESENT`.
+
+**Stop:** a mapped resource is not VERIFIED, or something unexpected carries the run's tag.
+
+**Cost status on day one:** `overall` is expected to read `INCOMPLETE`, not `WAITING`. `overallOf` in `src/cost/status.ts` ranks `ATTENTION`, then `STALE`, then `INCOMPLETE`, then `WAITING`.
+
+- **Why `INCOMPLETE`:** the required tag keys are not yet in billing, so `costAllocationTags.state` is `UNKNOWN`. The reason is `TAG_KEY_NOT_YET_IN_BILLING`, or possibly `ACCESS_DENIED` in a member account. The same happens without `--unit` and `--region`, because `tags.state` is then `UNKNOWN`.
+- **Later, `ATTENTION`:** once the keys reach billing as `Inactive` (the default, `activateCostAllocationTags: false`), `costAllocationTags.state` becomes `INACTIVE`. That drives `overall` to `ATTENTION` until the keys are activated.
+- **What reads `WAITING`:** only `export.state` and `freshness.state`, until the first CUR 2.0 delivery (up to 24 hours).
+- **Spend:** a new budget has no calculated spend yet, so `budget.actualSpend` is `UNKNOWN`. That is never zero spend. A budget alerts; it never caps spend.
+
+**Cleanup:** `verify-cleanup` cannot report COMPLETE for this payload.
+
+- **Settings follow their parent.** A setting shares its parent's identifier, so once the parent is confirmed gone it reads `CONFIRMED_DELETED` on `PARENT_ABSENT` (`src/apply/leftovers.ts`). This covers the bucket settings and, expected, the topic policy.
+- **The budget has no independent reader and no parent.** It stays `UNKNOWN` with `NOT_INDEPENDENTLY_CHECKABLE`. Confirm its deletion yourself, with `./alz cost status` (`budget.state` `MISSING`) or in the console.
+- **Subscriptions are deleted with their topic, but `verify-cleanup` cannot confirm it.** The proposal deletes them with their topic as `UNVERIFIABLE` (`BEFORE_LAST_COLON`), but `verify-cleanup` matches parents only by identical identifier. A subscription's identifier is its own ARN, never the topic's, so it stays `UNKNOWN` (`NOT_INDEPENDENTLY_CHECKABLE`). Confirm the subscriptions are gone in the SNS console.
+- **An activated cost-allocation tag stays.** It is held for a person (`TYPE_UNREVIEWED`, not on the reviewed leaf list in `src/observe/aws-leaf-types.ts`).
+- **A cleanup cannot keep part of the run.** `propose-cleanup` has no per-resource selection: it takes only `--sealed`, `--requester` and `--key`, and the proposal deletes every run-created leaf.
+- **Billing data in the export bucket:** the bucket is rendered with `force_destroy = false` (`src/build/cost-baseline.ts`), so billing data is never deleted silently. A cleanup run against a bucket that holds a CUR 2.0 delivery is expected to go badly, as follows (inferred from the dependency order; untested):
+  - Terraform destroys the bucket's dependents first: the bucket policy, the public access block, the encryption configuration, the lifecycle configuration, the ownership controls and the export.
+  - Then `DeleteBucket` fails on the non-empty bucket.
+  - The billing data is left in a bucket without its own protections, and the run ends `PARTIAL_REQUIRES_REVIEW`.
+  - The stripped settings then read `UNKNOWN` in `verify-cleanup`, because their parent is not absent.
+
+  **Before any cleanup, choose one of two ways:**
+  - **(a) Leave the run in place.** Run no cleanup until you have decided.
+  - **(b) Copy the billing data out and empty the bucket**, yourself, outside the product, with an admin identity. Do this before you run `propose-cleanup`.
+
+  A partial cleanup spends its proposal. It needs your review and a new proposal, as in step 6.
+- **Pass:** every proposed deletion is `CONFIRMED_DELETED`, except the budget and the subscriptions, which you confirm as above.
+- **Stop:** `STILL_PRESENT` or `UNKNOWN` for anything other than the budget and the subscriptions, or any cleanup outcome other than `SUCCEEDED`.
+
+### Minimum acceptance for the first AWS implementation (items 1 to 8)
+
+These are the owner's own minimum acceptance items (owner message, 2026-10-31; #39, 6536926009).
+
+- The field paths below are those of the status `./alz cost status` saves (`CostStatus` in `src/cost/status.ts`).
+- Every value in that status is labeled `OBSERVED` (read from AWS in this call), `ESTIMATE` (with its basis named) or `UNKNOWN` (with the reason). A labeled list holds its items under `.value`. For example: `budget.notifications.value[].subscribers.value[]` and `tags.resources.value[]`.
+- Where the product reads nothing, the evidence is yours, from the AWS console, and is labeled as your observation.
+
+| # | Item | Where the evidence comes from |
+| --- | --- | --- |
+| 1 | A deployed budget with the intended amount, filters, and recipients | **Budget:** from `./alz cost status`. `budget.state` must be `PRESENT`; compare `budget.limit`, `budget.period` and `budget.filters` with `budget` in `config/cost.json`.<br><br>**Recipients depend on the route:**<br>- Under the default `SNS_TOPIC` route, the budget's only subscriber is the topic. `budget.notifications.value[].subscribers.value[].address` is then the topic ARN (type `SNS`), and the status never reads SNS. Check the email recipients in the SNS console (Subscriptions), as for item 2.<br>- The comparison with the emails in `notifications.emails` applies only to `EMAIL_DIRECT`, and to the direct emails of `EXISTING_SNS_TOPIC`. |
+| 2 | Confirmed notification subscriptions and a safe test of the notification route | **Not read by the product.** `confirmation` is always `UNKNOWN`: `NOT_REPORTED_BY_AWS` for an email recipient (Budgets has no such API), and `NOT_READ` for an SNS topic (the status does not read SNS).<br><br>The status does show that the notifications and subscribers exist, and it reports `budget.hasActualAlert` and `budget.hasForecastAlert`.<br><br>Confirm the subscriptions yourself: in the SNS console (Subscriptions), or by the confirmation email each recipient accepts. Then make a safe test of the route, for example a test message published to the alert topic from the SNS console. The product offers no test send. |
+| 3 | Required tags present on supported deployed resources | From `./alz cost status --account <DEV_ACCOUNT_ID> --unit <UNIT_ID> --region <HOME_REGION>`: `tags.state` must be `ALL_PRESENT`. Each `tags.resources.value[]` entry has `present` and `missing`, compared against `tags.required` (the keys of `tags` in `config/cost.json`).<br><br>Coverage is `UNIT_TAGGED_RESOURCES_ONLY`: the tagging API lists only resources that carry the unit's tag. `NO_RESOURCES_FOUND` is not a pass.<br><br>`./alz apply observe` and `seal` add to this evidence: `seal` checks the unit tags on every created, taggable resource. |
+| 4 | Cost-allocation tag activation status reported | From `./alz cost status`: `costAllocationTags.state` (`ALL_ACTIVE`, `INACTIVE` or `UNKNOWN`), and each key's `status` and `lastUpdated`.<br><br>The item asks for the status to be **reported**, not for activation. `UNKNOWN` with `TAG_KEY_NOT_YET_IN_BILLING` is an honest report.<br><br>`INACTIVE` drives `overall` to `ATTENTION`, as expected while activation is off. Activation is off by default and runs only in a management or standalone account (see "Confirm live"). |
+| 5 | A valid export configuration and observed first delivery, or an explicit waiting state | From `./alz cost status`: `export.configValid` (with `export.configProblems`), `export.destination`, `export.health` and `export.state`, plus `freshness.state` and `freshness.latestDelivery`.<br><br>**Passes only as:**<br>- `DELIVERED`, with `export.lastDelivery`;<br>- or `WAITING` (nothing delivered yet, and nothing failed), with `export.configValid` observed `true`.<br><br>**Fails as:** `STALE`, `FAILED`, `MISSING`, `UNKNOWN` or `NOT_REQUESTED`. |
+| 6 | Configured provisioning limits tested against allowed and refused examples | The judge on the contract's `targets.DEV.limits` (`src/apply/canary.ts`). The `limits` in `config/cost.json` are data that nothing enforces by themselves.<br><br>**Allowed:** the cost project's `seal` succeeds, and its change list shows only admitted types, counts and regions.<br><br>**Refused:** a `seal` of a project that creates something outside the limits stops with `RESOURCE_NOT_IN_LIMITS`, before anything is sealed or any approval is consumed.<br><br>**A ready refused example:** a `seal` of the log-group canary copy, because `aws_cloudwatch_log_group` is not in the limits example. It is expected to stop with `RESOURCE_NOT_IN_LIMITS` ("type aws_cloudwatch_log_group is not in the provisioning limits"), but only if all three of these hold. Otherwise an earlier gate refuses first, for example `ARTIFACT_INVALID` for a manifest prepared under another contract:<br>- the canary copy was prepared again under the committed limits contract;<br>- the identity delivery is running;<br>- the requester key is on the allowlist.<br><br>**This is a live step.** The seal runs a real, read-only DISCOVERY plan in the account. If you run `qualify` on that copy first, its throwaway plan stops with the same code.<br><br>The emulated suite shows the same refusal, as EMULATED evidence only. |
+| 7 | If analytics is selected, successful ingestion and dashboard refresh with timestamps | **Not applicable to this run.** Analytics is phase 2, and `analytics` is `OFF` in `config/cost.example.json`.<br><br>`freshness.analyticsIngestion` and `freshness.dashboardRefresh` are `UNKNOWN` with `NOT_SELECTED` (or `PHASE_2_NOT_READ` if selected). Record the item as not applicable. |
+| 8 | Clear separation between observed billing, estimates, and unknown values | The labels themselves:<br>- `budget.actualSpend` is `OBSERVED`, or `UNKNOWN` when Budgets has not calculated it yet, never zero;<br>- `budget.forecastedSpend` is an `ESTIMATE` with its basis;<br>- `budget.spendCalculatedAt` is always `UNKNOWN` (`NOT_REPORTED_BY_AWS`);<br>- `freshness.billingPeriod` is an `ESTIMATE` from the capture clock;<br>- `budget.hardSpendCap` is `false`;<br>- `overall` is one of `OBSERVED_COMPLETE`, `WAITING`, `STALE`, `ATTENTION` and `INCOMPLETE`.<br><br>Record the saved status's labels as they are, without upgrading any. |
+
+### Confirm live: these could not be verified offline
+
+The emulated journey (`test/cost-baseline-emulated-aws.test.ts`, EMULATED) does not show how Budgets, Data Exports or Cost Explorer really behave. It asserts only that `overall` is not `OBSERVED_COMPLETE`. Confirm each of these in the live run, and label what you observe:
+
+- **Budgets and the encrypted topic.** Check this only if you chose `CUSTOMER_KMS`. AWS Budgets must be able to publish to the encrypted alert topic under the `aws:SourceArn` condition the renderer writes.
+- **The CUR 2.0 export in a member account.** The render record states two prerequisites:
+  - an export created in the management account covers the whole organization;
+  - one created in a member account covers only that account's own cost and usage.
+
+  Confirm that member-account behavior, and the first delivery, in your DEV account.
+- **Cost-allocation tag activation.** It runs only in the AWS Organizations management account or a standalone account. It works only for keys that already appear in that account's cost-allocation tags, which can take up to 24 hours after a resource is tagged.
+  - It is off by default (`activateCostAllocationTags: false`).
+  - The emulator cannot answer `ListCostAllocationTags`, so the status reports it `UNKNOWN`.
+- **A home region other than `us-east-1`.** The Data Exports and Cost Explorer resources use a `billing` provider in `us-east-1`, while the rest stays in the home region. The emulation did not cover that split (#376 review N3).
+- **The CLI path itself:** the build command, `prepare`, `seal`, `apply` and `./alz cost status` against a real account (#376 review N3).
+- **The day-one status:** confirm what `overall`, `costAllocationTags.state`, `export.state` and `freshness.state` actually read (expected `INCOMPLETE`, `UNKNOWN`, `WAITING` and `WAITING`).
+- **Observe:** confirm that the mapped resources (bucket, topic, export) are VERIFIED and every unmapped type is UNVERIFIABLE.
+- **Cleanup with billing data:** confirm what a cleanup does once the export bucket holds a delivery. This is untested. Expected:
+  - the bucket's dependents are destroyed first;
+  - `DeleteBucket` then fails;
+  - the data is left in a bucket without its own protections;
+  - the run ends `PARTIAL_REQUIRES_REVIEW`.
+
+  Avoid it with choice (a) or (b) above. Also confirm by hand that the budget and the subscriptions are deleted, and that the topic policy is settled by its parent as expected.
+
+### Known limits from the #376 review
+
+- **N4: no guided entry yet.** No guided `./alz` or console entry runs the cost build. Run the `node` command above at the terminal.
+- **N5: two unit identities.** The unit tags in the build's preview differ from the project's `unit_tags`. Only the project's tags count: `prepare` prints them, and `seal` verifies them in the plan.
+
 ## Stop and recovery
 
 - **Kill switch.** `touch .runs/apply/KILL` stops `seal`, `qualify` and `apply`, and stops a running apply: Terraform gets a SIGINT, held until its first resource line, then its process group gets a SIGKILL after 60 seconds. `./alz apply status` reports the switch. Only you remove the file.
@@ -421,5 +594,6 @@ These stay unverified until this run (`docs/act-pilot-apply.md`, "Still UNVERIFI
 
 - Owner direction: #39, 6508815426 (item 5) and 6486480658 (track B).
 - `config/act-pilot-contract.aws-dev.example.json`; `src/apply/contract.ts`; `src/apply/unit.ts`; `src/apply/driver.ts`; `src/apply/prepare.ts`; `src/apply/providers/aws.ts`; `src/cli/ui-channel.ts`; `src/evidence-runner/act.ts`.
+- `docs/cost-baseline-deploy.md`; `config/cost.example.json`; `config/act-pilot-contract.aws-dev-limits.example.json`.
 - `docs/act-pilot-aws-terraform-g0.md`; `docs/act-pilot-apply.md`; `docs/act-pilot-bootstrap.md`; `docs/act-pilot-identity-delivery.md`; `docs/act-dev-1.md`; `docs/aws-d4-qualification.md`; `docs/evidence-runner.md`.
 - `bootstrap/aws` (`variables.tf`, `outputs.tf`, `terraform.tfvars.example`); `qualification/aws/act-dev1-canary`.

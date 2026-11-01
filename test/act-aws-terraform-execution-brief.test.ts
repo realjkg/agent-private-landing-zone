@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 import { runApplyCommand } from "../src/cli/apply.js";
 import { parseEvidenceArgs } from "../src/cli/evidence.js";
+import { readCostStatus } from "../src/cost/status.js";
+import { renderAwsCostBaselineProject } from "../src/build/cost-baseline.js";
+import { resolveCostConfig } from "../src/design/cost.js";
+import { CLOUD_CONTROL_TYPES } from "../src/observe/verify.js";
 import type { HumanTerminal } from "../src/cli/teardown-driver.js";
 import { operationGroups } from "../src/operations/registry.js";
 
@@ -183,7 +187,11 @@ test("every ./alz command and flag the brief names exists in the CLI", async () 
       assert.ok(specs, shown + ": takes no subcommand");
       const spec = specs.find((candidate) => candidate.command!.sub === sub);
       assert.ok(spec, shown + ": no such subcommand");
-      for (const word of rest) if (word.startsWith("--")) assert.ok(spec.cli.split(/\s+/).includes(word), shown + ": no flag " + word);
+      const documented = spec.cli.replace(/[[\]]/g, "").split(/\s+/);
+      for (const word of rest) if (word.startsWith("--")) assert.ok(documented.includes(word), shown + ": no flag " + word);
+      // Each flag the catalog line shows outside brackets is required for a full invocation.
+      const required = spec.cli.replace(/\[[^\]]*\]/g, "").split(/\s+/).filter((word) => word.startsWith("--"));
+      if (rest.length > 0) for (const flag of required) assert.ok(rest.includes(flag), shown + ": missing the required " + flag);
     }
   }
 });
@@ -216,4 +224,89 @@ test("the usage the CLI prints agrees with the flags it enforces, so the require
   assert.equal(usage.get("apply")!.values.get("request"), "APPLY_REQUEST.json");
   assert.equal(usage.get("seal")!.values.get("request"), "REQUEST.json");
   assert.deepEqual([...usage.get("status")!.required], []);
+});
+
+test("the cost-baseline payload section links the deploy page and matches the shipped limits example", () => {
+  assert.ok(BRIEF.includes("## Cost baseline as payload"));
+  assert.ok(BRIEF.includes("](cost-baseline-deploy.md)"));
+  assert.ok(existsSync("docs/cost-baseline-deploy.md") && existsSync("config/cost.example.json"));
+  const limitsExample = JSON.parse(readFileSync("config/act-pilot-contract.aws-dev-limits.example.json", "utf8")) as {
+    targets: { DEV: { limits: { regions: string[]; resources: { type: string }[] }; canary?: unknown } };
+  };
+  const limits = limitsExample.targets.DEV.limits;
+  assert.equal(limitsExample.targets.DEV.canary, undefined);
+  assert.deepEqual(limits.regions, ["us-east-2", "us-east-1"]);
+  // The brief tells the owner to add these two only when the matching option is on: the example leaves them out.
+  const types = limits.resources.map((entry) => entry.type);
+  for (const optIn of ["aws_kms_key", "aws_budgets_budget_action"]) {
+    assert.ok(!types.includes(optIn), optIn);
+    assert.ok(BRIEF.includes("Add `" + optIn + "` only if"), optIn);
+  }
+});
+
+test("the brief lists the owner's minimum acceptance items 1 to 8 for the cost baseline, each with its evidence source", () => {
+  const items = [
+    "A deployed budget with the intended amount, filters, and recipients",
+    "Confirmed notification subscriptions and a safe test of the notification route",
+    "Required tags present on supported deployed resources",
+    "Cost-allocation tag activation status reported",
+    "A valid export configuration and observed first delivery, or an explicit waiting state",
+    "Configured provisioning limits tested against allowed and refused examples",
+    "If analytics is selected, successful ingestion and dashboard refresh with timestamps",
+    "Clear separation between observed billing, estimates, and unknown values",
+  ];
+  items.forEach((item, index) => assert.ok(BRIEF.includes("| " + (index + 1) + " | " + item + " |"), "acceptance item " + (index + 1)));
+  // The evidence names fields the saved status really has.
+  const status = readFileSync("src/cost/status.ts", "utf8");
+  for (const field of ["hasActualAlert", "spendCalculatedAt", "hardSpendCap", "configValid", "analyticsIngestion", "UNIT_TAGGED_RESOURCES_ONLY", "NOT_REPORTED_BY_AWS", "NOT_SELECTED"]) {
+    assert.ok(status.includes(field) && BRIEF.includes(field), field);
+  }
+});
+
+test("the cost payload's expected observe, cleanup and day-one results match the code (#378 review B1-B3)", async () => {
+  const section = BRIEF.slice(BRIEF.indexOf("## Cost baseline as payload"), BRIEF.indexOf("## Stop and recovery"));
+  // B1: the rendered types with no Cloud Control mapping are UNVERIFIABLE at observe.
+  const config = resolveCostConfig({ ...JSON.parse(readFileSync("config/cost.example.json", "utf8")), activateCostAllocationTags: true });
+  const rendered = renderAwsCostBaselineProject(config);
+  const createdTypes = new Set(rendered.metadata.creates.map((entry) => entry.type));
+  const unmapped = [...createdTypes].filter((type) => !Object.hasOwn(CLOUD_CONTROL_TYPES, type)).sort();
+  // Every unmapped rendered type is named as UNVERIFIABLE, and every mapped one as checkable.
+  assert.ok(unmapped.includes("aws_budgets_budget") && unmapped.includes("aws_sns_topic_subscription") && unmapped.includes("aws_ce_cost_allocation_tag"));
+  const observeText = section.slice(section.indexOf("**Observe (`./alz apply observe`):**"), section.indexOf("**Cost status on day one:**"));
+  const [mappedPart, unmappedPart] = observeText.split("Every other rendered type records");
+  for (const type of unmapped) assert.ok(unmappedPart.includes("`" + type + "`") && !mappedPart.includes("`" + type + "`"), type);
+  for (const type of [...createdTypes].filter((type) => Object.hasOwn(CLOUD_CONTROL_TYPES, type))) assert.ok(mappedPart.includes("`" + type + "`"), type);
+  assert.ok(section.includes("UNVERIFIABLE") && section.includes("NO_CLOUD_CONTROL_MAPPING"));
+  // B1: the export bucket keeps billing data (force_destroy false), so cleanup after a delivery is expected to fail closed.
+  const bucketBlock = rendered.terraform.slice(rendered.terraform.indexOf('resource "aws_s3_bucket" "cost_export" {'));
+  assert.match(bucketBlock.slice(0, bucketBlock.indexOf("\n}\n")), /^\s*force_destroy\s*=\s*false$/m);
+  assert.ok(section.includes("`force_destroy = false`") && section.includes("billing data is never deleted silently"));
+  assert.ok(section.includes("NOT_INDEPENDENTLY_CHECKABLE") && readFileSync("src/apply/leftovers.ts", "utf8").includes('"NOT_INDEPENDENTLY_CHECKABLE"'));
+  // B2: the day-one expectation names INCOMPLETE and ATTENTION, and never "Expect WAITING on the first day".
+  assert.ok(!section.includes("Expect `WAITING` on the first day"));
+  assert.ok(section.includes("`overall` is expected to read `INCOMPLETE`") && section.includes("`ATTENTION`"));
+  // B3: under the default route the budget's subscriber is the topic.
+  assert.equal(JSON.parse(readFileSync("config/cost.example.json", "utf8")).notifications.route, "SNS_TOPIC");
+  assert.ok(section.includes("Under the default `SNS_TOPIC` route") && section.includes("`EMAIL_DIRECT`"));
+  // N4: --unit and --region together, refused before any read.
+  let reads = 0;
+  await assert.rejects(readCostStatus({ accountId: "111111111111", budgetName: "alz-cost-baseline", requiredTagKeys: [], unitId: "alzu-0" } as never,
+    async () => { reads += 1; return {}; }), /COST_STATUS_UNIT_NEEDS_REGION/);
+  assert.equal(reads, 0);
+  assert.ok(section.includes("COST_STATUS_UNIT_NEEDS_REGION") && section.includes("COST_STATUS_EXPORT_ACCOUNT_MISMATCH"));
+  assert.ok(readFileSync("src/cli/cost.ts", "utf8").includes("COST_STATUS_EXPORT_ACCOUNT_MISMATCH"));
+  // N5: the build's own refusals.
+  const build = readFileSync("src/cli/real-private-build.ts", "utf8");
+  for (const code of ["SOURCE_WORKTREE_DIRTY", "AGENT_SKIP_LOCAL_MODEL"]) assert.ok(build.includes(code) && section.includes(code), code);
+});
+
+test("the cost payload's cleanup offers no partial keep: propose-cleanup has no per-resource selection (#378 review B4)", async () => {
+  const section = BRIEF.slice(BRIEF.indexOf("## Cost baseline as payload"), BRIEF.indexOf("## Stop and recovery"));
+  // The CLI's own table: propose-cleanup takes exactly these flags, none of which selects resources.
+  assert.deepEqual([...await applyFlags("propose-cleanup")].sort(), ["key", "requester", "sealed"]);
+  assert.ok(section.includes("`propose-cleanup` has no per-resource selection: it takes only `--sealed`, `--requester` and `--key`"));
+  for (const wording of [/keep the bucket/i, /siblings/i, /decided to keep/i]) assert.doesNotMatch(section, wording);
+  assert.ok(section.includes("**(a) Leave the run in place.**") && section.includes("**(b) Copy the billing data out and empty the bucket**"));
+  assert.ok(section.includes("`DeleteBucket` fails") || section.includes("`DeleteBucket` then fails"));
+  assert.ok(section.includes("`BEFORE_LAST_COLON`") && section.includes("matches parents only by identical identifier"));
 });

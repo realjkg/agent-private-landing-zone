@@ -702,7 +702,9 @@ test("the execution brief and the inputs its doc test reads from disk select tha
   files.set(BRIEF_TEST, "test()");
   assert.ok(readdirSync("test").includes(BRIEF_TEST.slice("test/".length)), BRIEF_TEST + " exists");
   for (const path of ["docs/act-aws-terraform-execution-brief.md", "alz", "src/cli/operator.ts",
-    "config/act-pilot-contract.aws-dev.example.json", "qualification/aws/act-dev1-canary/main.tf"]) {
+    "config/act-pilot-contract.aws-dev.example.json", "qualification/aws/act-dev1-canary/main.tf",
+    "config/act-pilot-contract.aws-dev-limits.example.json", "docs/cost-baseline-deploy.md", "config/cost.example.json", "src/cost/status.ts",
+    "src/cli/cost.ts", "src/cli/real-private-build.ts"]) {
     assert.deepEqual(DOC_INPUT_OWNERS[path], [BRIEF_TEST], path);
     files.set(path, "x");
     const plan = planChanged([path], files);
@@ -714,4 +716,5 @@ test("the execution brief and the inputs its doc test reads from disk select tha
   // Without the test, the brief is a coverage gap rather than a silent skip.
   files.delete(BRIEF_TEST);
   assert.match(planChanged(["docs/act-aws-terraform-execution-brief.md"], files).gaps.join(" "), /no doc test owner/);
+  assert.match(planChanged(["docs/cost-baseline-deploy.md"], files).gaps.join(" "), /cost-baseline-deploy\.md has no doc test owner/);
 });
