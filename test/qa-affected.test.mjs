@@ -444,6 +444,16 @@ test("the provider qualification producer, unimportable, is owned by the focused
   assert.ok(plan.nodeTests.includes("test/provider-qualification-observed.test.ts"));
 });
 
+test("the real private build driver, unimportable, is owned by the focused test that reads its text", () => {
+  const files = fixture();
+  files.set("src/cli/real-private-build.ts", "console.log(1);");
+  files.set("test/cost-project.test.ts", "test()");
+  const plan = planChanged(["src/cli/real-private-build.ts"], files);
+  assert.deepEqual(plan.gaps, []);
+  assert.deepEqual(UNIMPORTABLE_OWNERS["src/cli/real-private-build.ts"], ["test/cost-project.test.ts"]);
+  assert.ok(plan.nodeTests.includes("test/cost-project.test.ts"));
+});
+
 test("the console launcher is owned by the console tests that read it, and the bootstrap templates by the test that reads them; an unowned template is still a gap", () => {
   const files = fixture();
   files.set("src/cli/operator-web.ts", "console.log(1);");

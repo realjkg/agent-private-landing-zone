@@ -42,6 +42,9 @@ export const UNIMPORTABLE_OWNERS = {
   // The provider qualification producer runs at module top level; its focused test reads its text (it records the observed
   // identity from the pure functions it imports, src/qualification/observed-identity.ts, which that test also covers).
   "src/cli/provider-qualification.ts": ["test/provider-qualification-observed.test.ts"],
+  // The build driver runs at module top level; the focused test reads its text (the two argv forms, the shared preview driver,
+  // the configuration read before any engine, the project written only after the evidence) and tests the modules it imports.
+  "src/cli/real-private-build.ts": ["test/cost-project.test.ts"],
 };
 
 // Owner-facing templates no code imports: a focused test reads each from disk and checks what it tells the owner (that it
@@ -85,6 +88,9 @@ export const DOC_INPUT_OWNERS = {
 // Fixtures a test reads from disk (not imported), so the import closure never selects their owner.
 export const FIXTURE_OWNERS = {
   "test/fixtures/backend-pin/cases.json": ["test/apply-backend-pin-real.test.ts"],
+  // The cost journey's out-of-process emulator, started by path: the focused test runs its routing and stub on every run, the
+  // opt-in EMULATED journey drives it end to end.
+  "test/helpers/cost-emulator.cjs": ["test/cost-project.test.ts", "test/cost-baseline-emulated-aws.test.ts"],
   // The cost-baseline renderer's golden files (COST-1): one Terraform module per directory, read by name and compared
   // byte for byte.
   "test/fixtures/cost-baseline/defaults/main.tf": ["test/cost-baseline.test.ts"],
