@@ -22,6 +22,7 @@ import { targetString } from "../src/cli/teardown-driver.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { buildChildEnvironment } from "../src/tools/child-env.js";
 import { deliverSession } from "./helpers/token-delivery-fixtures.js";
+import { AWS_CROSS_REGION_PLAN_6_68_0 } from "./helpers/plan-shapes-aws.js";
 import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
 import { SOURCE_COMMIT,
   AWS_DEV_TARGET, AWS_PROD_TARGET, AWS_QA_TARGET, AWS_REGION, ENGINE_VERSION, NOW, POLICY, awsContractJson, awsIdentityEnv, awsRoleArn, awsTargetOf,
@@ -1092,10 +1093,9 @@ test("provisioning limits (AWS Terraform, owner direction 6536926009): the seal 
     ["a size unknown until apply", [create("aws_instance.later", { region: AWS_REGION }, { instance_type: true })], /does not show its size/],
   ] as const) await refuses(label, resources as unknown as unknown[], said);
   await seals("an empty plan is within every maximum", []);
-  // Review 6561233592, B1: Optional+Computed region arguments, from a REAL `show -json` (test/fixtures/plan-shapes; SYNTHETIC input,
+  // Review 6561233592, B1: Optional+Computed region arguments, from a REAL `show -json` (test/helpers/plan-shapes-aws.ts; SYNTHETIC input,
   // no AWS call). Left unset they plan unknown on every create; unset in the configuration is the resource's own region.
-  const real = JSON.parse(readFileSync(fileURLToPath(new URL("./fixtures/plan-shapes/aws-cross-region-6.68.0.json", import.meta.url)), "utf8")) as
-    { resource_changes: { address: string; change: { after: Record<string, unknown>; after_unknown: Record<string, unknown> } }[]; configuration_root_module: unknown };
+  const real = AWS_CROSS_REGION_PLAN_6_68_0;
   const realChange = (address: string) => {
     const found = real.resource_changes.find((change) => change.address === address);
     assert.ok(found, address);
@@ -1135,7 +1135,7 @@ test("provisioning limits (AWS Terraform, owner direction 6536926009): the seal 
   // Fail closed: with no configuration, or one that does not name the resource, an unknown region argument is refused.
   await realRefuses("aws_dynamodb_table.plain", /does not show a region it reaches/, { resources: [] });
   await realRefuses("aws_vpc_peering_connection.same", /does not show a region it reaches/, { resources: [] });
-  await realRefuses("module.m[0].aws_vpc_peering_connection.inmod[\"a\"]", /does not show a region it reaches/, { resources: (real.configuration_root_module as { resources: unknown[] }).resources });
+  await realRefuses("module.m[0].aws_vpc_peering_connection.inmod[\"a\"]", /does not show a region it reaches/, { resources: real.configuration_root_module.resources });
   // N2: a block absent from the values but unknown in `after_unknown` (a shape Terraform does not emit) is still unknown.
   await refuses("a secret replica block absent but unknown", [create("aws_secretsmanager_secret.s", { region: AWS_REGION }, { replica: [true] })], /does not show a region it reaches/);
   // Without `regions`, a resource with no region is not judged by region.

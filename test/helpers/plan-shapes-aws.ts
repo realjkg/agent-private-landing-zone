@@ -1,5 +1,11 @@
-{
- "_provenance": "Copied from a real `terraform show -json` (Terraform 1.16.5, hashicorp/aws 6.68.0 from a checksum-verified local mirror, fake static keys, every skip_* flag, the proxy at a closed port, plan -refresh=false; no AWS call). SYNTHETIC input for the seal judge; not provider qualification. Only the plan's resource_changes and configuration.root_module are kept (the sns topic the unknown values reference is dropped).",
+/**
+ * Copied from a real `terraform show -json` (Terraform 1.16.5, hashicorp/aws 6.68.0 from a checksum-verified local mirror, fake static keys, every skip_* flag, the proxy at a closed port, plan -refresh=false; no AWS call). SYNTHETIC input for the seal judge; not provider qualification. Only the plan's resource_changes and configuration.root_module are kept (the sns topic the unknown values reference is dropped).
+ * Kept as a module (not a fixture file) so the affected-QA selector follows it to its tests through the import.
+ */
+export const AWS_CROSS_REGION_PLAN_6_68_0: {
+  resource_changes: { address: string; change: { after: Record<string, unknown>; after_unknown: Record<string, unknown> } }[];
+  configuration_root_module: { resources: unknown[]; module_calls?: Record<string, unknown> };
+} = {
  "resource_changes": [
   {
    "address": "aws_dynamodb_table.plain",
@@ -807,4 +813,4 @@
    }
   }
  }
-}
+};
