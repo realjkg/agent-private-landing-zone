@@ -726,11 +726,12 @@ export function gcpApiEngine(given: GcpApiOptions = {}): GcpApiEngineSpec {
         "  parent          " + PARENT_LABEL + " (this path never reads Resource Manager)",
       qualifyHeading: "QUALIFY THE GCP API ADAPTERS (against DEV it signs both identities in and sweeps the unit; it creates nothing)",
       qualifyReads: "  runs            the token exchange and impersonation as DISCOVERY and APPLY, and one Cloud Asset search as DISCOVERY; APPLY makes no Pub/Sub call",
+      // What qualify's own logs can show (#365 review 6510401916, N14): APPLY only signs in, so no topic create or delete is attested here.
       attestation: (_provider, discovery, apply) => [
-        "  reads were by                 DISCOVERY  " + discovery,
-        "  topic create and delete       APPLY      " + apply,
-        "This run only read. That DISCOVERY cannot write and that APPLY holds only topic create and delete are shown by the custom roles and the Cloud Audit Logs, not by this run.",
-        "Only if they show that, type (anything else writes nothing):",
+        "  this run's calls     DISCOVERY  " + discovery + "  signed in and ran one Cloud Asset search; APPLY  " + apply + "  only signed in, with no Pub/Sub call",
+        "  no topic             was created or deleted in this run",
+        "That DISCOVERY cannot write and that APPLY (which creates and deletes the topic at apply and cleanup) holds only topic create and delete is shown by the custom roles, not by this run.",
+        "Only if the audit logs show only those calls, and the custom roles show that, type (anything else writes nothing):",
       ],
       applyNote: "It sends one PUT that creates exactly the sealed topic, with the unit's labels and " + STORAGE_POLICY_PROPERTY + " = [the contract's region], as APPLY. " +
         "It is never sent again; the result is judged by DISCOVERY reads of that topic. This sets and reads back one Pub/Sub property; it is not a data-residency claim.",

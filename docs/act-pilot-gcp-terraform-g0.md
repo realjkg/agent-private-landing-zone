@@ -81,7 +81,7 @@ APPLY and STATE_WRITE must set all four.
   - `credentials` = STATE_WRITE's credential-configuration path;
   - `impersonate_service_account` = STATE_WRITE's email.
 
-  Every value is pattern-checked before it is written. `filledAtApply` is `credentials` and `impersonate_service_account`.
+  Every value is pattern-checked before it is written. `filledAtApply` is `credentials` and `impersonate_service_account`. Because `embedStateWrite` is required, the plan embeds STATE_WRITE's values for both, so APPLY's environment never fills them.
 
 The credential configuration itself does not name a service account in the PLAN's design. **PROPOSAL** P1: S1's credential-configuration check also refuses a configuration that carries `service_account_impersonation_url`. Otherwise one file could impersonate an account other than the variable names.
 

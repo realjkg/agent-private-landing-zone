@@ -109,7 +109,7 @@ Identifiers and public keys only. No private key, token, password or secret valu
 | The execution host | this page (G0) and `--target-hardware-id` on the live records | the host where the four token files exist and `./alz apply` runs |
 | The pilot scope | this page (G0); the sealed plan's change list | one additive change the approver signs for |
 | The cleanup owner | this page (G0) | authorizes the live cleanup separately |
-| A person to qualify | `./alz apply qualify` and the `SEPARATED` attestation | from CloudTrail: state access by STATE_WRITE, provider access by APPLY, none by APPLY on state |
+| A person to qualify | `./alz apply qualify` and the `SEPARATED` attestation | from CloudTrail, with S3 data events on a trail: state reads and writes by STATE_WRITE or STATE only, none by APPLY or DISCOVERY. Qualify runs nothing as APPLY; APPLY's provider access is checked at the first supervised DEV apply |
 
 ### The owner's checklist to enable ACT on AWS Terraform DEV
 

@@ -94,7 +94,11 @@ export type ProviderSpec = {
   backendType: BackendType;
   /** The contract target's backend location only (no identity setting): the `-backend-config` file of a seal that does not embed STATE_WRITE. */
   backendLocation(target: PilotTarget): string;
-  /** The backend settings the plan leaves null for the apply process to fill from its own environment, the APPLY identity's. `terraform apply <planfile>` ignores the apply-time init (docs/act-pilot-simulation.md). */
+  /**
+   * The backend identity settings that `terraform apply <planfile>` would fill from the apply process's own environment (APPLY's) if
+   * the plan left them null; it ignores the apply-time init (docs/act-pilot-simulation.md). `embedStateWrite`, required for every
+   * Terraform contract, makes the seal-time init save STATE_WRITE's values for them, so the plan embeds them and APPLY never fills them.
+   */
   filledAtApply: readonly string[];
   /**
    * Throws a code if a provider block names another account than the contract's, or (AWS) credentials, files, destinations or providers
