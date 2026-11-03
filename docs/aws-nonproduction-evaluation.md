@@ -30,6 +30,20 @@ Evaluated source: `cd3a04ec97f3345ebc6cc93561fd9baa3d3b24e2` (2026-11-03).
 
 Local verification covers the AWS route, one-scenario requests, model readiness/refusal states, retry, session loss, blocked requests, run restoration, existing UI/security tests, the environment example and build. The rehearsal exercises the existing LangGraph code using fixtures. These are **synthetic/local** checks.
 
+Validation on 2026-11-03 selected 17 test files with no coverage gaps:
+
+| Check | Result |
+| --- | --- |
+| Runtime build and affected UI TypeScript check | Passed |
+| Browser bundle and prerender | Passed; prerender used `node --import tsx` because the `tsx` CLI's IPC socket is denied by the execution sandbox |
+| Six affected React test files | 76 passed |
+| Configuration and QA-selector tests | 67 passed |
+| Nine selected boundary/packaging test files | 1,559 passed; three packaging subprocess tests blocked by the same IPC restriction |
+| One AWS Terraform offline rehearsal | Direct PASS, conversational LangGraph PASS, parity PASS |
+| Standard affected-QA command | Attempted; blocked at the `tsx` prerender subprocess. The selected tests were run separately; this is not a complete green QA gate |
+
+Full local logs are retained under `.runs/aws-nonprod/` in the implementation checkout. Re-run the standard affected QA on an unrestricted developer host or normal CI before merge. The three packaging failures were not suppressed or treated as passes.
+
 Authentic acceptance still requires the intended execution host, verified model pins and real inference, the configured DEV account and identities, successful engine qualification, a reviewed plan, human-authorized apply, independent observation, separately approved cleanup and leftover verification. No AWS resources are created by this change. No production release status or live evidence is upgraded.
 
 Start at [AWS non-production quickstart](aws-nonproduction-quickstart.md); use [the execution brief](act-aws-terraform-execution-brief.md) for the real deployment.
