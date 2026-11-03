@@ -50,6 +50,7 @@ export const UNIMPORTABLE_OWNERS = {
 // Owner-facing templates no code imports: a focused test reads each from disk and checks what it tells the owner (that it
 // never names the retired pin and leaves ACT unauthorized). Selected in addition to any other rule that owns the path.
 export const TEMPLATE_OWNERS = {
+  ".env.example": ["test/config.test.ts"],
   "bootstrap/config.aws.template.json": ["test/apply-contract.test.ts"],
   "bootstrap/config.azure.template.json": ["test/apply-contract.test.ts"],
   "bootstrap/config.gcp.template.json": ["test/apply-contract.test.ts"],

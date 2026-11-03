@@ -2,7 +2,20 @@
 
 Portable, private and sovereign accelerator for governed agentic infrastructure workflows across AWS, Azure and private/edge environments.
 
-The current implementation is intentionally conservative: it can discover, assess, reason, compile governed recovery intent, design toward a delta, generate preview-only candidates across all eight registered adapters, automate recovery evidence/verification workflows, and enforce policy boundaries. **ACT remains disabled.**
+The current implementation can discover, assess, reason, compile governed recovery intent, design toward a delta, generate preview-only candidates across all eight registered adapters, automate recovery evidence/verification workflows, and enforce policy boundaries. **ACT is disabled by default.** The separately governed DEV pilot requires an owner-reviewed contract and human approval of each change.
+
+## Start with AWS non-production
+
+The simplest supported setup runs the private runtime on your workstation and uses a dedicated AWS DEV member account. **LangChain and LangGraph are already included**; local Qwen/Mistral models provide private inference.
+
+```sh
+./alz bootstrap   # once after cloning, or after a source update
+./alz
+```
+
+Choose **AWS DEV**: check local models, rehearse one AWS Terraform workflow, then continue to account setup and the protected pilot. **Rehearse offline** works without models or AWS credentials. A rehearsal uses simulated AWS resources and does not deploy infrastructure.
+
+Follow the [AWS non-production quickstart](docs/aws-nonproduction-quickstart.md) for prerequisites, real deployment and cleanup. The [evaluation](docs/aws-nonproduction-evaluation.md) records the remaining live-model and AWS acceptance gaps, including the model digest pins that must be completed before live inference.
 
 ## Five-pillar methodology
 

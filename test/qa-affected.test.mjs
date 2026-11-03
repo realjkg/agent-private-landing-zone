@@ -28,6 +28,15 @@ function fixture() {
     ["test/cli-ui-journey-map.test.ts", "test()"],
   ]);
 }
+
+test("the model environment example always selects its configuration regression test", () => {
+  const files = fixture();
+  files.set(".env.example", "VALIDATOR_MODEL=mistral-nemo:12b");
+  files.set("test/config.test.ts", "test()");
+  const plan = planChanged([".env.example"], files);
+  assert.ok(plan.nodeTests.includes("test/config.test.ts"));
+  assert.deepEqual(plan.coverageGaps, []);
+});
 test("resolves TypeScript sources referenced by .js specifiers", () => {
   assert.deepEqual([...importsOf('import "../src/agent/service.js";', "test/agent-core.test.ts", fixture())],
     ["src/agent/service.ts"]);

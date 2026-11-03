@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { parseEnv } from "node:util";
+import { loadModelDigestPins } from "../src/models/digest-pins.js";
 
 import {
   loadConfig,
@@ -22,6 +25,13 @@ test("loadConfig keeps model defaults", () => {
 
   assert.equal(config.ollamaBaseUrl, "http://127.0.0.1:11434");
   assert.equal(config.disagreementThreshold, 0.35);
+});
+
+test("the environment example selects the exact release model tags", () => {
+  const example = parseEnv(readFileSync(new URL("../.env.example", import.meta.url), "utf8"));
+  assert.deepEqual([example.ROUTER_MODEL, example.PRIMARY_MODEL, example.VALIDATOR_MODEL],
+    loadModelDigestPins().models);
+  assert.equal(example.OLLAMA_BASE_URL, "http://127.0.0.1:11434");
 });
 
 test("observability config defaults to events on, loopback health, no export", () => {
