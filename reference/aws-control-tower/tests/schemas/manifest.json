@@ -1,0 +1,127 @@
+{
+  "source": "https://github.com/aws-cloudformation/cfn-lint/releases/tag/v1.59.0",
+  "archiveSha256": "6b6bb6f1d7680a181337ad03948c0f55d52aea526250984bedac0d345d2f2089",
+  "license": "MIT-0",
+  "schemas": {
+    "AWS::ApiGateway::Deployment": {
+      "file": "aws_apigateway_deployment.json",
+      "sha256": "57c0db10c91fd60c9b97f994dadd05b1b29209ad6a1e7039dd7c4f32c55d97a1"
+    },
+    "AWS::ApiGateway::Method": {
+      "file": "aws_apigateway_method.json",
+      "sha256": "c7177364400fef3376b0a0c4ade181ae45fa1c4d23e5902e5a888a4cf3cf75bf"
+    },
+    "AWS::ApiGateway::Resource": {
+      "file": "aws_apigateway_resource.json",
+      "sha256": "ba610fcf0b81635e7816c567f31b16b8268151ef1fda172baeab1c8893e4eeea"
+    },
+    "AWS::ApiGateway::RestApi": {
+      "file": "aws_apigateway_restapi.json",
+      "sha256": "0f21de306a840c21f797f6258866e35d6d52937a3b73b0fcaaf568311305d0f9"
+    },
+    "AWS::ApiGateway::Stage": {
+      "file": "aws_apigateway_stage.json",
+      "sha256": "e78023d281ab1320173ca2ef6e9ea833d8bbede12af9117b42a45b4573a43c30"
+    },
+    "AWS::Bedrock::Guardrail": {
+      "file": "aws_bedrock_guardrail.json",
+      "sha256": "d6761c75478aa28b00c13263bcd4aef1aa06415a0c61c6c7e2d25e8c4e9670c1"
+    },
+    "AWS::Bedrock::GuardrailVersion": {
+      "file": "aws_bedrock_guardrailversion.json",
+      "sha256": "13850a1f39a3dea1eb07a8b54e8786526a75aa998abdee15701271565a3597e0"
+    },
+    "AWS::Budgets::Budget": {
+      "file": "aws_budgets_budget.json",
+      "sha256": "102759b91bece8c5b6f625b880fc8512c8732ad3d1b4088ced338e769b2c99b2"
+    },
+    "AWS::Budgets::BudgetsAction": {
+      "file": "aws_budgets_budgetsaction.json",
+      "sha256": "bd6da278647461cfae8041e298a80ad71c032a09066d9d3a55c1312b7ad5ff16"
+    },
+    "AWS::CloudWatch::Alarm": {
+      "file": "aws_cloudwatch_alarm.json",
+      "sha256": "57d2d4bfd1bd91354841c9ea60fd5cd3eef30ad84175c8426d4bc48618b7e54d"
+    },
+    "AWS::CodeBuild::Project": {
+      "file": "aws_codebuild_project.json",
+      "sha256": "b16fa3c374d40c4eabd507097f89ea3daaae678e32393b4f2099f0803a5c1761"
+    },
+    "AWS::CodePipeline::Pipeline": {
+      "file": "aws_codepipeline_pipeline.json",
+      "sha256": "62adad58cd6fdefef28048b91f2ddb16d63b8770fb074abafa4684e3b53658ac"
+    },
+    "AWS::EC2::RouteTable": {
+      "file": "aws_ec2_routetable.json",
+      "sha256": "0ec7d22ba67258cf2affd225ac023475c90908d99b976564abf438802d379ab3"
+    },
+    "AWS::EC2::SecurityGroup": {
+      "file": "aws_ec2_securitygroup.json",
+      "sha256": "fa50c7cfc250ef5918434cfe2820a6b801ae1c21c1a433dcbe5bc959bb8e10b9"
+    },
+    "AWS::EC2::SecurityGroupIngress": {
+      "file": "aws_ec2_securitygroupingress.json",
+      "sha256": "623700da6929c46b54d03d35b3669dc3a163fd00fbb4c28e1d63c4080ad7654d"
+    },
+    "AWS::EC2::Subnet": {
+      "file": "aws_ec2_subnet.json",
+      "sha256": "33288deb94ff81b92dbbd7ba4ad987ce5773a0495c14d02f05404a5798a2c3fe"
+    },
+    "AWS::EC2::SubnetRouteTableAssociation": {
+      "file": "aws_ec2_subnetroutetableassociation.json",
+      "sha256": "847d70119d4d55a365c469779369953fc6bd214b710eacf3b7bb926e7b5cfb7a"
+    },
+    "AWS::EC2::VPC": {
+      "file": "aws_ec2_vpc.json",
+      "sha256": "6cf5746d9c966518592625b6453278280d6258cd0ae5fb501db1977dda5e4f38"
+    },
+    "AWS::EC2::VPCEndpoint": {
+      "file": "aws_ec2_vpcendpoint.json",
+      "sha256": "5fac8b2aca1bd9c1c65b90d9774167b3f229eed32ca3be04780306ce4ae2cb4a"
+    },
+    "AWS::Events::Rule": {
+      "file": "aws_events_rule.json",
+      "sha256": "f1a4b0a1c5030e0d80799656faa040d5ba2ee6f17ba8a737602597ba70a27e25"
+    },
+    "AWS::IAM::ManagedPolicy": {
+      "file": "aws_iam_managedpolicy.json",
+      "sha256": "6e061bc7302482c530e04ac82ea2edf94b54b6f2b6b0e445b3f15152e5446c04"
+    },
+    "AWS::IAM::Role": {
+      "file": "aws_iam_role.json",
+      "sha256": "7e09aeb550189a9c549f7bade9d014f417ce4f596a87427eec099e1c0b15d1e9"
+    },
+    "AWS::KMS::Key": {
+      "file": "aws_kms_key.json",
+      "sha256": "bf1deb17c8972d01369e68f7fb825a38246f0701cb65bf5afb8988ceeeaf6a8e"
+    },
+    "AWS::Lambda::Function": {
+      "file": "aws_lambda_function.json",
+      "sha256": "94bb829af6852d51fc592e8a308cac334594d56777940dae42bdb58cf0429181"
+    },
+    "AWS::Lambda::Permission": {
+      "file": "aws_lambda_permission.json",
+      "sha256": "d12e725718e40a21d70f510a6a30d2dddf942a843edf4665cc603c10a2d0976b"
+    },
+    "AWS::Logs::LogGroup": {
+      "file": "aws_logs_loggroup.json",
+      "sha256": "ad136bc038c79fee3df69e4788a6952d9fb9bb48a1a7c27477ed502705e515e9"
+    },
+    "AWS::S3::Bucket": {
+      "file": "aws_s3_bucket.json",
+      "sha256": "7f3be355c1821b283b75a16d13fc816f0f03e06569178f11abb3fb8383ef9495"
+    },
+    "AWS::S3::BucketPolicy": {
+      "file": "aws_s3_bucketpolicy.json",
+      "sha256": "e2f14022eaa81259b6b899c2194612875513ff25f0e3a5ef82e042b65d7354c6"
+    },
+    "AWS::SNS::Topic": {
+      "file": "aws_sns_topic.json",
+      "sha256": "45543259835332305f7be9737b27b6038c5a156c6b226dada37695508a66a194"
+    },
+    "AWS::SNS::TopicPolicy": {
+      "file": "aws_sns_topicpolicy.json",
+      "sha256": "1de3263fc291026eefd09234de740564ac8b9f7fc6946589a0d571931e727d67"
+    }
+  }
+}

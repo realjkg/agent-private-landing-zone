@@ -37,6 +37,16 @@ test("the model environment example always selects its configuration regression 
   assert.ok(plan.nodeTests.includes("test/config.test.ts"));
   assert.deepEqual(plan.coverageGaps, []);
 });
+
+test("AWS Control Tower reference code and generated files select the pinned-schema owner test", () => {
+  const files = fixture();
+  files.set("reference/aws-control-tower/stack.mjs", "export const template = {};");
+  files.set("reference/aws-control-tower/template.json", "{}");
+  files.set("test/aws-control-tower-reference.test.mjs", "test()");
+  const plan = planChanged(["reference/aws-control-tower/stack.mjs", "reference/aws-control-tower/template.json"], files);
+  assert.deepEqual(plan.gaps, []);
+  assert.ok(plan.jsTests.includes("test/aws-control-tower-reference.test.mjs"));
+});
 test("resolves TypeScript sources referenced by .js specifiers", () => {
   assert.deepEqual([...importsOf('import "../src/agent/service.js";', "test/agent-core.test.ts", fixture())],
     ["src/agent/service.ts"]);

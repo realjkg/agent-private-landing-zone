@@ -2,7 +2,7 @@
 
 Evaluated source: `cd3a04ec97f3345ebc6cc93561fd9baa3d3b24e2` (2026-11-03).
 
-**Assessment:** the repository already has the LangChain/LangGraph runtime, AWS Terraform execution driver and a supervised DEV lifecycle. It is suitable for a local rehearsal and preparation of a governed DEV pilot. It is not yet evidenced as a successfully deployed AWS environment, and it is not a one-click AWS-hosted runtime.
+**Assessment:** the repository already has the LangChain/LangGraph runtime, AWS Terraform execution driver and a supervised DEV lifecycle. The feature branch adds an AWS-hosted Control Tower DEV reference stack for a private Bedrock workload, cost guardrails, and reviewed repository delivery. It is not yet evidenced as deployed or accepted in a live Control Tower account.
 
 ## Findings and disposition
 
@@ -16,7 +16,8 @@ Evaluated source: `cd3a04ec97f3345ebc6cc93561fd9baa3d3b24e2` (2026-11-03).
 | The existing DEV account checker expects governed Workloads/Control Tower enrollment | A standalone account cannot be advertised as immediately supported by this setup check | State the prerequisite and reuse the existing administrator path |
 | AWS execution identities are separate from the setup SSO profile | A successful browser account check does not make Terraform ready to apply | Explain the four-role handoff explicitly |
 | The cost-baseline payload has partially unverifiable resources and a documented nonempty-export-bucket cleanup hazard | It adds uncertainty to a first live pilot | Recommend the one-log-group canary first. For the cost payload, follow the existing brief; this change does not repair that separate cleanup path |
-| UI and model endpoints are deliberately loopback-only | Publishing the UI or deploying it behind a public load balancer would change its trust model | Recommend a workstation runtime first. AWS-hosted runtime packaging/access requires a separate deployment design |
+| The operator UI and Ollama model endpoint are deliberately loopback-only | The console cannot itself be published as the cloud service | Keep them on the workstation; the new reference service is a separate AWS private API, Lambda and Bedrock workload |
+| The AWS hosted reference stack has no live deployment evidence | Account-level model access, VPC overlap, CodeConnections consent, IAM effectiveness and billing remain unproven | Run offline schema checks, then have the Control Tower account administrator review and deploy one DEV change set; do not claim live acceptance yet |
 
 ## Existing trust boundaries retained
 
@@ -44,6 +45,6 @@ Validation on 2026-11-03 selected 17 test files with no coverage gaps:
 
 Full local logs are retained under `.runs/aws-nonprod/` in the implementation checkout. Re-run the standard affected QA on an unrestricted developer host or normal CI before merge. The three packaging failures were not suppressed or treated as passes.
 
-Authentic acceptance still requires the intended execution host, verified model pins and real inference, the configured DEV account and identities, successful engine qualification, a reviewed plan, human-authorized apply, independent observation, separately approved cleanup and leftover verification. No AWS resources are created by this change. No production release status or live evidence is upgraded.
+Authentic acceptance for the existing ACT pilot still requires verified model pins, the configured DEV account and identities, engine qualification, a reviewed plan, human-authorized apply, independent observation, and separately approved cleanup. The new hosted reference separately requires a DEV Control Tower administrator to validate its CloudFormation change set, model access, CodeConnections provider consent, private networking, budget and observed live API checks. The local tests exercise templates, not AWS. No resources have been created by this change, and no production release status or live evidence is upgraded.
 
 Start at [AWS non-production quickstart](aws-nonproduction-quickstart.md); use [the execution brief](act-aws-terraform-execution-brief.md) for the real deployment.

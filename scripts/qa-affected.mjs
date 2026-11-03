@@ -309,6 +309,14 @@ export function planChanged(changedPaths, files) {
       }
       continue;
     }
+    // The AWS Control Tower reference template, runtime and provider schemas are disk-loaded by one offline owner test.
+    // Tests, source, generated template and vendored schema all select it.
+    if (path.startsWith("reference/aws-control-tower/")) {
+      const owner = "test/aws-control-tower-reference.test.mjs";
+      addExisting(selected, files, [owner]);
+      if (!hasFile(files, owner)) gaps.push("AWS Control Tower reference assets have no focused test owner.");
+      continue;
+    }
     if (/^docs\/|\.md$|^\.github\/(ISSUE_TEMPLATE|PULL_REQUEST_TEMPLATE)\//.test(path)) continue;
     // Dependabot's update settings are owned by the selector's own test, which reads the committed file.
     if (path === ".github/dependabot.yml") {
@@ -442,6 +450,7 @@ export function planChanged(changedPaths, files) {
     // Unknown executable or deployment configuration: do not silently pass.
     gaps.push(path + " has no QA ownership rule.");
   }
+
   // Every entry in `gaps` so far is a coverage gap, pushed where its rule fired. The cap is a separate structural fact
   // (`overCap`, from the counts); its notice is appended to `gaps` only for display and for older readers
   // (scripts/premerge.sh). The route never parses gap text, so no path name can pose as the cap notice.

@@ -17,6 +17,8 @@ Choose **AWS DEV**: check local models, rehearse one AWS Terraform workflow, the
 
 Follow the [AWS non-production quickstart](docs/aws-nonproduction-quickstart.md) for prerequisites, real deployment and cleanup. The [evaluation](docs/aws-nonproduction-evaluation.md) records the remaining live-model and AWS acceptance gaps, including the model digest pins that must be completed before live inference.
 
+For an AWS hosted private Bedrock service in a Control Tower DEV member account, see the [AWS Control Tower reference stack](reference/aws-control-tower/README.md). It includes Bedrock Guardrails, private networking, budget alerts with optional inference pause, and reviewed CI/CD from GitHub, GitLab or CodeCommit. The first foundation deploy requires a Control Tower administrator; the application pipeline requires a human release approval.
+
 ## Five-pillar methodology
 
 ```text
