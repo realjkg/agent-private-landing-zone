@@ -21,7 +21,7 @@ export type OperatorPolicyDecision =
     };
 
 const IN_SCOPE =
-  /landing zone|aws|azure|cloud|private|edge|infrastructure|inventory|resource|sbom|security|resilien|recovery|backup|terraform|pulumi|opentofu|tofu|bicep|cloudformation|cdk|crossplane|ansible|design|build|preview|plan|policy|govern|drift|network|identity|iam|rbac|kubernetes|k8s|vmware|datacenter|appliance|evidence|posture/i;
+  /landing zone|aws|azure|cloud|private|edge|infrastructure|inventory|resource|sbom|security|resilien|recovery|backup|terraform|pulumi|opentofu|tofu|bicep|cloudformation|cdk|crossplane|ansible|design|build|preview|plan|policy|govern|drift|network|identity|iam|rbac|kubernetes|k8s|vmware|datacenter|appliance|evidence|posture|cost|billing|spend|charge|tag|label|kms|ec2/i;
 
 export function evaluateOperatorRequest(
   request: string,

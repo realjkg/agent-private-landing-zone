@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { BUDGET_NAME } from "../src/design/cost.js";
 import { ALZ_TAG_KEYS } from "../src/teardown/unit.js";
-import { AWS_COST_READ_TOOLS, UNIT_TAG_KEY, awsCostReadArgs } from "../src/tools/aws-cost-reads.js";
+import { AWS_COST_READ_TOOLS, UNIT_TAG_KEY, awsCostReadArgs, costQueryAccountMatches } from "../src/tools/aws-cost-reads.js";
 import { executeTool, getToolSecurityPosture } from "../src/tools/broker.js";
 import type { ToolRequest } from "../src/tools/types.js";
 
@@ -40,10 +40,24 @@ test("each cost read is exactly one fixed, read-only AWS CLI call", () => {
   assert.deepEqual(argsOf({ tool: "aws_bcm_get_export", exportArn: EXPORT_ARN }), ["bcm-data-exports", "get-export", "--export-arn", EXPORT_ARN, ...G]);
   assert.deepEqual(argsOf({ tool: "aws_bcm_list_executions", exportArn: EXPORT_ARN }), ["bcm-data-exports", "list-executions", "--export-arn", EXPORT_ARN, ...G]);
   assert.deepEqual(argsOf({ tool: "aws_ce_list_cost_allocation_tags" }), ["ce", "list-cost-allocation-tags", "--type", "UserDefined", ...G]);
+  assert.deepEqual(argsOf({ tool: "aws_ce_get_cost_and_usage", accountId: ACCOUNT, costStartDate: "2026-10-01", costEndDate: "2026-11-01",
+    costGranularity: "MONTHLY", costGroupBy: ["SERVICE"] }), ["ce", "get-cost-and-usage", "--time-period", "Start=2026-10-01,End=2026-11-01",
+    "--granularity", "MONTHLY", "--metrics", "UnblendedCost", "--group-by", "Type=DIMENSION,Key=SERVICE", "--filter",
+    JSON.stringify({ Dimensions: { Key: "LINKED_ACCOUNT", Values: [ACCOUNT] } }), ...G]);
+  assert.deepEqual(argsOf({ tool: "aws_ce_get_cost_and_usage", accountId: ACCOUNT, costStartDate: "2026-10-01", costEndDate: "2026-11-01",
+    costGranularity: "MONTHLY", costGroupBy: ["SERVICE", "USAGE_TYPE"], costServices: ["AWS Key Management Service", "EC2 - Other"] }).slice(0, 13),
+  ["ce", "get-cost-and-usage", "--time-period", "Start=2026-10-01,End=2026-11-01", "--granularity", "MONTHLY", "--metrics", "UnblendedCost",
+    "--group-by", "Type=DIMENSION,Key=SERVICE", "Type=DIMENSION,Key=USAGE_TYPE", "--filter",
+    JSON.stringify({ And: [{ Dimensions: { Key: "LINKED_ACCOUNT", Values: [ACCOUNT] } }, { Dimensions: { Key: "SERVICE", Values: ["AWS Key Management Service", "EC2 - Other"] } }] })]);
+  const regional = argsOf({ tool: "aws_ce_get_cost_and_usage", accountId: ACCOUNT, costStartDate: "2026-10-01", costEndDate: "2026-11-01",
+    costGranularity: "MONTHLY", costGroupBy: ["SERVICE"], costRegion: "us-east-2" });
+  assert.ok(regional.includes(JSON.stringify({ And: [{ Dimensions: { Key: "LINKED_ACCOUNT", Values: [ACCOUNT] } }, { Dimensions: { Key: "REGION", Values: ["us-east-2"] } }] })));
   // The verifier's own tag-filter shape (src/observe/aws-cli.ts), on the deletion unit's tag key.
   assert.equal(UNIT_TAG_KEY, ALZ_TAG_KEYS.unit);
   assert.deepEqual(argsOf({ tool: "aws_tagging_get_resources", unitId: "unit-0001", region: "us-east-2" }),
     ["resourcegroupstaggingapi", "get-resources", "--tag-filters", "Key=alz-unit,Values=unit-0001", "--region", "us-east-2", "--output", "json"]);
+  assert.deepEqual(argsOf({ tool: "aws_tagging_get_resources_by_type", region: "us-east-2", resourceTypes: ["kms:key", "ec2:volume"] }),
+    ["resourcegroupstaggingapi", "get-resources", "--resource-type-filters", "kms:key", "ec2:volume", "--region", "us-east-2", "--max-items", "200", "--output", "json"]);
   for (const tool of AWS_COST_READ_TOOLS) {
     assert.match(tool, /^aws_[a-z]+_(describe|list|get)_[a-z_]+$/, tool + " is named as a read");
   }
@@ -71,6 +85,16 @@ test("every argument is validated: no wildcard, flag, separator or other shape r
   }
   for (const unitId of ["", "a,Values=b", "a b", "*?", "x".repeat(257)]) refusal({ tool: "aws_tagging_get_resources", unitId, region: "us-east-1" });
   for (const region of ["", "us-east", "US-EAST-1", "us-east-1 --profile x"]) refusal({ tool: "aws_tagging_get_resources", unitId: "u", region });
+  for (const [costStartDate, costEndDate, costGroupBy, costServices] of [
+    ["2026-02-30", "2026-03-01", ["SERVICE"], undefined], ["2026-03-02", "2026-03-01", ["SERVICE"], undefined],
+    ["2026-01-01", "2026-12-31", ["SERVICE", "SERVICE"], undefined], ["2026-01-01", "2026-02-01", ["SERVICE", "LINKED_ACCOUNT"], undefined],
+    ["2026-01-01", "2026-02-01", ["SERVICE"], ["AWS Key Management Service", "EC2 - Other", "Amazon Route 53"]],
+  ] as Array<[string, string, string[], string[] | undefined]>) {
+    refusal({ tool: "aws_ce_get_cost_and_usage", accountId: ACCOUNT, costStartDate, costEndDate, costGranularity: "MONTHLY", costGroupBy, ...(costServices ? { costServices } : {}) });
+  }
+  refusal({ tool: "aws_tagging_get_resources_by_type", resourceTypes: ["iam:role"] });
+  refusal({ tool: "aws_ce_get_cost_and_usage", accountId: ACCOUNT, costStartDate: "2026-01-01", costEndDate: "2026-02-01",
+    costGranularity: "MONTHLY", costGroupBy: ["SERVICE"], costRegion: "us-east-2 --profile admin" });
 });
 
 test("each cost tool takes exactly its own fields: a missing field or another tool's field is refused", () => {
@@ -82,6 +106,13 @@ test("each cost tool takes exactly its own fields: a missing field or another to
   assert.match(refusal({ tool: "aws_budgets_describe_budgets", accountId: ACCOUNT, exportArn: EXPORT_ARN }), /exportArn is not accepted/);
   assert.match(refusal({ tool: "aws_bcm_list_exports", operationIdentifier: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" }), /operationIdentifier is not accepted/);
   assert.match(refusal({ tool: "aws_sts_identity" }), /Not a cost read tool/);
+});
+
+test("Cost Explorer account filters must match a valid STS caller account", () => {
+  assert.equal(costQueryAccountMatches(ACCOUNT, ACCOUNT), true);
+  assert.equal(costQueryAccountMatches("222222222222", ACCOUNT), false);
+  assert.equal(costQueryAccountMatches("*", ACCOUNT), false);
+  assert.equal(costQueryAccountMatches(ACCOUNT, "--profile admin"), false);
 });
 
 test("the broker allows the cost reads, needs cloud-read capability for them, and refuses cost fields on any other tool", () => {

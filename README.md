@@ -19,6 +19,8 @@ Follow the [AWS non-production quickstart](docs/aws-nonproduction-quickstart.md)
 
 For an AWS hosted private Bedrock service in a Control Tower DEV member account, see the [AWS Control Tower reference stack](reference/aws-control-tower/README.md). It includes Bedrock Guardrails, private networking, budget alerts with optional inference pause, and reviewed CI/CD from GitHub, GitLab or CodeCommit. The first foundation deploy requires a Control Tower administrator; the application pipeline requires a human release approval.
 
+From the local session, ask natural-language questions about current-account AWS spend and KMS/EC2 resource tags; see [AWS cost agent commands](docs/aws-cost-agent-commands.md) for supported questions and cleanup boundaries.
+
 ## Five-pillar methodology
 
 ```text

@@ -39,6 +39,18 @@ export function classifySessionCommand(
     return pilotQuery;
   }
 
+  if (/\b(kms|ec2|ebs|snapshot|nat gateway|vpc endpoint)\b/.test(value) &&
+      /\b(tags?|labels?|tagged|labeled|inventory|resources?)\b/.test(value) &&
+      /\b(show|list|find|discover|inventory|which|what)\b/.test(value) &&
+      !/\b(create|deploy|destroy|tear down|teardown|clean up|cleanup|delete|remove|change|modify|update|configure|enable|disable|set)\b/.test(value)) {
+    return "COST_INVENTORY";
+  }
+
+  if (/\b(cost|costs|costing|spend|spent|charges|billing|usage charges|price|prices|expensive)\b/.test(value) &&
+      !/\b(create|deploy|destroy|tear down|teardown|clean up|cleanup|delete|remove|change|modify|update|configure|enable|disable|set)\b/.test(value)) {
+    return "COST_QUERY";
+  }
+
   if (pilotHandoffKind(value)) {
     return "PILOT_HANDOFF";
   }
