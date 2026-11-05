@@ -123,7 +123,9 @@ export function redactText(text, { account, keepAccount = false, masks = [], mas
     .replace(/((?:aws_secret_access_key|SecretAccessKey|aws_session_token|SessionToken|x-amz-security-token)["'\s:=]+)[A-Za-z0-9/+=]{16,}/gi, "$1<REDACTED>")
     .replace(/(\bBearer\s+)[A-Za-z0-9._~+/-]{16,}/g, "$1<REDACTED>")
     .replace(EMAIL, (address) => maskEmail(address));
-  for (const [literal, label] of masks) if (literal) out = out.split(literal).join(label);
+  // Longer literals first, so a path inside another (the checkout under the home folder) keeps its more specific label.
+  for (const [literal, label] of [...masks].sort((a, b) => String(b[0]).length - String(a[0]).length)) if (literal) out = out.split(literal).join(label);
+  out = out.replace(/(\/(?:Users|home)\/)[^/\s"'<>]+/g, "$1<USER>");
   if (!keepAccount) {
     if (account) out = out.split(account).join("<ACCOUNT>");
     out = out.replace(/(arn:aws[a-z-]*:[a-z0-9-]*:[a-z0-9-]*:)[0-9]{12}(?=:)/g, "$1<ACCOUNT>");
@@ -136,9 +138,17 @@ const defaultMaskEmail = (address) => {
   return at <= 0 ? "***" : address[0] + "***" + address.slice(at);
 };
 
-/** The named kinds of secret-looking text in a string, or an empty list. */
-export function secretKinds(text) {
-  return SECRET_PATTERNS.filter(([, pattern]) => pattern.test(text)).map(([kind]) => kind);
+/** A bare 12-digit number: an account id the masking missed (review N4). Checked unless the owner chose to keep the account. */
+export const ACCOUNT_LIKE = /(?<![0-9A-Za-z])[0-9]{12}(?![0-9A-Za-z])/;
+/** A home folder with its user name (review N6): /Users/<name>/ or /home/<name>/, other than the label the redaction writes. */
+export const USER_PATH = /\/(?:Users|home)\/(?!<USER>)[^/\s"'<>]+/;
+
+/** The named kinds of secret-looking text in a string, or an empty list. With `keepAccount`, a 12-digit number is allowed. */
+export function secretKinds(text, { keepAccount = false } = {}) {
+  const kinds = SECRET_PATTERNS.filter(([, pattern]) => pattern.test(text)).map(([kind]) => kind);
+  if (!keepAccount && ACCOUNT_LIKE.test(text)) kinds.push("ACCOUNT_ID");
+  if (USER_PATH.test(text)) kinds.push("USER_PATH");
+  return kinds;
 }
 
 // --- the acceptance report -----------------------------------------------------------------------------
@@ -413,12 +423,14 @@ const COMMANDS = {
     say("OK");
     return 0;
   },
-  /** review BUNDLE OUT ACCOUNT KEEP_ACCOUNT: the review bundle's change list, unit and provenance (no target, no signature). */
-  review([input, output, account, keep]) {
+  /** review BUNDLE OUT ACCOUNT KEEP_ACCOUNT [LITERAL LABEL]...: the review bundle's change list, unit and provenance (no target, no signature). */
+  review([input, output, account, keep, ...pairs]) {
+    const masks = [];
+    for (let i = 0; i + 1 < pairs.length; i += 2) masks.push([pairs[i], pairs[i + 1]]);
     const b = readJson(input);
     const picked = { artifactSha256: b.artifactSha256, environment: b.environment, sourceCommit: b.sourceCommit, createdAt: b.createdAt, policyVersion: b.policyVersion,
       engineVersion: b.engineVersion, provenance: b.provenance, unit: b.unit, changes: b.changes, changesSha256: b.changesSha256 };
-    privateWrite(output, redactText(JSON.stringify(picked, null, 2) + "\n", { account, keepAccount: keep === "yes" }));
+    privateWrite(output, redactText(JSON.stringify(picked, null, 2) + "\n", { account, keepAccount: keep === "yes", masks }));
   },
   /** report RUN_DIR BUNDLE_DIR: acceptance-report.md from the run's step records and the bundle's redacted files. */
   report([runDir, bundleDir]) {
@@ -445,10 +457,10 @@ const COMMANDS = {
     privateWrite(join(bundleDir, "acceptance-report.md"), text);
     say(items.map((i) => "  item " + i.item + "  " + i.state).join("\n"));
   },
-  /** scan DIR: refuses a bundle holding secret-looking text; names the file and the kind only. */
-  scan([dir]) {
+  /** scan DIR [KEEP_ACCOUNT]: refuses a bundle holding secret-looking text, an unmasked account id or a user path; names the file and the kind only. */
+  scan([dir, keep]) {
     const found = [];
-    for (const file of filesUnder(dir)) for (const kind of secretKinds(readFileSync(join(dir, file), "utf8"))) found.push(file + ": " + kind);
+    for (const file of filesUnder(dir)) for (const kind of secretKinds(readFileSync(join(dir, file), "utf8"), { keepAccount: keep === "yes" })) found.push(file + ": " + kind);
     if (found.length) { for (const line of found) say("SECRET_LIKE " + line); return 2; }
     say("CLEAN");
     return 0;

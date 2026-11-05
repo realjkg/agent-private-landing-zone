@@ -2,6 +2,12 @@
 
 `scripts/mac-acceptance.sh` is the owner's guided script for the first supervised AWS cost-baseline run in DEV. It runs on the owner's execution host, the Mac Mini. It drives the commands the execution brief already names, in order ([`docs/act-aws-terraform-execution-brief.md`](act-aws-terraform-execution-brief.md), "Cost baseline as payload"), and collects the acceptance evidence. It reimplements no product logic, so the manual work that remains is limited to the typed phrases and the console checks only the owner can make.
 
+> **Do not update the runner during an active acceptance run.**
+>
+> - Run the whole acceptance run from one commit, and record its SHA (the execution SHA) with the evidence. The runner records the commit and the SHA-256 of `scripts/mac-acceptance.sh` and its helper when a run starts.
+> - `--resume` and `--bundle` refuse if the runner changed since then.
+> - A runner fix merged later does not change evidence already collected. Applying it to a run, or citing it beside one, requires an evidence-impact note: which steps and which evidence the change could affect, and why.
+
 ## Authority and labels
 
 - **It authorizes nothing.** ACT stays as the owner's reviewed contract sets it. The script never writes the contract, an approval or a live record, and never enables anything.
@@ -86,8 +92,25 @@ Each step shows its exact command, runs it, and records its exit code, start and
 Rules the runner keeps:
 
 - **An apply is never retried.** Once `10-apply` started, `--resume` refuses to run it again, unless it ended `BLOCKED` (exit 2, nothing spent). After exit 3 (SPENT), follow "When an apply fails" in `docs/act-pilot-apply.md`. A retry is a new seal with new approvals, in a new run.
-- **One run at a time.** A second run is refused while `.runs/mac-acceptance/current` names one. Move that file aside only after review.
+- **One run at a time.**
+  - A second run is refused while `.runs/mac-acceptance/current` names one. Move that file aside only after review.
+  - Every mode except `--dry-run` also takes a lock, `.runs/mac-acceptance/lock`, created atomically, with the runner's pid. A second runner started at the same time, `--resume` included, is refused while the first one runs.
+  - The lock is never broken while its process is alive. A lock whose process is gone is stale: the next runner removes it and says so.
+  - A lock without a readable pid is never removed automatically. Review it, and remove it by hand only when no runner is running.
+- **An apply is retried only after BLOCKED.** `--resume` runs `10-apply` again only when its latest attempt recorded its own exit, and that exit is 2. An attempt that recorded no exit (for example, the window closed during the apply) is never retried by the runner.
 - **Approvals expire.** An approval lasts the contract's `maxApprovalAgeMinutes`, so apply soon after you approve.
+
+### If the APPLY line was mistyped
+
+A mistyped or empty APPLY line stops `apply` with `APPLY_CONFIRMATION_MISMATCH` (exit 1). Nothing is applied and no approval is consumed. The runner still counts it as an attempt and never retries it.
+
+Recover with a new seal and new approvals, in a new run:
+
+1. Bundle what you have: `scripts/mac-acceptance.sh --bundle ...`.
+2. After review, move `.runs/mac-acceptance/current` aside.
+3. Start a new run. It builds, prepares, qualifies, seals and approves again.
+
+The product's ledger and the approval's one-time nonce refuse a second apply of a spent plan in any case.
 
 ## The evidence bundle
 
@@ -108,9 +131,12 @@ What redaction does:
 - removes private keys, PEM blocks, web identity tokens, access key ids and secret values;
 - masks every email as the product masks a recipient (`redactAddress`: first character, `***`, the domain);
 - replaces the account id with `<ACCOUNT>`, unless you pass `--include-account-id`;
-- replaces the state bucket with `<STATE_BUCKET>` and key file paths with labels.
+- replaces the state bucket with `<STATE_BUCKET>` and key file paths with labels;
+- replaces absolute paths with labels: the checkout becomes `<REPO>`, the canary copy `<CANARY_COPY>` and your home folder `<HOME>`, and any other `/Users/<name>/` becomes `/Users/<USER>/`, so your user name is not in the bundle.
 
-Raw state and tfvars are never copied. A final scan refuses to archive a bundle that still holds secret-looking text, and names only the file and the kind.
+The account and the state bucket are the run's own, recorded when the run starts. `--bundle` masks them even when the contract is no longer readable. When neither the run nor the contract names the account, `--bundle` refuses unless you pass `--include-account-id`.
+
+Raw state and tfvars are never copied. A final scan refuses to archive a bundle that still holds secret-looking text, a bare 12-digit number (unless you kept the account) or a user path. It names only the file and the kind. If it refuses a 12-digit value that is not an account, for example part of an identifier, review that file before you share anything.
 
 `acceptance-report.md` maps acceptance items 1 to 8 (brief, "Minimum acceptance") from what this run read. Each item is OBSERVED, WAITING, UNKNOWN, NOT_APPLICABLE or NEEDS_OWNER_CHECK:
 

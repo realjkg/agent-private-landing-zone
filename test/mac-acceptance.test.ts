@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -9,7 +9,7 @@ import test from "node:test";
 import { redactAddress } from "../src/cost/status.ts";
 import type { CostStatus } from "../src/cost/status.ts";
 import { readCostSnapshot, readLocalCostConfig } from "../src/cost/local.ts";
-import { acceptanceItems, approvalOf, cell, DIST_MODULES, jsonObjects, pilotEnabled, preparationRecordPath, redactText, secretKinds, sealValues } from "../scripts/mac-acceptance.mjs";
+import { acceptanceItems, approvalOf, cell, USER_PATH, DIST_MODULES, jsonObjects, pilotEnabled, preparationRecordPath, redactText, secretKinds, sealValues } from "../scripts/mac-acceptance.mjs";
 
 // scripts/mac-acceptance.sh: the owner's guided runner for the first supervised AWS cost-baseline run on the Mac Mini
 // (docs/mac-acceptance-runner.md). SYNTHETIC: every product command is a fake `alz`, and `node`, `terraform`, `aws`, `uname` and
@@ -124,6 +124,7 @@ case "$sub" in
     typed apply
     printf 'APPLY_APPROVAL %s\n' "$(arg --approval "$@")" >> "$LOG"
     if [ -f "$FAKE_DIR/fail-apply" ]; then echo "SPENT FAILED_NO_CHANGE"; exit 3; fi
+    if [ -f "$FAKE_DIR/block-apply" ]; then echo "BLOCKED APPROVAL_EXPIRED: nothing was spent"; exit 2; fi
     json '{"outcome":"SUCCEEDED"}' ;;
   observe)
     mkdir -p .runs/apply/reports
@@ -308,7 +309,8 @@ test("a live run refuses without an interactive terminal, before any step or run
   assert.equal(result.status, 2, result.stdout);
   assert.match(result.stdout, /FAIL +Interactive terminal +stdin or stdout is not a terminal/);
   assert.equal(count(f, /BUILD|apply prepare/), 0);
-  assert.ok(!existsSync(join(f.root, ".runs", "mac-acceptance")));
+  assert.ok(!existsSync(join(f.root, ".runs", "mac-acceptance", "current")), "no run state");
+  assert.ok(!existsSync(join(f.root, ".runs", "mac-acceptance", "lock")), "the lock is released");
 });
 
 test("the stage runner stops at a failed step; --resume skips the completed steps, answers no gate, never cleans up, and bundles redacted evidence", () => {
@@ -373,6 +375,10 @@ test("the stage runner stops at a failed step; --resume skips the completed step
   assert.ok(all.includes("a***@example.com") && all.includes("o***@example.com"), "emails are masked as the product masks them");
   assert.ok(all.includes("<ACCOUNT>") && all.includes("<STATE_BUCKET>") && all.includes("<REDACTED TOKEN>"));
   for (const text of texts) assert.deepEqual(secretKinds(text), []);
+  // No absolute host path (review N6): the checkout, the home folder and the key are labels in the bundle.
+  for (const path of [f.root, f.env.HOME, f.dir]) assert.ok(!all.includes(path), "the bundle never holds " + path);
+  assert.ok(all.includes("<REPO>/.runs/"), "paths are repo-relative labels");
+  assert.ok(!existsSync(join(f.root, ".runs", "mac-acceptance", "lock")), "the lock is released when the run ends");
   const report = readFileSync(join(bundle, "acceptance-report.md"), "utf8");
   assert.match(report, /LIVE evidence collected by the owner, on the owner's own host/);
   assert.match(report, /not CI evidence and\nnot agent-collected\. It does not by itself certify acceptance/);
@@ -400,7 +406,7 @@ test("an apply that was attempted and spent is never retried on resume", () => {
   rmSync(join(f.dir, "fail-apply"));
   const second = onTerminal(f, ["--resume", ...baseArgs(f)]);
   assert.equal(second.status, 1, second.out);
-  assert.match(second.out, /STOPPED at 10-apply: an apply of this sealed plan was already attempted \(exit 3\)/);
+  assert.match(second.out, /STOPPED at 10-apply: an apply of this sealed plan was already attempted \(latest attempt: exit 3\)/);
   assert.equal(count(f, /^CALL apply apply /), 1);
   // A partial bundle can still be written on request, and it is redacted the same way.
   const bundle = plain(f, ["--bundle", ...baseArgs(f)]);
@@ -507,7 +513,7 @@ test("redaction removes keys and tokens, masks emails with the product's own rul
   for (const gone of [RECIPIENT, ACCOUNT, "999988887777", JWT, KEY_ID, "abcdefghijklmnopqrstuvwxyz012345", PEM_BEGIN, BUCKET]) assert.ok(!out.includes(gone), gone);
   assert.deepEqual(secretKinds(out), []);
   assert.ok(redactText("arn:aws:iam::" + ACCOUNT + ":role/x", { account: ACCOUNT, keepAccount: true }).includes(ACCOUNT));
-  assert.deepEqual(secretKinds(text).sort(), ["AWS_ACCESS_KEY_ID", "AWS_SECRET", "JWT", "PRIVATE_KEY", "UNMASKED_EMAIL"]);
+  assert.deepEqual(secretKinds(text).sort(), ["ACCOUNT_ID", "AWS_ACCESS_KEY_ID", "AWS_SECRET", "JWT", "PRIVATE_KEY", "UNMASKED_EMAIL"]);
 });
 
 test("acceptance items 1 to 8 map from the cost status as read; item 2 is always the owner's and item 7 never applies", () => {
@@ -540,3 +546,132 @@ test("the owner's page has a one-page run section, the D4 note for the Mac Mini,
   assert.match(doc, /does not by itself certify acceptance/);
   assert.match(doc, /shellcheck/);
 });
+
+// --- review follow-ups (#380 review 6647460899, lane EVS-2) -------------------------------------------------------------------
+
+const envOf = (f: Fixture, step: string) => join(runDir(f), "steps", step + ".env");
+
+test("N1: an apply is retried only when its latest attempt recorded its own exit 2; an attempt with no recorded exit is never retried", () => {
+  // BLOCKED (exit 2, nothing spent): the next --resume runs the apply again.
+  const f = fixture();
+  writeFileSync(join(f.dir, "block-apply"), "");
+  const first = onTerminal(f, baseArgs(f));
+  assert.equal(first.status, 1, first.out);
+  assert.match(first.out, /STOPPED at 10-apply: apply was BLOCKED \(exit 2\); nothing was spent/);
+  rmSync(join(f.dir, "block-apply"));
+  const second = onTerminal(f, ["--resume", ...baseArgs(f)]);
+  assert.equal(second.status, 0, second.out);
+  assert.equal(count(f, /^CALL apply apply /), 2);
+
+  // BLOCKED, then an attempt that started and never recorded an exit (the window closed mid-apply). The old guard read the last
+  // EXIT of any attempt (2) and allowed a retry; the new one reads the latest attempt's own exit and refuses.
+  const g = fixture();
+  writeFileSync(join(g.dir, "block-apply"), "");
+  assert.equal(onTerminal(g, baseArgs(g)).status, 1);
+  rmSync(join(g.dir, "block-apply"));
+  writeFileSync(envOf(g, "10-apply"), readFileSync(envOf(g, "10-apply"), "utf8") + "STARTED=2026-11-05T11:00:00Z\nCOMMAND=./alz apply apply\n");
+  const third = onTerminal(g, ["--resume", ...baseArgs(g)]);
+  assert.equal(third.status, 1, third.out);
+  assert.match(third.out, /STOPPED at 10-apply: an apply of this sealed plan was already attempted \(latest attempt: exit not recorded\)/);
+  assert.equal(count(g, /^CALL apply apply /), 1, "no second apply");
+});
+
+test("N5: a step record without a STARTED line counts as zero attempts instead of breaking the arithmetic", () => {
+  const f = fixture();
+  writeFileSync(join(f.dir, "fail-qualify"), "");
+  assert.equal(onTerminal(f, baseArgs(f)).status, 1);
+  assert.ok(!existsSync(join(f.root, ".runs", "mac-acceptance", "lock")), "a stopped run releases its lock");
+  rmSync(join(f.dir, "fail-qualify"));
+  writeFileSync(envOf(f, "06-qualify"), "COMMAND=./alz apply qualify\n");
+  const resumed = onTerminal(f, ["--resume", ...baseArgs(f)]);
+  assert.equal(resumed.status, 0, resumed.out);
+  assert.match(resumed.out, /STEP 06-qualify \(attempt 1\)/);
+});
+
+test("N3: one runner at a time: a lock held by a live process is never broken, a stale one is removed, one without a pid is left for the owner", () => {
+  const f = fixture();
+  const lock = join(f.root, ".runs", "mac-acceptance", "lock");
+  mkdirSync(lock, { recursive: true, mode: 0o700 });
+  const holder = spawn("sleep", ["60"], { stdio: "ignore" });
+  try {
+    writeFileSync(join(lock, "pid"), holder.pid + "\n2026-11-05T10:00:00Z\n");
+    for (const args of [baseArgs(f), ["--resume", ...baseArgs(f)], ["--bundle", ...baseArgs(f)]]) {
+      const refused = plain(f, args);
+      assert.equal(refused.status, 2, refused.stdout + refused.stderr);
+      assert.match(refused.stderr, new RegExp("another runner \\(pid " + holder.pid + "\\) is running this acceptance run.*never broken"));
+    }
+    assert.equal(readFileSync(join(lock, "pid"), "utf8").split("\n")[0], String(holder.pid), "the live holder's lock is untouched");
+    assert.equal(count(f, /BUILD|apply prepare/), 0);
+  } finally {
+    holder.kill();
+  }
+  // A holder that is gone (a pid that exited and was reaped): its lock is stale, removed with a notice, and the run proceeds and
+  // releases its own lock at the end.
+  const gone = Number(spawnSync("/bin/sh", ["-c", "echo $$"], { encoding: "utf8" }).stdout.trim());
+  assert.notEqual(spawnSync("ps", ["-p", String(gone)]).status, 0);
+  writeFileSync(join(lock, "pid"), gone + "\n2026-11-05T10:00:00Z\n");
+  const run = onTerminal(f, baseArgs(f));
+  assert.equal(run.status, 0, run.out);
+  assert.match(run.out, new RegExp("removed a stale lock \\(pid " + gone + " is no longer running\\)"));
+  assert.ok(!existsSync(lock));
+  // A lock without a readable pid is never removed automatically.
+  mkdirSync(lock, { mode: 0o700 });
+  const unknown = plain(f, ["--bundle", ...baseArgs(f)]);
+  assert.equal(unknown.status, 2);
+  assert.match(unknown.stderr, /no pid recorded yet, or it is unreadable/);
+  assert.ok(existsSync(lock));
+});
+
+test("N4: --bundle masks the run's recorded account even when the contract is gone, and refuses when no account is known", () => {
+  const f = fixture();
+  assert.equal(onTerminal(f, baseArgs(f)).status, 0);
+  rmSync(join(f.root, "config", "act-pilot-contract.json"));
+  const bundle = plain(f, ["--bundle", ...baseArgs(f)]);
+  assert.equal(bundle.status, 0, bundle.stdout + bundle.stderr);
+  const all = walk(join(runDir(f), "bundle")).map((p) => readFileSync(p, "utf8")).join("\n");
+  assert.ok(!all.includes(ACCOUNT) && !all.includes(BUCKET), "masked from the run's own record");
+  assert.ok(all.includes("<ACCOUNT>"));
+  // A run that recorded no account, with no readable contract: nothing is bundled rather than an unmasked account.
+  const values = join(runDir(f), "values");
+  writeFileSync(values, readFileSync(values, "utf8").split("\n").filter((l) => !l.startsWith("ACCOUNT=")).join("\n"));
+  const refused = plain(f, ["--bundle", ...baseArgs(f)]);
+  assert.equal(refused.status, 2);
+  assert.match(refused.stderr, /the run's account is unknown .* cannot be masked/);
+});
+
+test("N4, N6: the scan refuses a bare account id unless it is kept, and a user path; redaction labels home folders", () => {
+  assert.deepEqual(secretKinds("account " + ACCOUNT + " here"), ["ACCOUNT_ID"]);
+  assert.deepEqual(secretKinds("account " + ACCOUNT, { keepAccount: true }), []);
+  assert.deepEqual(secretKinds("sha abcdef012345678901234abc and 2026-11-05T10:00:00Z"), [], "digits inside a hash or a time are not an account");
+  assert.deepEqual(secretKinds("/Users/jdoe/repo"), ["USER_PATH"]);
+  const out = redactText("/Users/jdoe/repo/.runs/x and /home/runner/y and /Users/jdoe/key.pem", { masks: [["/Users/jdoe/repo", "<REPO>"]] });
+  assert.equal(out, "<REPO>/.runs/x and /home/<USER>/y and /Users/<USER>/key.pem");
+  assert.doesNotMatch(out, USER_PATH);
+});
+
+test("the runner refuses to resume a run after the runner itself changed", () => {
+  const f = fixture();
+  writeFileSync(join(f.dir, "fail-qualify"), "");
+  assert.equal(onTerminal(f, baseArgs(f)).status, 1);
+  assert.match(readFileSync(join(runDir(f), "values"), "utf8"), /^RUNNER_SHA256=[0-9a-f]{64} [0-9a-f]{64}$/m);
+  writeFileSync(join(f.root, SCRIPT), readFileSync(join(f.root, SCRIPT), "utf8") + "# a later fix\n");
+  rmSync(join(f.dir, "fail-qualify"));
+  const resumed = onTerminal(f, ["--resume", ...baseArgs(f)]);
+  assert.equal(resumed.status, 2, resumed.out);
+  assert.match(resumed.out, /the runner changed since this run started/);
+  assert.match(resumed.out, /evidence-impact note/);
+  assert.equal(count(f, /^CALL apply qualify/), 1);
+});
+
+test("the page warns against updating the runner mid-run, documents a mistyped APPLY line, and the brief links it", () => {
+  const doc = readFileSync("docs/mac-acceptance-runner.md", "utf8");
+  assert.match(doc, /> \*\*Do not update the runner during an active acceptance run\.\*\*/);
+  assert.match(doc, /record its SHA \(the execution SHA\)/);
+  assert.match(doc, /requires an evidence-impact note/);
+  assert.match(doc, /### If the APPLY line was mistyped[\s\S]*APPLY_CONFIRMATION_MISMATCH[\s\S]*new seal and new approvals/);
+  assert.match(doc, /\.runs\/mac-acceptance\/lock/);
+  const brief = readFileSync("docs/act-aws-terraform-execution-brief.md", "utf8");
+  const section = brief.slice(brief.indexOf("### Owner checklist"), brief.indexOf("### Expected results for this payload"));
+  assert.match(section, /\[`docs\/mac-acceptance-runner\.md`\]\(mac-acceptance-runner\.md\)/);
+});
+
