@@ -190,7 +190,22 @@ export type CleanupProposal = {
   };
   /** Present exactly when `kind` is LOCATION_REMEDIATION; an ordinary proposal has no such key, so its hash is what it always was. */
   remediation?: LocationRemediation;
+  /**
+   * Present exactly when the run created a cost baseline (`isRetainedByDefault`): such a run is retained by default (owner decision of
+   * 2026-11-05), and a proposal exists only after a person typed the teardown disposition at the terminal. Hashed, so the requester and
+   * every approver sign it; any other proposal has no such key, so its hash is what it always was.
+   */
+  disposition?: TeardownDisposition;
 };
+
+/** The one teardown disposition: a person at the terminal typed `TEAR DOWN COST BASELINE <artifact12>` (`teardownPhrase`). */
+export type TeardownDisposition = "TEARDOWN_CONFIRMED";
+/** The change type that marks a cost-baseline run: its CUR 2.0 export (src/build/cost-baseline.ts). */
+export const COST_BASELINE_TYPE = "aws_bcmdataexports_export";
+/** A run whose sealed changes include a cost-baseline export is retained by default; tearing it down needs the person's disposition. */
+export const isRetainedByDefault = (changes: readonly { type: string }[]): boolean => changes.some((change) => change.type === COST_BASELINE_TYPE);
+/** What the person types to give the teardown disposition for one run, named by its sealed plan's artifact. */
+export const teardownPhrase = (artifactSha256: string): string => "TEAR DOWN COST BASELINE " + artifactSha256.slice(0, 12);
 
 type Refusal = { ok: false; code: ApplyRefusalCode; message: string };
 const refuse = (code: ApplyRefusalCode, message: string): Refusal => ({ ok: false, code, message });
@@ -517,6 +532,8 @@ export type ProposalInput = {
   now: Date;
   /** Who requests this cleanup, by allowlist id: hashed into the proposal. The signature is added by `signCleanupProposal`. */
   requesterId: string;
+  /** The person's teardown disposition, given at the terminal (`teardownPhrase`); required for a cost-baseline run, refused for any other. */
+  disposition?: TeardownDisposition;
 };
 
 /** Builds the proposal for one run, or says why none can be made. Nothing here reads a cloud or runs an engine. */
@@ -688,13 +705,24 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
   if (!authorized.ok) return authorized;
   const moved = targetMoved(evidence.targetSha256, contract, evidence.environment);
   if (moved) return moved;
+  // Retention by default (owner decision of 2026-11-05): a cost-baseline run keeps its billing history unless a person gave the separate,
+  // explicit teardown disposition. Judged last, so a run that could not be proposed for another reason says that reason first.
+  const retained = isRetainedByDefault(input.changes);
+  if (retained && input.disposition !== "TEARDOWN_CONFIRMED") {
+    return refuse("CLEANUP_RETAINED_BY_DEFAULT", "This run created a cost baseline (a CUR 2.0 export and its bucket), which is intentionally retained by default (owner decision of 2026-11-05). " +
+      "No cleanup proposal was written and nothing was signed. Tearing it down is a separate decision: decide what happens to the delivered billing data (copy it, or empty the bucket by hand), " +
+      "then run ./alz apply propose-cleanup at a terminal and type the teardown disposition it asks for (" + teardownPhrase(evidence.artifactSha256) + ").");
+  }
+  if (!retained && input.disposition !== undefined) {
+    return refuse("PROPOSAL_INVALID", "A teardown disposition applies only to a run that created a cost baseline; this run did not. Propose the cleanup without one; nothing was written.");
+  }
   const fields: ProposalFields = {
     schemaVersion: 2, kind: "CLEANUP_PROPOSAL", artifactSha256: evidence.artifactSha256, applyEvidenceSha256: input.applyEvidenceSha256, blueprintSha256: input.blueprintSha256,
     observationSha256: input.observationSha256, provider: contract.provider, engine: contract.engine, environment: evidence.environment, target: { ...evidence.target }, channel: input.channel,
     contractSha256: evidence.contractSha256, authorizingContractSha256: authorized.authorization.contractSha256, authorizationSha256: authorized.authorization.authorizationSha256, targetSha256: evidence.targetSha256,
     sourceCommit: evidence.sourceCommit, engineVersion: input.engineVersion, createdAt: input.now.toISOString(), unitId: record.unitId,
     deletes, alreadyAbsent, excluded, risks: [...risks].sort(), authorization: { subject: "CLEANUP", requiredApprovals: required, executesAs: "APPLY" },
-    requesterId: input.requesterId, request: null,
+    requesterId: input.requesterId, request: null, ...(retained ? { disposition: "TEARDOWN_CONFIRMED" as const } : {}),
   };
   return { ok: true, proposal: { ...fields, proposalSha256: computeProposalSha256(fields) } };
 }
@@ -825,13 +853,16 @@ export function proposalProblems(value: unknown): string[] {
   // A proposal made before a cleanup had a requester (schema 1) is refused everywhere, as a schema 1 sealed plan is (#286; owner decision 6440801434, item 1).
   if (value.schemaVersion === 1 && value.kind === "CLEANUP_PROPOSAL") return ["proposal: made before cleanup requesters existed (schema 1); propose the cleanup again with the requester's key"];
   const problems: string[] = [];
-  // A location remediation carries exactly one more key, and an ordinary proposal never carries it.
-  const keys = value.kind === "LOCATION_REMEDIATION" ? [...KEYS, "remediation"] : KEYS;
+  // A location remediation carries exactly one more key, and an ordinary proposal never carries it; a cost-baseline teardown carries its disposition.
+  const keys = value.kind === "LOCATION_REMEDIATION" ? [...KEYS, "remediation"] : Object.hasOwn(value, "disposition") ? [...KEYS, "disposition"] : KEYS;
   for (const key of Object.keys(value)) if (!keys.includes(key)) problems.push("proposal." + key + ": not part of a proposal");
   for (const key of keys) if (!Object.hasOwn(value, key)) problems.push("proposal." + key + ": missing");
   if (problems.length > 0) return problems;
   if (value.schemaVersion !== 2 || (value.kind !== "CLEANUP_PROPOSAL" && value.kind !== "LOCATION_REMEDIATION")) problems.push("proposal: not a schemaVersion 2 CLEANUP_PROPOSAL or LOCATION_REMEDIATION");
   if (value.kind === "LOCATION_REMEDIATION") problems.push(...remediationProblems(value));
+  if (Object.hasOwn(value, "disposition") && (value.disposition !== "TEARDOWN_CONFIRMED" || value.kind !== "CLEANUP_PROPOSAL" || value.provider !== "AWS")) {
+    problems.push("proposal.disposition: only TEARDOWN_CONFIRMED, on an AWS cleanup proposal of a cost-baseline run");
+  }
   if (typeof value.requesterId !== "string" || !REQUESTER_ID.test(value.requesterId)) problems.push("proposal.requesterId: not an allowlist id");
   if (!wellFormedRequest(value.request)) problems.push("proposal.request: the requester's signature is missing or malformed");
   if (![value.proposalSha256, value.artifactSha256, value.applyEvidenceSha256, value.blueprintSha256, value.observationSha256, value.contractSha256, value.authorizingContractSha256, value.authorizationSha256, value.targetSha256].every(hashText)) problems.push("proposal: a hash is not a SHA-256 digest");
@@ -917,6 +948,11 @@ export function proposalLines(proposal: CleanupProposal): string[] {
       "  resource id     " + stripInvisible(r.resourceId) + " (creation identity " + r.resourceGuid + ")",
       "  ownership       created by this run's sealed plan (CREATE, no import), held by its state at " + stripInvisible(r.address) + ", deletion unit " + r.ownership.unitId + " (sweep " + r.ownership.sweep + ")",
       "  bound to        run target " + proposal.targetSha256.slice(0, 12) + ", contract " + proposal.contractSha256.slice(0, 12) + ", observation " + proposal.observationSha256.slice(0, 12),
+    ]),
+    // A cost-baseline teardown says so before anything else is read: the run is retained unless this disposition was given.
+    ...(proposal.disposition === undefined ? [] : [
+      "  DISPOSITION     TEARDOWN_CONFIRMED: a person at the terminal gave the explicit teardown disposition for this cost baseline, which is otherwise retained by default; " +
+        "every run-owned bucket is still read again before deletion, and a bucket that is not verified empty stops the cleanup",
     ]),
     "  requested by    " + stripInvisible(proposal.requesterId) + (REQUESTER_MAY_APPROVE[proposal.environment] === true ? "" : " (in " + proposal.environment + " the requester cannot approve this cleanup)"),
     "  executes as     the " + proposal.authorization.executesAs + " identity, bound to exactly the list below; " + proposal.authorization.requiredApprovals + " cleanup approval(s) required",

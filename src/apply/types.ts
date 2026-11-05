@@ -297,6 +297,23 @@ export type ApplyRefusalCode =
   | "REMEDIATION_NOT_ELIGIBLE"
   /** A location remediation's recheck, immediately before the approvals are consumed, did not find the network exactly as proposed. Nothing was deleted and no approval was consumed. */
   | "REMEDIATION_RECHECK_FAILED"
+  /**
+   * A run-owned S3 bucket on the approved list, read again as DISCOVERY immediately before the approvals would be consumed, still holds
+   * an object version, a delete marker or an unfinished multipart upload, or a Data Exports delivery into it is queued or in progress.
+   * Nothing was destroyed and no approval was consumed; the bucket keeps its data and its protections.
+   */
+  | "CLEANUP_BUCKET_NOT_EMPTY"
+  /**
+   * A run-owned S3 bucket on the approved list could not be verified empty immediately before the approvals would be consumed: a read
+   * failed, was denied or throttled, answered for another owner or region, was truncated or malformed, or the versioning state is unknown.
+   * Nothing was destroyed and no approval was consumed.
+   */
+  | "CLEANUP_BUCKET_UNVERIFIED"
+  /**
+   * The run created a cost baseline (a Data Exports export), which is retained by default (owner decision of 2026-11-05): no cleanup
+   * proposal is made without a person's separate, explicit teardown disposition typed at the terminal. Nothing was written or signed.
+   */
+  | "CLEANUP_RETAINED_BY_DEFAULT"
   /** The cleanup proposal is malformed, or does not hash to its own identity. Nothing was consumed. */
   | "PROPOSAL_INVALID"
   /** The engine's destroy plan is not exactly the approved proposal's resource list (state or dependencies changed). Nothing was applied and no approval was consumed. */

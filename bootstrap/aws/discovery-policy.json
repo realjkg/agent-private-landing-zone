@@ -98,6 +98,15 @@
         "ce:ListCostAllocationTags"
       ]
     },
+    "cleanupPreflight": {
+      "why": "The cleanup's bucket preflight (src/apply/bucket-preflight.ts; owner decision 2026-11-05, issue #39 comment 6646346513): immediately before a cleanup's approvals are consumed, every run-owned S3 bucket on the approved list is read again and must be verified empty (no object version, delete marker or multipart upload), so a bucket holding data is never stripped of its protections. The other reads it makes are already allowed: head-bucket (s3:ListBucket, a recorded exception), get-bucket-versioning (s3:GetBucketVersioning) and the export's list-executions (bcm-data-exports:ListExecutions). Flagged for the owner's acceptance.",
+      "scope": "Every S3 bucket in the account (Resource \"*\"), read only with --expected-bucket-owner set to the target account and --max-items 1. s3:ListBucketVersions returns object key names, version ids and sizes, and s3:ListBucketMultipartUploads returns key names and upload ids, never object contents; the same data class as the recorded s3:ListBucket exception. The product keeps counts only, never a key name.",
+      "purpose": "Refuse a cleanup before anything is destroyed or any approval is consumed when a run-owned bucket is not empty or cannot be verified empty. It never empties a bucket and writes nothing; s3:GetObject* stays denied.",
+      "actions": [
+        "s3:ListBucketVersions",
+        "s3:ListBucketMultipartUploads"
+      ]
+    },
     "recordedExceptions": {
       "why": "Two read-handler permissions that return more than configuration. They cannot be scoped to the pilot's own resources: a blueprint names its buckets and topics freely, and the pilot apply sets no unit tag yet. They are recorded here as exceptions to the owner decision, with scope and purpose, for the owner to accept.",
       "scope": "Every S3 bucket and SNS topic in the account (Resource \"*\"). s3:ListBucket returns object key names, never object contents. sns:ListSubscriptionsByTopic returns subscription endpoints (email addresses, phone numbers, HTTPS URLs), never messages.",

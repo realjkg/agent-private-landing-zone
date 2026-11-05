@@ -58,6 +58,17 @@ const COST_STATUS_READS: Record<string, string> = {
   aws_tagging_get_resources: "tag:GetResources",
 };
 const COST_STATUS_READS_LIST = [...new Set(Object.values(COST_STATUS_READS))];
+/**
+ * The IAM actions of the cleanup's bucket preflight (src/apply/bucket-preflight.ts), from the Service Authorization Reference.
+ * HeadBucket is authorized by s3:ListBucket (a recorded exception); the two list calls are the new allow group.
+ */
+const CLEANUP_PREFLIGHT_READS: Record<string, string> = {
+  "s3api head-bucket": "s3:ListBucket",
+  "s3api get-bucket-versioning": "s3:GetBucketVersioning",
+  "s3api list-object-versions": "s3:ListBucketVersions",
+  "s3api list-multipart-uploads": "s3:ListBucketMultipartUploads",
+  "bcm-data-exports list-executions": "bcm-data-exports:ListExecutions",
+};
 
 /** Read handlers that return data or secrets, from the same schemas: why these types are never read. */
 const DATA_BEARING_HANDLERS: Record<string, string[]> = {
@@ -145,7 +156,7 @@ test("the allow covers exactly the reads the product makes as DISCOVERY", () => 
   assert.deepEqual([...typeNames].sort(), Object.keys(READ_HANDLERS).sort(), "every verifier type has a recorded read handler");
   for (const [type, actions] of Object.entries(READ_HANDLERS)) for (const action of actions) assert.ok(allow.includes(action), type + " needs " + action);
   const needed = new Set([...Object.values(READ_HANDLERS).flat(), ...policy.allow.cdkStackReads!.actions, ...policy.allow.independentObservation!.actions, ...policy.allow.previewDiscovery!.actions,
-    ...COST_STATUS_READS_LIST]);
+    ...COST_STATUS_READS_LIST, ...Object.values(CLEANUP_PREFLIGHT_READS)]);
   assert.deepEqual(allow.filter((action) => !needed.has(action)), [], "no unexplained allow");
 });
 
@@ -164,6 +175,32 @@ test("cost status: each broker cost read has its allow, the group records scope 
   }
   // No write, modify or execute action of these services is allowed, by any group.
   for (const action of allow) assert.doesNotMatch(action, /^(budgets|bcm-data-exports|ce):(Create|Update|Delete|Modify|Execute|Tag|Untag|Start)/, action);
+});
+
+test("cleanup preflight (owner decision 6646346513): each bucket read has its allow, the two list reads are their own group flagged for the owner, and object contents stay denied", () => {
+  for (const [read, action] of Object.entries(CLEANUP_PREFLIGHT_READS)) assert.ok(allow.includes(action), read + " needs " + action);
+  const group = policy.allow.cleanupPreflight!;
+  assert.deepEqual([...group.actions].sort(), ["s3:ListBucketMultipartUploads", "s3:ListBucketVersions"]);
+  assert.match(group.why, /6646346513/);
+  assert.match(group.why, /owner's acceptance/);
+  assert.match(group.scope ?? "", /object key names/);
+  assert.match(group.scope ?? "", /--expected-bucket-owner/);
+  assert.match(group.scope ?? "", /counts only/);
+  assert.match(group.purpose ?? "", /never empties a bucket/);
+  assert.match(group.purpose ?? "", /s3:GetObject\* stays denied/);
+  // The same data class as s3:ListBucket, never object contents: every object read is still denied, and no S3 write is allowed by any group.
+  for (const action of ["s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectAttributes"]) assert.ok(deny.some((pattern) => matches(pattern, action)), "still denied: " + action);
+  for (const action of allow) assert.doesNotMatch(action, /^s3:(Put|Delete|Abort|Create|Restore|Replicate|Bypass)/, action);
+  for (const name of Object.keys(policy.allow)) if (name !== "cleanupPreflight") for (const action of group.actions) assert.ok(!policy.allow[name]!.actions.includes(action), action + " is listed only in cleanupPreflight");
+  // Each read's exact argument shape is accepted by the DISCOVERY runner, with the expected owner where S3 takes one.
+  const shapes: string[][] = [
+    ["s3api", "head-bucket", "--bucket", "examplefake-cur", "--expected-bucket-owner", "111111111111", "--region", "us-east-1", "--output", "json"],
+    ["s3api", "get-bucket-versioning", "--bucket", "examplefake-cur", "--expected-bucket-owner", "111111111111", "--region", "us-east-1", "--output", "json"],
+    ["s3api", "list-object-versions", "--bucket", "examplefake-cur", "--expected-bucket-owner", "111111111111", "--max-items", "1", "--region", "us-east-1", "--output", "json"],
+    ["s3api", "list-multipart-uploads", "--bucket", "examplefake-cur", "--expected-bucket-owner", "111111111111", "--max-items", "1", "--region", "us-east-1", "--output", "json"],
+    ["bcm-data-exports", "list-executions", "--export-arn", "arn:aws:bcm-data-exports:us-east-1:111111111111:export/alz-cur2", "--region", "us-east-1", "--output", "json"],
+  ];
+  for (const shape of shapes) assert.ok(isAllowedReadArgv(shape), shape.slice(0, 2).join(" "));
 });
 
 test("bootstrap: the default is ViewOnlyAccess, the deny is inline and independent of the managed list, and broad overrides are refused", () => {
