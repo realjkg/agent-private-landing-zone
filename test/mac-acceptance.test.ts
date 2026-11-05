@@ -9,7 +9,7 @@ import test from "node:test";
 import { redactAddress } from "../src/cost/status.ts";
 import type { CostStatus } from "../src/cost/status.ts";
 import { readCostSnapshot, readLocalCostConfig } from "../src/cost/local.ts";
-import { acceptanceItems, approvalOf, DIST_MODULES, jsonObjects, pilotEnabled, preparationRecordPath, redactText, secretKinds, sealValues } from "../scripts/mac-acceptance.mjs";
+import { acceptanceItems, approvalOf, cell, DIST_MODULES, jsonObjects, pilotEnabled, preparationRecordPath, redactText, secretKinds, sealValues } from "../scripts/mac-acceptance.mjs";
 
 // scripts/mac-acceptance.sh: the owner's guided runner for the first supervised AWS cost-baseline run on the Mac Mini
 // (docs/mac-acceptance-runner.md). SYNTHETIC: every product command is a fake `alz`, and `node`, `terraform`, `aws`, `uname` and
@@ -478,6 +478,12 @@ test("the helper loads the product's own validator and redaction from dist/, and
   assert.match(prepare, /requestFile: paths\.request, applyRequestFile: paths\.applyRequest, manifestFile: paths\.manifest/);
   assert.match(readFileSync("src/cli/real-private-build.ts", "utf8"), /console\.log\("Pilot project \(next: \.\/alz apply prepare --environment DEV --project <it>\): " \+ project\.projectRoot\)/);
   assert.match(apply, /record\.artifactSha256\.slice\(0, 12\) \+ "-observation\.json"/);
+});
+
+test("a report cell escapes backslashes before column bars, so no value can end its cell", () => {
+  assert.equal(cell("a|b"), "a\\|b");
+  assert.equal(cell("a\\|b"), "a\\\\\\|b");
+  assert.equal(cell("one\ntwo"), "one two");
 });
 
 test("transcripts are parsed as the product prints them", () => {

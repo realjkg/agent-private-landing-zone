@@ -225,6 +225,9 @@ export function acceptanceItems({ cost, seal, refused }) {
   return items;
 }
 
+/** Text safe in one Markdown table cell: backslashes first, then the column bars, are escaped; line breaks become spaces. */
+export const cell = (text) => String(text).replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/[\r\n]+/g, " ");
+
 /** The report's text. Everything in it is already redacted by the caller. */
 export function reportText({ runId, host, commit, startedAt, finishedAt, steps, items, observation, overall, accountShown }) {
   const lines = [
@@ -248,7 +251,7 @@ export function reportText({ runId, host, commit, startedAt, finishedAt, steps, 
     "NOT_APPLICABLE, NEEDS_OWNER_CHECK (the product does not read it; the owner confirms it).",
     "",
     "| # | Item | State | Evidence |", "| --- | --- | --- | --- |",
-    ...items.map((i) => "| " + i.item + " | " + i.title + " | " + i.state + " | " + i.evidence.replace(/\|/g, "\\|") + " |"),
+    ...items.map((i) => "| " + i.item + " | " + i.title + " | " + i.state + " | " + cell(i.evidence) + " |"),
     "",
     "## Observation",
     "",
