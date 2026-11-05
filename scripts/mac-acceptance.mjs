@@ -151,13 +151,21 @@ export function secretKinds(text, { keepAccount = false } = {}) {
   return kinds;
 }
 
-/** Where in a folder secret-looking text is: each file, 1-based line number and kind. The matched text is never returned. */
+/**
+ * Where in a folder secret-looking text is. The gate is each whole file (`secretKinds` on the whole text, so a pattern that spans
+ * a line break, such as a secret key or a bearer token on the next line, still fires). Lines only attribute: a kind found in the
+ * whole file but on no single line is reported with line "?". The matched text is never returned.
+ */
 export function secretLines(dir, options = {}) {
   const found = [];
   for (const file of filesUnder(dir)) {
-    readFileSync(join(dir, file), "utf8").split("\n").forEach((text, index) => {
-      for (const kind of secretKinds(text, options)) found.push({ file, line: index + 1, kind });
-    });
+    const text = readFileSync(join(dir, file), "utf8");
+    const lines = text.split("\n");
+    for (const kind of secretKinds(text, options)) {
+      const at = lines.flatMap((line, index) => (secretKinds(line, options).includes(kind) ? [index + 1] : []));
+      if (at.length === 0) found.push({ file, line: "?", kind });
+      for (const line of at) found.push({ file, line, kind });
+    }
   }
   return found;
 }
