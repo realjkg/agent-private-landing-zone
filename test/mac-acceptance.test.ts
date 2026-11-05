@@ -23,6 +23,10 @@ const ACCOUNT = "123456789012";
 const BUCKET = "fixture-state-bucket-7f3a";
 const JWT = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJyZXBvOmZpeHR1cmUtb3duZXIifQ.c2lnbmF0dXJlLWZpeHR1cmU";
 const RECIPIENT = "alerts.owner@example.com";
+// Secret-shaped fixture text, assembled here so the file itself never holds a key-shaped literal.
+const PEM_BEGIN = "-----BEGIN " + "PRIVATE KEY-----";
+const PEM_END = "-----END " + "PRIVATE KEY-----";
+const KEY_ID = "AKIA" + "ABCDEFGHIJKLMNOP";
 const scratch = mkdtempSync(join(realpathSync(tmpdir()), "alz-mac-acceptance-"));
 test.after(() => rmSync(scratch, { recursive: true, force: true }));
 const UTIL_LINUX_SCRIPT = spawnSync("script", ["--version"], { encoding: "utf8" }).status === 0;
@@ -215,7 +219,7 @@ function fixture(): Fixture {
   }
   const key = join(dir, "keys", "owner-1.pem");
   mkdirSync(join(dir, "keys"), { mode: 0o700 });
-  writeFileSync(key, "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIFIXTUREFIXTUREFIXTUREFIXTUREFIXTUREFIXTURE\n-----END PRIVATE KEY-----\n", { mode: 0o600 });
+  writeFileSync(key, PEM_BEGIN + "\nFIXTURE-NOT-A-KEY\n" + PEM_END + "\n", { mode: 0o600 });
   const canary = join(dir, "canary-copy");
   mkdirSync(canary);
   writeFileSync(join(canary, "main.tf"), "# canary\n");
@@ -365,7 +369,7 @@ test("the stage runner stops at a failed step; --resume skips the completed step
   assert.match(listed, /bundle\/acceptance-report\.md/);
   const texts = walk(bundle).map((p) => readFileSync(p, "utf8"));
   const all = texts.join("\n");
-  for (const secret of [JWT, RECIPIENT, "owner.person@example.com", ACCOUNT, BUCKET, f.key, "BEGIN PRIVATE KEY"]) assert.ok(!all.includes(secret), "the bundle never holds " + secret);
+  for (const secret of [JWT, RECIPIENT, "owner.person@example.com", ACCOUNT, BUCKET, f.key, PEM_BEGIN]) assert.ok(!all.includes(secret), "the bundle never holds " + secret);
   assert.ok(all.includes("a***@example.com") && all.includes("o***@example.com"), "emails are masked as the product masks them");
   assert.ok(all.includes("<ACCOUNT>") && all.includes("<STATE_BUCKET>") && all.includes("<REDACTED TOKEN>"));
   for (const text of texts) assert.deepEqual(secretKinds(text), []);
@@ -490,11 +494,11 @@ test("transcripts are parsed as the product prints them", () => {
 
 test("redaction removes keys and tokens, masks emails with the product's own rule and the account unless kept", () => {
   const mask = (address: string) => redactAddress("EMAIL", address);
-  const text = "to alerts.owner@example.com via arn:aws:sns:us-east-2:" + ACCOUNT + ":t and arn:aws:iam::999988887777:role/x\n" + JWT + " AKIAABCDEFGHIJKLMNOP\n" +
-    "SecretAccessKey: abcdefghijklmnopqrstuvwxyz012345\n-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\nbucket " + BUCKET;
+  const text = "to alerts.owner@example.com via arn:aws:sns:us-east-2:" + ACCOUNT + ":t and arn:aws:iam::999988887777:role/x\n" + JWT + " " + KEY_ID + "\n" +
+    "SecretAccessKey: abcdefghijklmnopqrstuvwxyz012345\n" + PEM_BEGIN + "\nAAAA\n" + PEM_END + "\nbucket " + BUCKET;
   const out = redactText(text, { account: ACCOUNT, masks: [[BUCKET, "<STATE_BUCKET>"]], maskEmail: mask });
   assert.ok(out.includes(redactAddress("EMAIL", RECIPIENT)) && out.includes("a***@example.com"));
-  for (const gone of [RECIPIENT, ACCOUNT, "999988887777", JWT, "AKIAABCDEFGHIJKLMNOP", "abcdefghijklmnopqrstuvwxyz012345", "BEGIN PRIVATE KEY", BUCKET]) assert.ok(!out.includes(gone), gone);
+  for (const gone of [RECIPIENT, ACCOUNT, "999988887777", JWT, KEY_ID, "abcdefghijklmnopqrstuvwxyz012345", PEM_BEGIN, BUCKET]) assert.ok(!out.includes(gone), gone);
   assert.deepEqual(secretKinds(out), []);
   assert.ok(redactText("arn:aws:iam::" + ACCOUNT + ":role/x", { account: ACCOUNT, keepAccount: true }).includes(ACCOUNT));
   assert.deepEqual(secretKinds(text).sort(), ["AWS_ACCESS_KEY_ID", "AWS_SECRET", "JWT", "PRIVATE_KEY", "UNMASKED_EMAIL"]);

@@ -457,8 +457,9 @@ step_record() { printf '%s=%s\n' "$2" "$3" >> "$(step_env "$1")"; }
 
 keys_needed() {
   [ -z "$RUN" ] && return 0
-  local s
-  for s in 08-seal 09-approve 17-refused-seal; do step_done "$s" || return 0; done
+  local s steps="08-seal 09-approve"
+  [ -n "$REFUSED_DIR" ] && steps="$steps 17-refused-seal"
+  for s in $steps; do step_done "$s" || return 0; done
   return 1
 }
 
