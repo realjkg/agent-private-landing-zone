@@ -306,7 +306,11 @@ test("the cost payload's cleanup offers no partial keep: propose-cleanup has no 
   assert.deepEqual([...await applyFlags("propose-cleanup")].sort(), ["key", "requester", "sealed"]);
   assert.ok(section.includes("`propose-cleanup` has no per-resource selection: it takes only `--sealed`, `--requester` and `--key`"));
   for (const wording of [/keep the bucket/i, /siblings/i, /decided to keep/i]) assert.doesNotMatch(section, wording);
-  assert.ok(section.includes("**(a) Leave the run in place.**") && section.includes("**(b) Copy the billing data out and empty the bucket**"));
-  assert.ok(section.includes("`DeleteBucket` fails") || section.includes("`DeleteBucket` then fails"));
+  // Owner decision 6646346513: the first live run is retained, a teardown needs the typed disposition, the bucket preflight refuses a
+  // non-empty or unverified bucket before anything is destroyed, and the residual race to DeleteBucket is stated.
+  assert.ok(section.includes("**Disposition of the first live run: RETAIN**") && section.includes("8. **Do not clean up.**"));
+  assert.ok(section.includes("`TEAR DOWN COST BASELINE <first 12 characters of the artifact hash>`") && section.includes("`CLEANUP_RETAINED_BY_DEFAULT`"));
+  assert.ok(section.includes("`CLEANUP_BUCKET_NOT_EMPTY`") && section.includes("`CLEANUP_BUCKET_UNVERIFIED`") && section.includes("Nothing empties it for you"));
+  assert.ok(section.includes("**The residual race:**") && section.includes("`DeleteBucket` still fails") && section.includes("`PARTIAL_REQUIRES_REVIEW`"));
   assert.ok(section.includes("`BEFORE_LAST_COLON`") && section.includes("matches parents only by identical identifier"));
 });
