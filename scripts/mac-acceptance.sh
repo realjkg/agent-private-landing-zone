@@ -454,6 +454,29 @@ val() { kv "$RUN/values" "$1"; }
 step_done() { [ -f "$RUN/steps/$1.done" ]; }
 step_env() { printf '%s/steps/%s.env' "$RUN" "$1"; }
 step_record() { printf '%s=%s\n' "$2" "$3" >> "$(step_env "$1")"; }
+# attempts ENV: how many times the step started (a missing file, or one without a STARTED line, is 0). Counted in the shell, so
+# the result is always one integer (review N5: `grep -c ... || printf 0` gave "0<newline>0" for a file with no STARTED line).
+attempts() {
+  local n=0 line
+  [ -f "$1" ] || { printf '0'; return 0; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in STARTED=*) n=$((n + 1)) ;; esac
+  done < "$1"
+  printf '%s' "$n"
+}
+# latest_exit ENV: the EXIT recorded after the latest STARTED, or nothing when that attempt never recorded one (an interrupted
+# attempt). An EXIT of an earlier attempt never counts for a later start (review N1).
+latest_exit() {
+  local value="" line
+  [ -f "$1" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      STARTED=*) value="" ;;
+      EXIT=*) value="${line#EXIT=}" ;;
+    esac
+  done < "$1"
+  printf '%s' "$value"
+}
 
 keys_needed() {
   [ -z "$RUN" ] && return 0
@@ -495,7 +518,7 @@ terminal_step() {
   local name="$1" gate="$2" attempt env
   shift 2
   env="$(step_env "$name")"
-  attempt=$(( $(grep -c '^STARTED=' "$env" 2>/dev/null || printf 0) + 1 ))
+  attempt=$(( $(attempts "$env") + 1 ))
   LAST_TRANSCRIPT="$RUN/out/$name.$attempt.transcript"
   rule
   say "STEP $name (attempt $attempt)"
@@ -519,7 +542,7 @@ captured_step() {
   local name="$1" attempt env
   shift
   env="$(step_env "$name")"
-  attempt=$(( $(grep -c '^STARTED=' "$env" 2>/dev/null || printf 0) + 1 ))
+  attempt=$(( $(attempts "$env") + 1 ))
   LAST_OUT="$RUN/out/$name.$attempt.stdout"
   LAST_ERR="$RUN/out/$name.$attempt.stderr"
   rule
@@ -679,10 +702,13 @@ run_steps() {
   else skip_note 09-approve; fi
 
   if ! step_done 10-apply; then
-    local previous
-    previous="$(kv "$(step_env 10-apply)" EXIT)"
-    if grep -q '^STARTED=' "$(step_env 10-apply)" 2>/dev/null && [ "$previous" != 2 ]; then
-      stop 10-apply "an apply of this sealed plan was already attempted (exit ${previous:-none recorded})" \
+    # A retry only after an attempt whose own recorded exit is 2 (BLOCKED, nothing spent). An attempt with no recorded exit (the
+    # session died mid-apply) or any other exit is never retried here (review N1).
+    local previous started
+    started="$(attempts "$(step_env 10-apply)")"
+    previous="$(latest_exit "$(step_env 10-apply)")"
+    if [ "$started" -gt 0 ] && [ "$previous" != 2 ]; then
+      stop 10-apply "an apply of this sealed plan was already attempted (latest attempt: exit ${previous:-not recorded})" \
         "do not retry. Follow 'When an apply fails' in docs/act-pilot-apply.md; a retry is always a new seal with new approvals (a new run)"
     fi
     need_terminal 10-apply; need_tokens 10-apply
@@ -692,7 +718,7 @@ run_steps() {
       0) finish_step 10-apply ;;
       2) stop 10-apply "apply was BLOCKED (exit 2); nothing was spent" "read the code above, fix it, then --resume (an expired approval needs a new approve: delete ${approval#"$ROOT"/} and remove ${RUN#"$ROOT"/}/steps/09-approve.done first)" ;;
       3) stop 10-apply "apply ended SPENT (exit 3)" "do not retry. Follow 'When an apply fails' in docs/act-pilot-apply.md and record what you saw on #39 without sensitive values" ;;
-      *) stop 10-apply "apply exited $LAST_EXIT" "read the message above before anything else; do not retry the same files" ;;
+      *) stop 10-apply "apply exited $LAST_EXIT" "read the message above before anything else; do not retry the same files. A mistyped APPLY line (APPLY_CONFIRMATION_MISMATCH) also ends this run: recover with a new seal and new approvals in a new run (docs/mac-acceptance-runner.md, 'If the APPLY line was mistyped')" ;;
     esac
   else skip_note 10-apply; fi
 
@@ -752,6 +778,11 @@ write_bundle() {
   rm -rf "$b"
   helper mkdir-private "$b" && helper mkdir-private "$b/steps" && helper mkdir-private "$b/output" || { say "Cannot create the bundle folder." >&2; return 1; }
   masks=()
+  # Absolute paths: the checkout, the canary copy and the home folder become labels (review N6); the helper also replaces any
+  # remaining /Users/<name>/ or /home/<name>/ segment.
+  masks+=( "$ROOT" "<REPO>" )
+  [ -n "$REFUSED_DIR" ] && masks+=( "$REFUSED_DIR" "<CANARY_COPY>" )
+  [ -n "$HOME" ] && [ "$HOME" != "/" ] && masks+=( "$HOME" "<HOME>" )
   [ -n "$STATE_BUCKET" ] && masks+=( "$STATE_BUCKET" "<STATE_BUCKET>" )
   [ -n "$REQUESTER_KEY" ] && masks+=( "$REQUESTER_KEY" "<REQUESTER_KEY.pem>" )
   [ -n "$APPROVER_KEY" ] && masks+=( "$APPROVER_KEY" "<APPROVER_KEY.pem>" )
@@ -768,11 +799,11 @@ write_bundle() {
   if step_done 13-cost-status; then
     helper cost "$ROOT" "$b/cost-status.redacted.json" "$ACCOUNT" "$KEEP_ACCOUNT" "${masks[@]}" >/dev/null || say "  The saved cost status could not be read; items 1 to 8 that need it stay UNKNOWN."
   fi
-  if step_done 08-seal && [ -f "$(val REVIEW_BUNDLE)" ]; then helper review "$(val REVIEW_BUNDLE)" "$b/review-bundle.json" "$ACCOUNT" "$KEEP_ACCOUNT"; fi
+  if step_done 08-seal && [ -f "$(val REVIEW_BUNDLE)" ]; then helper review "$(val REVIEW_BUNDLE)" "$b/review-bundle.json" "$ACCOUNT" "$KEEP_ACCOUNT" "${masks[@]}"; fi
   [ -f "$RUN/observation-summary.json" ] && helper redact "$ROOT" "$RUN/observation-summary.json" "$b/observation-summary.json" "$ACCOUNT" "$KEEP_ACCOUNT" "${masks[@]}"
   say "Acceptance items (see acceptance-report.md):"
   helper report "$RUN" "$b" || return 1
-  if ! helper scan "$b"; then
+  if ! helper scan "$b" "$KEEP_ACCOUNT"; then
     rm -rf "$b"
     say "BUNDLE REFUSED: secret-looking text was found (named above by file and kind only). Nothing was archived." >&2
     return 1
@@ -824,7 +855,53 @@ print_plan() {
   say "No step proposes or runs a cleanup (disposition RETAIN)."
 }
 
+# --- the single-run lock (review N3) -------------------------------------------------------------------------
+
+# One runner at a time, for every mode that writes run state (a run, --resume, --bundle). mkdir is atomic: exactly one process
+# creates .runs/mac-acceptance/lock, and it writes its pid there. A lock whose pid is a live process is never broken. A lock
+# whose pid is gone is stale: it is moved aside (rename is atomic, so only one process can take it) and taken again once.
+LOCK="$BASE/lock"
+LOCK_OWNED=0
+release_lock() {
+  if [ "$LOCK_OWNED" = 1 ] && [ "$(sed -n '1p' "$LOCK/pid" 2>/dev/null)" = "$$" ]; then rm -rf "$LOCK"; fi
+  LOCK_OWNED=0
+}
+take_lock() {
+  local holder round
+  { mkdir -p "$BASE" && chmod 700 "$BASE"; } || { echo "mac-acceptance: cannot create ${BASE#"$ROOT"/}" >&2; exit 2; }
+  for round in 1 2; do
+    if mkdir "$LOCK" 2>/dev/null; then
+      printf '%s\n%s\n' "$$" "$(now)" > "$LOCK/pid"
+      LOCK_OWNED=1
+      trap release_lock EXIT
+      return 0
+    fi
+    holder="$(sed -n '1p' "$LOCK/pid" 2>/dev/null)"
+    case "$holder" in
+      ""|*[!0-9]*)
+        echo "mac-acceptance: another runner holds ${LOCK#"$ROOT"/} (no pid recorded yet, or it is unreadable)." >&2
+        echo "If you are sure no runner is running, review it and remove that folder by hand." >&2
+        exit 2 ;;
+    esac
+    if ps -p "$holder" >/dev/null 2>&1; then
+      echo "mac-acceptance: another runner (pid $holder) is running this acceptance run. Wait for it; the lock is never broken while it runs." >&2
+      exit 2
+    fi
+    if [ "$round" = 1 ] && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
+      echo "mac-acceptance: removed a stale lock (pid $holder is no longer running)." >&2
+      rm -rf "$LOCK.stale.$$"
+    fi
+  done
+  echo "mac-acceptance: could not take ${LOCK#"$ROOT"/}; another runner may have just started. Try again." >&2
+  exit 2
+}
+
+# runner_digest: the SHA-256 of this script and its helper, recorded at the start of a run.
+runner_digest() { printf '%s %s' "$(helper sha256 "$ROOT/scripts/mac-acceptance.sh" 2>/dev/null)" "$(helper sha256 "$HELPER" 2>/dev/null)"; }
+
 # --- main --------------------------------------------------------------------------------------------------
+
+[ "$DRY_RUN" = 1 ] || take_lock
 
 if [ "$RESUME" = 1 ] || [ "$BUNDLE_ONLY" = 1 ]; then
   if [ ! -f "$BASE/current" ]; then echo "mac-acceptance: no run to resume (no .runs/mac-acceptance/current); start one without --resume" >&2; exit 2; fi
@@ -838,6 +915,13 @@ if [ "$RESUME" = 1 ] || [ "$BUNDLE_ONLY" = 1 ]; then
   [ -n "$REFUSED_DIR" ] || REFUSED_DIR="$(val REFUSED_DIR)"
   [ "$KEEP_ACCOUNT" = yes ] || KEEP_ACCOUNT="$(val KEEP_ACCOUNT)"
   [ -n "$KEEP_ACCOUNT" ] || KEEP_ACCOUNT=no
+  # The runner must not change during an acceptance run: its evidence names one runner (docs/mac-acceptance-runner.md).
+  if [ -n "$(val RUNNER_SHA256)" ] && [ "$(runner_digest)" != "$(val RUNNER_SHA256)" ]; then
+    echo "mac-acceptance: the runner changed since this run started (scripts/mac-acceptance.sh or its helper)." >&2
+    echo "Do not update the runner during an active acceptance run. Restore the recorded commit ($(val COMMIT)), or finish this run's" >&2
+    echo "evidence with that runner; a later runner fix needs an evidence-impact note (docs/mac-acceptance-runner.md)." >&2
+    exit 2
+  fi
 elif [ "$DRY_RUN" = 0 ] && [ -f "$BASE/current" ]; then
   echo "mac-acceptance: a run is already in progress ($(sed -n '1p' "$BASE/current")). Continue it with --resume." >&2
   echo "A second run would seal and apply again; start one only after review, by moving .runs/mac-acceptance/current aside." >&2
@@ -846,6 +930,14 @@ fi
 
 if [ "$BUNDLE_ONLY" = 1 ]; then
   read_contract || true
+  # Mask with the run's own recorded target, whatever the contract reads now (review N4).
+  [ -z "$(val ACCOUNT)" ] || ACCOUNT="$(val ACCOUNT)"
+  [ -z "$(val STATE_BUCKET)" ] || STATE_BUCKET="$(val STATE_BUCKET)"
+  if [ -z "$ACCOUNT" ] && [ "$KEEP_ACCOUNT" != yes ]; then
+    echo "mac-acceptance: the run's account is unknown (no recorded target and no readable contract), so it cannot be masked." >&2
+    echo "Nothing was bundled. Restore config/act-pilot-contract.json at the run's commit, or pass --include-account-id to keep it." >&2
+    exit 2
+  fi
   write_bundle || exit 1
   retention_note
   exit 0
@@ -873,11 +965,15 @@ if [ -z "$RUN" ]; then
   values_set APPROVER "$APPROVER"
   values_set REFUSED_DIR "$REFUSED_DIR"
   values_set KEEP_ACCOUNT "$KEEP_ACCOUNT"
+  values_set ACCOUNT "$ACCOUNT"
+  values_set REGION "$REGION"
+  values_set STATE_BUCKET "$STATE_BUCKET"
+  values_set RUNNER_SHA256 "$(runner_digest)"
 fi
 printf '%s' "$CHECKLIST" > "$RUN/preflight.txt"
 cp "$PREFLIGHT_DIR/deps.txt" "$RUN/out/preflight-deps.stdout" 2>/dev/null
 rm -rf "$PREFLIGHT_DIR"
-trap 'say ""; say "Interrupted. Resume with: scripts/mac-acceptance.sh --resume [same options]"; exit 130' INT
+trap 'say ""; say "Interrupted. Resume with: scripts/mac-acceptance.sh --resume [same options]"; release_lock; exit 130' INT
 say "Run: ${RUN#"$ROOT"/}"
 
 run_steps

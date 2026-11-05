@@ -446,6 +446,8 @@ There is no separate path, gate, approval or authority. This section authorizes 
 7. **Record acceptance.** Record the minimum acceptance items 1 to 8 below against the existing `pillar:cost` gate. Do this only once you return that gate to the release scope; today it is `OUT_OF_SCOPE` in `config/release/scope.json`. No new gate id is added.
 8. **Do not clean up.** The first live run's disposition is **RETAIN**. Stop after item 7. Tearing the baseline down later is a separate decision, made as described under "Cleanup" below.
 
+On the Mac Mini, `scripts/mac-acceptance.sh` runs items 3 to 6 of this checklist and collects the acceptance evidence ([`docs/mac-acceptance-runner.md`](mac-acceptance-runner.md)). It authorizes nothing, types no phrase and never cleans up.
+
 ### Expected results for this payload (they replace the pass criteria of steps 5 and 6)
 
 **Step 5 (seal and apply):**
