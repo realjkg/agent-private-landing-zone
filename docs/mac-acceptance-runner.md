@@ -95,7 +95,8 @@ Rules the runner keeps:
 - **One run at a time.**
   - A second run is refused while `.runs/mac-acceptance/current` names one. Move that file aside only after review.
   - Every mode except `--dry-run` also takes a lock, `.runs/mac-acceptance/lock`, created atomically, with the runner's pid. A second runner started at the same time, `--resume` included, is refused while the first one runs.
-  - The lock is never broken while its process is alive. A lock whose process is gone is stale: the next runner removes it and says so.
+  - The lock is never broken while its process is alive. A lock whose process is gone is stale: the next runner moves it aside atomically, checks that the moved lock still names that dead process, then removes it and says so.
+  - Two runners can find the same stale lock. If the other one replaced it with its own live lock in the meantime, the moved lock names a different process. This runner moves it back untouched and refuses. If it cannot move it back, it stops and names the folder to review.
   - A lock without a readable pid is never removed automatically. Review it, and remove it by hand only when no runner is running.
 - **An apply is retried only after BLOCKED.** `--resume` runs `10-apply` again only when its latest attempt recorded its own exit, and that exit is 2. An attempt that recorded no exit (for example, the window closed during the apply) is never retried by the runner.
 - **Approvals expire.** An approval lasts the contract's `maxApprovalAgeMinutes`, so apply soon after you approve.
@@ -136,7 +137,9 @@ What redaction does:
 
 The account and the state bucket are the run's own, recorded when the run starts. `--bundle` masks them even when the contract is no longer readable. When neither the run nor the contract names the account, `--bundle` refuses unless you pass `--include-account-id`.
 
-Raw state and tfvars are never copied. A final scan refuses to archive a bundle that still holds secret-looking text, a bare 12-digit number (unless you kept the account) or a user path. It names only the file and the kind. If it refuses a 12-digit value that is not an account, for example part of an identifier, review that file before you share anything.
+Raw state and tfvars are never copied. A final scan refuses to archive a bundle that still holds secret-looking text, a bare 12-digit number (unless you kept the account) or a user path. It prints each file and line number with the kind of match, never the matched value.
+
+A refused bundle is kept for review, owner-only, in `.runs/mac-acceptance/<run>/bundle/`. It is not archived, and no tar.gz or checksum is left beside it. Open the named lines, fix the cause, and run `--bundle` again before you share anything. For example, a 12-digit value that is not an account may be part of an identifier.
 
 `acceptance-report.md` maps acceptance items 1 to 8 (brief, "Minimum acceptance") from what this run read. Each item is OBSERVED, WAITING, UNKNOWN, NOT_APPLICABLE or NEEDS_OWNER_CHECK:
 
