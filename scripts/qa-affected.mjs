@@ -95,6 +95,19 @@ export const DOC_INPUT_OWNERS = {
   "src/cli/real-private-build.ts": [BRIEF_TEST],
 };
 
+// The owner's Mac acceptance runner (scripts/mac-acceptance.sh, docs/mac-acceptance-runner.md) reads product output by text: the
+// preparation record line, the seal's and the approval's printed JSON, the build's project line. Its focused test checks those
+// texts and its own page, so a change to any of them, or a docs-only edit of the page, selects that test beside any other owner.
+export const MAC_ACCEPTANCE_TEST = "test/mac-acceptance.test.ts";
+export const MAC_ACCEPTANCE_OWNERS = {
+  "docs/mac-acceptance-runner.md": [MAC_ACCEPTANCE_TEST],
+  "src/cli/apply.ts": [MAC_ACCEPTANCE_TEST],
+  "src/apply/prepare.ts": [MAC_ACCEPTANCE_TEST],
+  "src/apply/approval.ts": [MAC_ACCEPTANCE_TEST],
+  "src/cli/real-private-build.ts": [MAC_ACCEPTANCE_TEST],
+  ".github/workflows/act-identity-macos.yml": [MAC_ACCEPTANCE_TEST],
+};
+
 // Fixtures a test reads from disk (not imported), so the import closure never selects their owner.
 export const FIXTURE_OWNERS = {
   "test/fixtures/backend-pin/cases.json": ["test/apply-backend-pin-real.test.ts"],
@@ -256,6 +269,10 @@ export function planChanged(changedPaths, files) {
       addExisting(selected, files, DOC_INPUT_OWNERS[path]);
       // The document itself must keep its test; the shared inputs (the launcher, the dispatcher) have other owners as well.
       if (path.startsWith("docs/")) for (const owner of DOC_INPUT_OWNERS[path]) if (!hasFile(files, owner)) gaps.push(path + " has no doc test owner (" + owner + ").");
+    }
+    if (Object.hasOwn(MAC_ACCEPTANCE_OWNERS, path)) {
+      addExisting(selected, files, MAC_ACCEPTANCE_OWNERS[path]);
+      if (path.startsWith("docs/") && !hasFile(files, MAC_ACCEPTANCE_TEST)) gaps.push(path + " has no doc test owner (" + MAC_ACCEPTANCE_TEST + ").");
     }
     for (const [root, owners] of Object.entries(PACKAGE_TREE_OWNERS)) if (path.startsWith(root)) addExisting(selected, files, owners);
     if (INVENTORY_INPUT.test(path)) addExisting(selected, files, INVENTORY_GUARDS);

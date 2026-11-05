@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, w
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { BRIEF_TEST, CANARY_OWNERS, DOC_INPUT_OWNERS, TERRAFORM_CANARY_UNIT_TEST, diffCommand, EXIT_OVER_CAP, FIXTURE_OWNERS, importsOf, PACKAGE_OWNERS, PACKAGE_TREE_OWNERS, planChanged, routeOf, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
+import { BRIEF_TEST, CANARY_OWNERS, MAC_ACCEPTANCE_OWNERS, MAC_ACCEPTANCE_TEST, DOC_INPUT_OWNERS, TERRAFORM_CANARY_UNIT_TEST, diffCommand, EXIT_OVER_CAP, FIXTURE_OWNERS, importsOf, PACKAGE_OWNERS, PACKAGE_TREE_OWNERS, planChanged, routeOf, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
 
 function fixture() {
   return new Map([
@@ -717,4 +717,22 @@ test("the execution brief and the inputs its doc test reads from disk select tha
   files.delete(BRIEF_TEST);
   assert.match(planChanged(["docs/act-aws-terraform-execution-brief.md"], files).gaps.join(" "), /no doc test owner/);
   assert.match(planChanged(["docs/cost-baseline-deploy.md"], files).gaps.join(" "), /cost-baseline-deploy\.md has no doc test owner/);
+});
+
+test("the Mac acceptance runner's page and the product texts its script reads select its test, even for a docs-only change; a missing owner is a gap", () => {
+  const files = fixture();
+  files.set(MAC_ACCEPTANCE_TEST, "test()");
+  assert.ok(readdirSync("test").includes(MAC_ACCEPTANCE_TEST.slice("test/".length)), MAC_ACCEPTANCE_TEST + " exists");
+  for (const path of ["docs/mac-acceptance-runner.md", "src/cli/apply.ts", "src/apply/prepare.ts", "src/apply/approval.ts", "src/cli/real-private-build.ts", ".github/workflows/act-identity-macos.yml"]) {
+    assert.deepEqual(MAC_ACCEPTANCE_OWNERS[path], [MAC_ACCEPTANCE_TEST], path);
+    files.set(path, "x");
+    assert.ok(planChanged([path], files).nodeTests.includes(MAC_ACCEPTANCE_TEST), path + " selects " + MAC_ACCEPTANCE_TEST);
+  }
+  // The script and its helper are owned by name (scripts/<stem> selects test/<stem>.test.ts).
+  for (const path of ["scripts/mac-acceptance.sh", "scripts/mac-acceptance.mjs"]) {
+    files.set(path, "x");
+    assert.ok(planChanged([path], files).nodeTests.includes(MAC_ACCEPTANCE_TEST), path);
+  }
+  files.delete(MAC_ACCEPTANCE_TEST);
+  assert.match(planChanged(["docs/mac-acceptance-runner.md"], files).gaps.join(" "), /mac-acceptance-runner\.md has no doc test owner/);
 });
