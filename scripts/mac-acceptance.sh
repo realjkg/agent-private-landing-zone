@@ -803,14 +803,16 @@ write_bundle() {
   [ -f "$RUN/observation-summary.json" ] && helper redact "$ROOT" "$RUN/observation-summary.json" "$b/observation-summary.json" "$ACCOUNT" "$KEEP_ACCOUNT" "${masks[@]}"
   say "Acceptance items (see acceptance-report.md):"
   helper report "$RUN" "$b" || return 1
+  archive="$RUN/acceptance-bundle-$RUN_ID.tar.gz"
+  rm -f "$archive" "$archive.sha256"
   if ! helper scan "$b" "$KEEP_ACCOUNT"; then
-    rm -rf "$b"
-    say "BUNDLE REFUSED: secret-looking text was found (named above by file and kind only). Nothing was archived." >&2
+    # Kept for review, owner-only and never archived: the lines above name each file and line, and the kind, never the value.
+    chmod -R go-rwx "$b"
+    say "BUNDLE REFUSED: secret-looking text was found at the file and line numbers above. Nothing was archived." >&2
+    say "The refused folder is kept for your review, owner-only: ${b#"$ROOT"/}. Do not share it. Fix the cause, then run --bundle again." >&2
     return 1
   fi
   count="$(helper manifest "$b")" || return 1
-  archive="$RUN/acceptance-bundle-$RUN_ID.tar.gz"
-  rm -f "$archive" "$archive.sha256"
   tar -czf "$archive" -C "$RUN" bundle || return 1
   chmod 600 "$archive"
   printf '%s  %s\n' "$(helper sha256 "$archive")" "$(basename "$archive")" > "$archive.sha256"
@@ -866,12 +868,42 @@ release_lock() {
   if [ "$LOCK_OWNED" = 1 ] && [ "$(sed -n '1p' "$LOCK/pid" 2>/dev/null)" = "$$" ]; then rm -rf "$LOCK"; fi
   LOCK_OWNED=0
 }
+# restore_lock PID: puts back a live lock this runner moved aside by the race above, only to the exact path. mv into an existing
+# folder would nest it there (BSD and GNU alike), so a lock that appeared at the path meanwhile is never a target: the moved lock
+# stays aside and the message names it (review N1 on #382).
+restore_lock() {
+  local moved="$1"
+  local back=no
+  if [ ! -e "$LOCK" ]; then
+    # TEST-ONLY delay between the check and the move, so a test can make a third lock appear there (as the stale-check delay).
+    case "${ALZ_MAC_ACCEPTANCE_TEST_LOCK_DELAY_BACK:-}" in [1-9]) sleep "$ALZ_MAC_ACCEPTANCE_TEST_LOCK_DELAY_BACK" ;; esac
+    mv "$LOCK.stale.$$" "$LOCK" 2>/dev/null && back=yes
+  fi
+  if [ "$back" = yes ]; then
+    if [ -e "$LOCK/lock.stale.$$" ]; then
+      # Another lock appeared between the test and the move, and the moved lock went inside it: take it back out, untouched.
+      mv "$LOCK/lock.stale.$$" "$LOCK.stale.$$" 2>/dev/null
+    elif [ "$(sed -n '1p' "$LOCK/pid" 2>/dev/null)" = "$moved" ]; then
+      echo "mac-acceptance: another runner took the stale lock first; its lock was moved back untouched. Wait for it, then try again." >&2
+      return 0
+    fi
+  fi
+  echo "mac-acceptance: another runner took the stale lock first, and its lock (pid ${moved:-unknown}) could not be moved back to ${LOCK#"$ROOT"/}: it is at ${LOCK#"$ROOT"/}.stale.$$." >&2
+  echo "Do not start another runner. Review both folders, and move that one back by hand only once no other runner is running." >&2
+}
+
 take_lock() {
   local holder round
   { mkdir -p "$BASE" && chmod 700 "$BASE"; } || { echo "mac-acceptance: cannot create ${BASE#"$ROOT"/}" >&2; exit 2; }
   for round in 1 2; do
     if mkdir "$LOCK" 2>/dev/null; then
-      printf '%s\n%s\n' "$$" "$(now)" > "$LOCK/pid"
+      # The pid must be written and read back as ours, or the lock is not taken (review N2 on #382). A lock left without a pid is
+      # never removed automatically, so this fails closed.
+      if ! printf '%s\n%s\n' "$$" "$(now)" > "$LOCK/pid" 2>/dev/null || [ "$(sed -n '1p' "$LOCK/pid" 2>/dev/null)" != "$$" ]; then
+        echo "mac-acceptance: could not record this runner's pid in ${LOCK#"$ROOT"/}, so the lock was not taken. Nothing ran." >&2
+        echo "Check that .runs/mac-acceptance is yours and writable, review that folder, and remove it by hand once no runner is running." >&2
+        exit 2
+      fi
       LOCK_OWNED=1
       trap release_lock EXIT
       return 0
@@ -887,7 +919,18 @@ take_lock() {
       echo "mac-acceptance: another runner (pid $holder) is running this acceptance run. Wait for it; the lock is never broken while it runs." >&2
       exit 2
     fi
+    # TEST-ONLY delay between the stale check and the move, so a test can reproduce two runners racing for one stale lock. A
+    # small whole number of seconds only; it changes no decision.
+    case "${ALZ_MAC_ACCEPTANCE_TEST_LOCK_DELAY:-}" in [1-9]) sleep "$ALZ_MAC_ACCEPTANCE_TEST_LOCK_DELAY" ;; esac
     if [ "$round" = 1 ] && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
+      # The move is atomic, but the check before it is not: another runner may have taken this same stale lock and made a fresh
+      # one in between. Only a lock that still names the dead pid checked above is removed; any other is moved back untouched.
+      local moved
+      moved="$(sed -n '1p' "$LOCK.stale.$$/pid" 2>/dev/null)"
+      if [ "$moved" != "$holder" ]; then
+        restore_lock "$moved"
+        exit 2
+      fi
       echo "mac-acceptance: removed a stale lock (pid $holder is no longer running)." >&2
       rm -rf "$LOCK.stale.$$"
     fi

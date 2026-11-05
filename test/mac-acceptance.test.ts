@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -675,3 +675,131 @@ test("the page warns against updating the runner mid-run, documents a mistyped A
   assert.match(section, /\[`docs\/mac-acceptance-runner\.md`\]\(mac-acceptance-runner\.md\)/);
 });
 
+
+// --- review follow-ups (#381 review 6650060328, lane EVS-3) -------------------------------------------------------------------
+
+test("stale-lock race: a runner that moved aside a lock another runner had just taken moves it back untouched and refuses", async () => {
+  const f = fixture();
+  const base = join(f.root, ".runs", "mac-acceptance");
+  const lock = join(base, "lock");
+  mkdirSync(lock, { recursive: true, mode: 0o700 });
+  const gone = Number(spawnSync("/bin/sh", ["-c", "echo $$"], { encoding: "utf8" }).stdout.trim());
+  writeFileSync(join(lock, "pid"), gone + "\n2026-11-05T10:00:00Z\n");
+  const live = spawn("sleep", ["60"], { stdio: "ignore" });
+  try {
+    // Runner B finds the stale lock and is held (test-only delay) between its stale check and its move.
+    const b = spawn(BASH, [join(f.root, SCRIPT), "--resume", "--readonly-profile", "acceptance-ro"],
+      { cwd: f.root, env: { ...f.env, ALZ_MAC_ACCEPTANCE_TEST_LOCK_DELAY: "3" }, stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    b.stderr.on("data", (chunk) => { stderr += chunk; });
+    const exited = new Promise<number | null>((resolve) => b.on("close", resolve));
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    // Meanwhile runner A takes the same stale lock and makes its own, live one (what take_lock does when it wins).
+    renameSync(lock, lock + ".stale.A");
+    rmSync(lock + ".stale.A", { recursive: true });
+    mkdirSync(lock, { mode: 0o700 });
+    writeFileSync(join(lock, "pid"), live.pid + "\n2026-11-05T10:00:01Z\n");
+    const status = await exited;
+    assert.equal(status, 2, stderr);
+    assert.match(stderr, /another runner took the stale lock first; its lock was moved back untouched/);
+    assert.doesNotMatch(stderr, /removed a stale lock/);
+    assert.equal(readFileSync(join(lock, "pid"), "utf8").split("\n")[0], String(live.pid), "A's live lock is in place, unchanged");
+    assert.deepEqual(readdirSync(base).filter((n) => n.startsWith("lock.stale")), [], "nothing is left aside");
+  } finally {
+    live.kill();
+  }
+});
+
+test("a refused bundle is kept owner-only for review, unarchived, and the refusal names the file and line, never the value", () => {
+  const f = fixture();
+  writeFileSync(join(f.dir, "fail-qualify"), "");
+  assert.equal(onTerminal(f, baseArgs(f)).status, 1);
+  const run = runDir(f);
+  const first = plain(f, ["--bundle", ...baseArgs(f)]);
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  assert.ok(readdirSync(run).some((n) => n.endsWith(".tar.gz")));
+  // An output line the redaction leaves and the scan refuses: a bare 12-digit number that is not the run's account.
+  const other = "9876" + "54321098";
+  writeFileSync(join(run, "out", "extra.1.stdout"), "first line\nsecond line\nidentifier " + other + "\n");
+  const refused = plain(f, ["--bundle", ...baseArgs(f)]);
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+  const text = refused.stdout + refused.stderr;
+  assert.match(text, /SECRET_LIKE output\/extra\.1\.stdout\.txt:3 ACCOUNT_ID/);
+  assert.ok(!text.includes(other), "the matched value is never printed");
+  assert.match(text, /BUNDLE REFUSED: .* Nothing was archived\./);
+  assert.match(text, /kept for your review, owner-only: \.runs\/mac-acceptance\/run-[^/]+\/bundle/);
+  const bundle = join(run, "bundle");
+  assert.equal(mode(bundle), 0o700);
+  for (const file of walk(bundle)) assert.equal(mode(file) & 0o077, 0, file + " is owner-only");
+  assert.ok(existsSync(join(bundle, "output", "extra.1.stdout.txt")), "the refused file is there to review");
+  assert.deepEqual(readdirSync(run).filter((n) => n.includes(".tar.gz")), [], "no archive or checksum is left beside a refused bundle");
+  assert.ok(!existsSync(join(bundle, "MANIFEST.sha256")), "a refused bundle has no manifest");
+});
+
+test("the page states the stale-lock check and how a refused bundle is kept", () => {
+  const doc = readFileSync("docs/mac-acceptance-runner.md", "utf8");
+  assert.match(doc, /The lock is never broken while its process is alive\./);
+  assert.match(doc, /checks that the moved lock still names that dead process/);
+  assert.match(doc, /moves it back untouched and refuses/);
+  assert.match(doc, /A refused bundle is kept for review, owner-only/);
+  assert.match(doc, /file and line number with the kind of match, never the matched value/);
+});
+
+// --- repair round for #382 (review 6650319229) ------------------------------------------------------------------------------
+
+test("B1: the scan gate is each whole file, so a secret split across two lines still refuses the bundle, attributed to line ?", () => {
+  const dir = mkdtempSync(join(scratch, "scan-"));
+  const value = "wJalrXUtnFEMI" + "K7MDENGbPxRfiCYEXAMPLEKEY";
+  const token = "abcdefghij" + "KLMNOPQRST" + "uvwxyz0123";
+  writeFileSync(join(dir, "out.txt"), "start\nSecretAccessKey:\n  " + value + "\nAuthorization: Bearer\n" + token + "\nend\n");
+  writeFileSync(join(dir, "clean.txt"), "nothing to see\n");
+  const result = spawnSync(process.execPath, [HELPER, "scan", dir], { encoding: "utf8" });
+  assert.equal(result.status, 2, result.stdout + result.stderr);
+  assert.match(result.stdout, /^SECRET_LIKE out\.txt:\? AWS_SECRET$/m);
+  assert.match(result.stdout, /^SECRET_LIKE out\.txt:\? BEARER$/m);
+  assert.ok(!result.stdout.includes(value) && !result.stdout.includes(token), "never the value");
+  assert.doesNotMatch(result.stdout, /clean\.txt/);
+  // A one-line match still names its line.
+  writeFileSync(join(dir, "out.txt"), "a\nSecretAccessKey: " + value + "\n");
+  assert.match(spawnSync(process.execPath, [HELPER, "scan", dir], { encoding: "utf8" }).stdout, /^SECRET_LIKE out\.txt:2 AWS_SECRET$/m);
+});
+
+test("N1: a moved lock is never put inside a lock that appeared meanwhile; it stays aside and the message names it", async () => {
+  const f = fixture();
+  const base = join(f.root, ".runs", "mac-acceptance");
+  const lock = join(base, "lock");
+  mkdirSync(lock, { recursive: true, mode: 0o700 });
+  const gone = Number(spawnSync("/bin/sh", ["-c", "echo $$"], { encoding: "utf8" }).stdout.trim());
+  writeFileSync(join(lock, "pid"), gone + "\n");
+  const a = spawn("sleep", ["60"], { stdio: "ignore" });
+  const c = spawn("sleep", ["60"], { stdio: "ignore" });
+  try {
+    const b = spawn(BASH, [join(f.root, SCRIPT), "--resume", "--readonly-profile", "acceptance-ro"],
+      { cwd: f.root, env: { ...f.env, ALZ_MAC_ACCEPTANCE_TEST_LOCK_DELAY: "2", ALZ_MAC_ACCEPTANCE_TEST_LOCK_DELAY_BACK: "3" }, stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    b.stderr.on("data", (chunk) => { stderr += chunk; });
+    const exited = new Promise<number | null>((resolve) => b.on("close", resolve));
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    await sleep(1000);
+    // Runner A replaces the stale lock with its own live one; B moves A's lock aside, sees another pid, and checks the path is free.
+    rmSync(lock, { recursive: true });
+    mkdirSync(lock, { mode: 0o700 });
+    writeFileSync(join(lock, "pid"), a.pid + "\n");
+    await sleep(2500);
+    // Runner C takes the free path before B moves A's lock back.
+    mkdirSync(lock, { mode: 0o700 });
+    writeFileSync(join(lock, "pid"), c.pid + "\n");
+    const status = await exited;
+    assert.equal(status, 2, stderr);
+    assert.doesNotMatch(stderr, /moved back untouched/);
+    assert.match(stderr, new RegExp("its lock \\(pid " + a.pid + "\\) could not be moved back to \\.runs/mac-acceptance/lock: it is at \\.runs/mac-acceptance/lock\\.stale\\.[0-9]+"));
+    assert.equal(readFileSync(join(lock, "pid"), "utf8").trim(), String(c.pid), "C's lock is untouched");
+    assert.deepEqual(readdirSync(lock), ["pid"], "nothing was moved inside C's lock");
+    const aside = readdirSync(base).filter((n) => n.startsWith("lock.stale."));
+    assert.equal(aside.length, 1);
+    assert.equal(readFileSync(join(base, aside[0], "pid"), "utf8").trim(), String(a.pid), "A's lock is kept aside, untouched");
+  } finally {
+    a.kill();
+    c.kill();
+  }
+});

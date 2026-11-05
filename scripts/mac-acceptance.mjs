@@ -151,6 +151,25 @@ export function secretKinds(text, { keepAccount = false } = {}) {
   return kinds;
 }
 
+/**
+ * Where in a folder secret-looking text is. The gate is each whole file (`secretKinds` on the whole text, so a pattern that spans
+ * a line break, such as a secret key or a bearer token on the next line, still fires). Lines only attribute: a kind found in the
+ * whole file but on no single line is reported with line "?". The matched text is never returned.
+ */
+export function secretLines(dir, options = {}) {
+  const found = [];
+  for (const file of filesUnder(dir)) {
+    const text = readFileSync(join(dir, file), "utf8");
+    const lines = text.split("\n");
+    for (const kind of secretKinds(text, options)) {
+      const at = lines.flatMap((line, index) => (secretKinds(line, options).includes(kind) ? [index + 1] : []));
+      if (at.length === 0) found.push({ file, line: "?", kind });
+      for (const line of at) found.push({ file, line, kind });
+    }
+  }
+  return found;
+}
+
 // --- the acceptance report -----------------------------------------------------------------------------
 
 export const ITEM_STATES = ["OBSERVED", "WAITING", "UNKNOWN", "NOT_APPLICABLE", "NEEDS_OWNER_CHECK"];
@@ -457,10 +476,9 @@ const COMMANDS = {
     privateWrite(join(bundleDir, "acceptance-report.md"), text);
     say(items.map((i) => "  item " + i.item + "  " + i.state).join("\n"));
   },
-  /** scan DIR [KEEP_ACCOUNT]: refuses a bundle holding secret-looking text, an unmasked account id or a user path; names the file and the kind only. */
+  /** scan DIR [KEEP_ACCOUNT]: refuses a bundle holding secret-looking text, an unmasked account id or a user path; names the file, line and kind, never the value. */
   scan([dir, keep]) {
-    const found = [];
-    for (const file of filesUnder(dir)) for (const kind of secretKinds(readFileSync(join(dir, file), "utf8"), { keepAccount: keep === "yes" })) found.push(file + ": " + kind);
+    const found = secretLines(dir, { keepAccount: keep === "yes" }).map((f) => f.file + ":" + f.line + " " + f.kind);
     if (found.length) { for (const line of found) say("SECRET_LIKE " + line); return 2; }
     say("CLEAN");
     return 0;
