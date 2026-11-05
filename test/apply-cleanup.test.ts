@@ -159,13 +159,15 @@ async function observed(w: World) {
   assert.ok(observation.ok, JSON.stringify(observation));
   return { ...run, observation };
 }
-async function proposed(w: World) {
+/** `disposition`: the person's teardown disposition, which a cost-baseline run needs (retained by default otherwise). */
+async function proposed(w: World, disposition?: "TEARDOWN_CONFIRMED") {
   const run = await observed(w);
   const records = await loadRunRecords(run.s.sealed.artifactSha256, w.dirs.evidence);
   assert.ok(records.ok, JSON.stringify(records));
   const contract = JSON.parse(JSON.stringify(w.contract)) as never;
   const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId,
     ...records, changes: run.s.sealed.changes, channel: "CLI", contract: { ...(contract as object), enabled: true } as never, engineVersion: run.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000),
+    ...(disposition ? { disposition } : {}),
   });
   assert.ok(built.ok, JSON.stringify(built));
   return { ...run, records, proposal: signCleanupProposal(built.proposal, REQUESTER.privateKeyPem) };
@@ -1440,7 +1442,9 @@ test("cost baseline (owner direction 6536926009): the run's alert topic goes wit
   behave({ showResources: creates, stateResources: state });
   // The verifier reads the export through Cloud Control (us-east-1, by its ARN), so the fake cloud says it exists.
   cloud({ existing: [...EXISTING, TOPIC, EXPORT] });
-  const run = await proposed(w);
+  // A cost-baseline run is retained by default: its proposal exists only with the person's teardown disposition (test/apply-cleanup-retention.test.ts).
+  const run = await proposed(w, "TEARDOWN_CONFIRMED");
+  assert.equal(run.proposal.disposition, "TEARDOWN_CONFIRMED");
   assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["aws_bcmdataexports_export.cur", "aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs", "aws_s3_bucket_versioning.logs",
     "aws_sns_topic.alerts", "aws_sns_topic_policy.alerts", "aws_sns_topic_subscription.owner"]);
   const kept = new Map(run.proposal.excluded.map((x) => [x.address, x]));
@@ -1459,7 +1463,7 @@ test("cost baseline: a CUR 2.0 export the cloud reports absent is never proposed
   const w = world(contractFor(creates));
   behave({ showResources: creates, stateResources: state });
   cloud({ existing: [...EXISTING] });
-  const run = await proposed(w);
+  const run = await proposed(w, "TEARDOWN_CONFIRMED");
   assert.ok(!run.proposal.deletes.some((d) => d.address === "aws_bcmdataexports_export.cur"), JSON.stringify(run.proposal.deletes));
   // Observed gone, it is recorded as already absent, never a delete target.
   assert.deepEqual(run.proposal.alreadyAbsent.filter((x) => x.type === "aws_bcmdataexports_export"),

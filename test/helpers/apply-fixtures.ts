@@ -339,7 +339,33 @@ export type AwsReadBehavior = {
   tagged?: string[];
   /** Every call exits non-zero with this stderr (an identity without access). */
   failAll?: string;
+  /**
+   * The cleanup preflight's S3 reads (src/apply/bucket-preflight.ts), by bucket name. A bucket not named here answers as an EMPTY
+   * bucket in the region asked, owned by the expected owner, never versioned: what every existing cleanup fixture expects.
+   */
+  buckets?: Record<string, FakeBucket>;
+  /** Data Exports execution states (`ExecutionStatus.StatusCode`) by export ARN. An export not named has no executions. */
+  executions?: Record<string, string[]>;
+  /** Sends `signal` to the parent (the driver's process) when this s3api operation runs: a stop request during the preflight. */
+  signalParentOn?: { op: string; signal: string };
 };
+/** One fake bucket's answers. Object key names carry `KEY_NAME_CANARY` so a test can show none is kept. */
+export type FakeBucket = {
+  /** The bucket's real region; head-bucket answers it whatever region was asked (the CLI follows S3's redirect). */
+  region?: string;
+  /** The owning account; a read whose --expected-bucket-owner differs is refused with 403, as S3 refuses it. */
+  owner?: string;
+  /** The versioning Status S3 reports; absent means never enabled (an empty answer). */
+  versioning?: string;
+  versions?: number;
+  deleteMarkers?: number;
+  uploads?: number;
+  /** A read (by s3api operation) that fails with this stderr. */
+  fail?: Record<string, string>;
+  /** A read (by s3api operation) answered with this exact stdout instead (malformed or truncated output). */
+  stdout?: Record<string, string>;
+};
+export const KEY_NAME_CANARY = "KEY_NAME_CANARY_cln1";
 const FAKE_AWS_READS = `#!${process.execPath}
 const fs = require("fs"), path = require("path");
 const dir = __dirname;
@@ -360,6 +386,33 @@ if (args[0] === "cloudcontrol" && args[1] === "get-resource") {
 }
 if (args[0] === "resourcegroupstaggingapi") {
   process.stdout.write(JSON.stringify({ ResourceTagMappingList: (b.tagged || []).map((arn) => ({ ResourceARN: arn, Tags: [] })) }));
+  process.exit(0);
+}
+if (args[0] === "s3api") {
+  const op = args[1], at = (flag) => args[args.indexOf(flag) + 1];
+  if (b.signalParentOn && b.signalParentOn.op === op) process.kill(process.ppid, b.signalParentOn.signal);
+  const k = (b.buckets || {})[at("--bucket")] || {};
+  if (k.fail && k.fail[op]) { process.stderr.write(k.fail[op]); process.exit(254); }
+  if (k.owner && k.owner !== at("--expected-bucket-owner")) { process.stderr.write("An error occurred (403) when calling the " + op + " operation: Forbidden"); process.exit(254); }
+  if (k.stdout && k.stdout[op] !== undefined) { process.stdout.write(k.stdout[op]); process.exit(0); }
+  const page = (n, make) => ({ items: Array.from({ length: Math.min(n || 0, 1) }, (_, i) => make(i)), more: (n || 0) > 1 });
+  if (op === "head-bucket") { process.stdout.write(JSON.stringify({ BucketRegion: k.region || at("--region"), AccessPointAlias: false })); process.exit(0); }
+  if (op === "get-bucket-versioning") { process.stdout.write(k.versioning ? JSON.stringify({ Status: k.versioning }) : ""); process.exit(0); }
+  if (op === "list-object-versions") {
+    const v = page(k.versions, (i) => ({ Key: "${KEY_NAME_CANARY}/v" + i, VersionId: "vid" + i, IsLatest: true, Size: 1 }));
+    const d = page(k.deleteMarkers, (i) => ({ Key: "${KEY_NAME_CANARY}/d" + i, VersionId: "did" + i, IsLatest: true }));
+    process.stdout.write(JSON.stringify({ ...(v.items.length ? { Versions: v.items } : {}), ...(d.items.length ? { DeleteMarkers: d.items } : {}), ...(v.more || d.more ? { NextToken: "tok" } : {}) }));
+    process.exit(0);
+  }
+  if (op === "list-multipart-uploads") {
+    const u = page(k.uploads, (i) => ({ Key: "${KEY_NAME_CANARY}/u" + i, UploadId: "uid" + i }));
+    process.stdout.write(JSON.stringify({ Bucket: at("--bucket"), ...(u.items.length ? { Uploads: u.items } : {}), ...(u.more ? { NextToken: "tok" } : {}) }));
+    process.exit(0);
+  }
+}
+if (args[0] === "bcm-data-exports" && args[1] === "list-executions") {
+  const codes = (b.executions || {})[args[args.indexOf("--export-arn") + 1]] || [];
+  process.stdout.write(JSON.stringify({ Executions: codes.map((code, i) => ({ ExecutionId: "exec" + i, ExecutionStatus: { StatusCode: code } })) }));
   process.exit(0);
 }
 process.stderr.write("unexpected"); process.exit(2);

@@ -95,7 +95,14 @@ export type LifecycleReportInput = {
   /** The owner's live record for this run, when one exists. */
   live: LiveAcceptanceRecord | undefined;
   now: Date;
+  /**
+   * The run created a cost baseline, which is retained by default (owner decision of 2026-11-05; `isRetainedByDefault`). Without a
+   * proposal, its stages say "intentionally retained (owner default)", not that a cleanup is missing. It never makes a stage PASS.
+   */
+  retainedByDefault?: boolean;
 };
+
+const RETAINED = "intentionally retained (owner default): this run created a cost baseline, which is kept unless a person gives the separate teardown disposition";
 
 const hashOf = (value: unknown): string => sha256(canonicalJson(value as never));
 
@@ -113,18 +120,22 @@ function stagesOf(input: LifecycleReportInput, applyEvidenceSha256: string): { s
   else if (observation.verdict === "FAILED") { observe = { status: "FAIL", mode: "SYNTHETIC", detail: "independent observation FAILED", evidenceSha256: hashOf(observation), at: observation.observedAt }; unresolved.push("a planned resource is missing or something unexpected was found"); }
   else { observe = { status: "INCONCLUSIVE", mode: "SYNTHETIC", detail: "independent observation could not decide", evidenceSha256: hashOf(observation), at: observation.observedAt }; unresolved.push("observe again until every resource is decided"); }
   let propose: StageResult;
-  if (!proposal) { propose = { status: "NOT_RUN", mode: "SYNTHETIC", detail: "no cleanup proposal" }; unresolved.push("propose the cleanup"); }
+  if (!proposal && input.retainedByDefault === true) {
+    propose = { status: "NOT_RUN", mode: "SYNTHETIC", detail: RETAINED };
+    unresolved.push("intentionally retained (owner default): tearing down the cost baseline is a later, separate decision (copy or empty the delivered data, then type the teardown disposition at ./alz apply propose-cleanup)");
+  }
+  else if (!proposal) { propose = { status: "NOT_RUN", mode: "SYNTHETIC", detail: "no cleanup proposal" }; unresolved.push("propose the cleanup"); }
   else if (proposal.artifactSha256 !== applyEvidence.artifactSha256 || proposal.applyEvidenceSha256 !== applyEvidenceSha256) { propose = { status: "FAIL", mode: "SYNTHETIC", detail: "the proposal is not this run's" }; unresolved.push("the proposal belongs to another run"); }
   else propose = { status: "PASS", mode: "SYNTHETIC", detail: proposal.deletes.length + " deletion(s) proposed, " + proposal.excluded.length + " kept", evidenceSha256: proposal.proposalSha256, at: proposal.createdAt };
   let cleanupStage: StageResult;
-  if (!proposal) cleanupStage = { status: "NOT_RUN", mode: "SYNTHETIC", detail: "no proposal to execute" };
+  if (!proposal) cleanupStage = { status: "NOT_RUN", mode: "SYNTHETIC", detail: input.retainedByDefault === true ? RETAINED : "no proposal to execute" };
   else if (proposal.deletes.length === 0) cleanupStage = { status: "PASS", mode: "SYNTHETIC", detail: "nothing to destroy: every created resource was already gone", at: proposal.createdAt };
   else if (!cleanup) { cleanupStage = { status: "NOT_RUN", mode: "SYNTHETIC", detail: "the cleanup has not run" }; unresolved.push("run the approved cleanup"); }
   else if (cleanup.proposalSha256 !== proposal.proposalSha256) { cleanupStage = { status: "FAIL", mode: "SYNTHETIC", detail: "the cleanup evidence is for another proposal", evidenceSha256: hashOf(cleanup) }; unresolved.push("the cleanup evidence belongs to another proposal"); }
   else if (cleanup.outcome === "SUCCEEDED") cleanupStage = { status: "PASS", mode: "SYNTHETIC", detail: "the cleanup destroyed the approved list as " + cleanup.authority.executedAs, evidenceSha256: hashOf(cleanup), at: cleanup.finishedAt };
   else { cleanupStage = { status: "FAIL", mode: "SYNTHETIC", detail: "the cleanup ended " + cleanup.outcome, evidenceSha256: hashOf(cleanup), at: cleanup.finishedAt }; unresolved.push("the cleanup did not succeed; a person reviews"); }
   let leftoversStage: StageResult;
-  if (!proposal) leftoversStage = { status: "NOT_RUN", mode: "SYNTHETIC", detail: "no proposal to verify" };
+  if (!proposal) leftoversStage = { status: "NOT_RUN", mode: "SYNTHETIC", detail: input.retainedByDefault === true ? RETAINED : "no proposal to verify" };
   else if (!leftovers || leftovers.proposalSha256 !== proposal.proposalSha256) { leftoversStage = { status: "NOT_RUN", mode: "SYNTHETIC", detail: "leftovers not verified for this proposal" }; unresolved.push("verify leftovers"); }
   else if (leftovers.disposition === "COMPLETE") leftoversStage = { status: "PASS", mode: "SYNTHETIC", detail: "approved resources deleted (every proposed deletion confirmed gone by independent read, and a complete sweep by the run's deletion-unit tag found nothing else); protected objects intentionally retained; environment retirement outstanding", evidenceSha256: hashOf(leftovers), at: leftovers.observedAt };
   else if (leftovers.disposition === "KNOWN_ADDRESSES_CONFIRMED") {

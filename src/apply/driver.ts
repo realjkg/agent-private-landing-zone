@@ -10,6 +10,7 @@ import { interceptStopSignals } from "../tools/process.js";
 import { createPrivateDirectory } from "../tools/private-workdir.js";
 import { blueprintFromCloudFormationResources, blueprintFromDeploymentStackResources, blueprintFromGcpApiTopic, blueprintFromTerraformStatePull } from "../observe/blueprint.js";
 import { consumeApprovals, requesterRefusal, verifyApprovalSet, verifyRequestSignature } from "./approval.js";
+import { recheckBucketsEmpty } from "./bucket-preflight.js";
 import { buildProposalOfKind, computeProposalSha256, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "./cleanup-proposal.js";
 import { recheckLocationRemediation } from "./observe.js";
 import type { ArmHttp } from "../observe/azure-rest.js";
@@ -676,6 +677,9 @@ async function requireProposalDerivedFromRecords(
   const rebuilt = buildProposalOfKind(proposal.kind, {
     applyEvidence: applied, applyEvidenceSha256: proposal.applyEvidenceSha256, blueprint, blueprintSha256: proposal.blueprintSha256, observation, observationSha256: proposal.observationSha256,
     changes, channel: proposal.channel, contract, engineVersion: proposal.engineVersion, env, now: new Date(proposal.createdAt), requesterId: proposal.requesterId,
+    // The person's teardown disposition is not derived from the records: it is what the requester signed, so the rebuild carries it
+    // and the builder judges it again (a cost-baseline run without it is CLEANUP_RETAINED_BY_DEFAULT; any other run with it is refused).
+    ...(proposal.disposition === undefined ? {} : { disposition: proposal.disposition }),
   });
   if (!rebuilt.ok) return rebuilt;
   if (computeProposalSha256(rebuilt.proposal) !== proposal.proposalSha256) {
@@ -866,6 +870,13 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
       });
       if (recheck) return recheck;
     }
+    // The bucket preflight (owner decision of 2026-11-05): every run-owned S3 bucket on the list is read again as DISCOVERY and must be
+    // verified empty, with no export delivery in flight, before anything is destroyed or any approval consumed. A bucket that holds
+    // anything, or cannot be verified, stops the cleanup here with its data and protections intact. Residual race, stated plainly: an
+    // object that lands after this read still makes DeleteBucket fail (the bucket is not force_destroy), after Terraform has removed
+    // the bucket's settings; the run then ends PARTIAL_REQUIRES_REVIEW (docs/act-pilot-apply.md, "The bucket preflight").
+    const buckets = await recheckBucketsEmpty(proposal, contract, { env, toolDirs: deps.toolDirs, scratchParent: deps.scratchParent });
+    if (buckets) return buckets;
     // The last thing before the approvals are consumed is the signal check: nothing is awaited between it and consumeApprovals,
     // so a stop signal that arrived during the blocking or awaited engine steps above is read here and stops the cleanup.
     await yieldToSignals();

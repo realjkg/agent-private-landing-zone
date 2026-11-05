@@ -6,7 +6,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { REQUESTER_MAY_APPROVE, approverIsRequester, requesterPublicKey, requesterRefusal, signApproval, verifyRequestSignature } from "../apply/approval.js";
-import { buildProposalOfKind, proposalLines, signCleanupProposal, verifyCleanupProposal, type CleanupProposal } from "../apply/cleanup-proposal.js";
+import { buildProposalOfKind, isRetainedByDefault, proposalLines, signCleanupProposal, teardownPhrase, verifyCleanupProposal, type CleanupProposal, type ProposalInput } from "../apply/cleanup-proposal.js";
 import { buildLifecycleReport, lifecycleReportProblems } from "../apply/lifecycle-report.js";
 import { loadRunRecords, observeRun, verifyProposalLeftovers } from "../apply/observe.js";
 import { readLeftoversRecord, readObservationRecord } from "../apply/run-records.js";
@@ -650,11 +650,14 @@ const proposalPath = (deps: ApplyCliDeps, proposal: CleanupProposal): string =>
   join(deps.proposalsDir ?? join(repoPaths().root, ".runs", "apply", "cleanup"), proposal.proposalSha256.slice(0, 12) + (proposal.kind === "LOCATION_REMEDIATION" ? ".remediation-proposal.json" : ".cleanup-proposal.json"));
 
 /**
- * Builds the reviewable proposal from the run's records, has its requester sign it, and writes it. Runs no engine and asks no
- * phrase: a proposal authorizes nothing by itself. The requester (owner decision 6440801434, item 1) is an allowlisted id with
- * that entry's own key, checked before anything is built or written; their id is hashed into the proposal every approver signs.
+ * Builds the reviewable proposal from the run's records, has its requester sign it, and writes it. Runs no engine: a proposal
+ * authorizes nothing by itself. The requester (owner decision 6440801434, item 1) is an allowlisted id with that entry's own key,
+ * checked before anything is built or written; their id is hashed into the proposal every approver signs. It asks one phrase only
+ * for a cost-baseline run, which is retained by default (owner decision of 2026-11-05): the person at the terminal types the
+ * teardown disposition, `TEAR DOWN COST BASELINE <artifact12>`, and it is bound into the signed proposal. The console asks no such
+ * phrase, so a cost-baseline run started there stays retained.
  */
-const proposeCommand = (kind: CleanupProposal["kind"]): Command => async (flags, _terminal, deps, out) => {
+const proposeCommand = (kind: CleanupProposal["kind"]): Command => async (flags, terminal, deps, out) => {
   const unverified = committedSource(deps, out);
   if (unverified !== undefined) return unverified;
   const requesterId = flags.requester[0];
@@ -677,11 +680,30 @@ const proposeCommand = (kind: CleanupProposal["kind"]): Command => async (flags,
   if (!authorized.ok) return blocked({ ...authorized, message: authorized.message + " No proposal was written." }, out);
   const records = await loadRunRecords(sealed.artifactSha256, deps.evidenceDir ?? repoPaths().evidence);
   if (!records.ok) return blocked(records, out);
-  const built = buildProposalOfKind(kind, {
+  const input: ProposalInput = {
     applyEvidence: records.applyEvidence, applyEvidenceSha256: records.applyEvidenceSha256, blueprint: records.blueprint, blueprintSha256: records.blueprintSha256,
     observation: records.observation, observationSha256: records.observationSha256, changes: sealed.changes, channel: deps.channel ?? "CLI", contract,
     engineVersion: sealed.engineVersion, env: deps.env ?? process.env, now: (deps.now ?? (() => new Date()))(), requesterId,
-  });
+  };
+  let built = buildProposalOfKind(kind, input);
+  // Retention by default: everything else about the run was judged first, so the person is asked only when this is the one thing left.
+  if (!built.ok && built.code === "CLEANUP_RETAINED_BY_DEFAULT" && kind === "CLEANUP_PROPOSAL" && isRetainedByDefault(sealed.changes)) {
+    if ((deps.channel ?? "CLI") !== "CLI") {
+      return blocked({ ok: false, code: "CLEANUP_RETAINED_BY_DEFAULT", message: "This run created a cost baseline, which is intentionally retained by default. The teardown disposition is given only by a person at a terminal, " +
+        "and a run started in the web console is finished there, so this run stays retained: the pilot owner decides about its billing data and resources by hand. No proposal was written and nothing was signed." }, out);
+    }
+    const phrase = teardownPhrase(sealed.artifactSha256);
+    terminal.write(["", "COST BASELINE: RETAINED BY DEFAULT",
+      "  This run created a cost baseline (a CUR 2.0 export and the bucket its billing data is delivered to). It is kept unless you decide",
+      "  otherwise; billing history is not destroyed to complete an acceptance. Tearing it down is a separate decision:",
+      "  - copy or empty the delivered data by hand first: a bucket that is not verified empty stops the cleanup before anything is destroyed;",
+      "  - your disposition is bound into the proposal you sign, and every approver sees it.",
+      "", "Type this line exactly to give the teardown disposition (anything else keeps the cost baseline):", "  " + phrase, "", ""].join("\n"));
+    if ((await terminal.ask("teardown> ", { kind: "CLEANUP", phrase })) !== phrase) {
+      return blocked({ ok: false, code: "CLEANUP_RETAINED_BY_DEFAULT", message: "What was typed is not the teardown disposition, so the cost baseline stays retained. No proposal was written and nothing was signed." }, out);
+    }
+    built = buildProposalOfKind(kind, { ...input, disposition: "TEARDOWN_CONFIRMED" });
+  }
   if (!built.ok) return blocked(built, out);
   const proposal = signCleanupProposal(built.proposal, requesterKey);
   const path = proposalPath(deps, proposal);
@@ -945,6 +967,7 @@ const reportCommand: Command = async (flags, _terminal, deps, out) => {
     cleanup: proposal ? await readCleanupEvidence(proposal.proposalSha256, evidenceDir) : undefined,
     leftovers: proposal ? await readLeftoversRecord(proposal.proposalSha256, evidenceDir) : undefined,
     live: readLiveRecord(liveDir, sealed.artifactSha256, applyEvidenceSha256), now: (deps.now ?? (() => new Date()))(),
+    retainedByDefault: isRetainedByDefault(sealed.changes),
   });
   const problems = lifecycleReportProblems(report, { sourceCommit: sealed.sourceCommit });
   if (problems.length > 0) return blocked({ ok: false, code: "EVIDENCE_REJECTED", message: "The report did not pass its own validation: " + problems.slice(0, 4).join("; ") }, out);

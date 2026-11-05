@@ -47,6 +47,20 @@ The contract's DEV target names `limits`, not `canary`. Start from `config/act-p
 
 Run `./alz cost status`. It reads the budget, the alerts, the unit's tags and the export, read-only. It saves the result for readiness and for the console's Cost and visibility panel. Expect `WAITING` on the first day: a new budget has no calculated spend yet, and the first CUR 2.0 delivery can take up to 24 hours. Neither one ever reads as zero spend. A budget tracks spend and sends alerts; it never caps spend.
 
+## 5. Disposition: RETAIN by default
+
+The first live run's disposition is **RETAIN** (owner decision of 2026-11-05, #39, 6646346513, item 3). Billing history is not destroyed to complete acceptance, and acceptance items 1 to 8 (`docs/act-aws-terraform-execution-brief.md`) do not require a cleanup.
+
+The product holds this default. A run whose sealed changes include the CUR 2.0 export (`aws_bcmdataexports_export`) is retained: `./alz apply propose-cleanup` refuses it with `CLEANUP_RETAINED_BY_DEFAULT`, writing and signing nothing, unless the person at the terminal types the separate teardown disposition, `TEAR DOWN COST BASELINE <first 12 characters of the artifact hash>`. That line is bound into the signed proposal (`disposition: TEARDOWN_CONFIRMED`), so every approver sees it. The console asks for no such line, so a cost baseline started there stays retained. The lifecycle report of a retained run reads "intentionally retained (owner default)", not a missing cleanup.
+
+Teardown, when you decide on it later:
+
+1. Copy the delivered billing data out, or empty the export bucket by hand (versions and delete markers count). Nothing in the product empties a bucket, and the bucket keeps `force_destroy = false`.
+2. Apply the bootstrap again if the DISCOVERY role predates the `cleanupPreflight` reads (`bootstrap/aws/discovery-policy.json`).
+3. Run `propose-cleanup` and type the disposition, then approve and run `cleanup` as in step 6 of the execution brief.
+
+`cleanup` reads the bucket again as DISCOVERY right before the approvals are consumed. A bucket that is not empty, or an export delivery that is queued or in progress, is `CLEANUP_BUCKET_NOT_EMPTY`; a bucket that cannot be verified empty is `CLEANUP_BUCKET_UNVERIFIED`. Either way nothing is destroyed and no approval is consumed. One race remains and is not hidden: a delivery that lands after the check still makes `DeleteBucket` fail after the bucket's settings were destroyed, and the run ends `PARTIAL_REQUIRES_REVIEW` (`docs/act-pilot-apply.md`, "The bucket preflight and cost-baseline retention").
+
 ## What the emulated journey shows
 
 `test/cost-baseline-emulated-aws.test.ts` is opt-in and labeled EMULATED. It needs `ALZ_SIM_TERRAFORM`, `ALZ_SIM_MOTO` and `ALZ_SIM_AWS_PROVIDER_DIR`; its header has the setup. It runs, with the real Terraform engine and HashiCorp's real aws provider 6.68.0: the build's preview driver; the project writer; `prepare`, twice; a refused seal under limits that leave out `aws_sns_topic_subscription`; and a seal, approval and apply under the example's limits. Then it runs `readCostStatus` through a reader that sends each cost read to the emulator. It is never provider qualification, live acceptance or release evidence.

@@ -394,6 +394,8 @@ The operator steps are in [`docs/cost-baseline-deploy.md`](cost-baseline-deploy.
 
 There is no separate path, gate, approval or authority. This section authorizes nothing either, and agents never run the live steps.
 
+**Disposition of the first live run: RETAIN** (owner decision of 2026-11-05, #39, 6646346513, item 3). The cost baseline is kept after acceptance; billing history is not destroyed to complete it. Acceptance items 1 to 8 do not require a cleanup. The product enforces this default: `propose-cleanup` refuses a run that created a cost baseline (`CLEANUP_RETAINED_BY_DEFAULT`) unless you type the teardown disposition at the terminal (see "Cleanup", below). Teardown is a later, separate decision.
+
 ### Owner checklist
 
 1. **Fill the inputs:**
@@ -442,7 +444,7 @@ There is no separate path, gate, approval or authority. This section authorizes 
    - `./alz cost status` reads with the AWS sign-in of the terminal it runs in, read-only (`src/cli/cost.ts`). Run it in a separate shell with a read-only sign-in for the DEV account, not in the shell that holds the `ALZ_*` identity variables.
    - It prints a short summary, with recipient emails masked, and saves the full typed status to `.runs/cost/status.json` (owner-only). Do not post that file: it holds the recipients.
 7. **Record acceptance.** Record the minimum acceptance items 1 to 8 below against the existing `pillar:cost` gate. Do this only once you return that gate to the release scope; today it is `OUT_OF_SCOPE` in `config/release/scope.json`. No new gate id is added.
-8. **Clean up** with the step 6 commands, against the expected results below, when the run is done.
+8. **Do not clean up.** The first live run's disposition is **RETAIN**. Stop after item 7. Tearing the baseline down later is a separate decision, made as described under "Cleanup" below.
 
 ### Expected results for this payload (they replace the pass criteria of steps 5 and 6)
 
@@ -482,24 +484,24 @@ Every other rendered type records `UNVERIFIABLE`, with `NO_CLOUD_CONTROL_MAPPING
 - **What reads `WAITING`:** only `export.state` and `freshness.state`, until the first CUR 2.0 delivery (up to 24 hours).
 - **Spend:** a new budget has no calculated spend yet, so `budget.actualSpend` is `UNKNOWN`. That is never zero spend. A budget alerts; it never caps spend.
 
-**Cleanup:** `verify-cleanup` cannot report COMPLETE for this payload.
+**Cleanup (a later, separate decision; not part of the first live run):** retained by default, and `verify-cleanup` cannot report COMPLETE for this payload.
+
+- **Retained by default.** `propose-cleanup` for this run first says `COST BASELINE: RETAINED BY DEFAULT` and asks for one line, `TEAR DOWN COST BASELINE <first 12 characters of the artifact hash>`. Anything else ends it with `CLEANUP_RETAINED_BY_DEFAULT`, and nothing is written or signed. The line you type is bound into the signed proposal as `disposition: TEARDOWN_CONFIRMED`, every approver sees it, and the driver derives the proposal again with it. The console never asks for it: a cost baseline started in the console stays retained.
+- **Copy or empty the data first.** Do this yourself, outside the product, with an admin identity, before `propose-cleanup`. Versions and delete markers count.
 
 - **Settings follow their parent.** A setting shares its parent's identifier, so once the parent is confirmed gone it reads `CONFIRMED_DELETED` on `PARENT_ABSENT` (`src/apply/leftovers.ts`). This covers the bucket settings and, expected, the topic policy.
 - **The budget has no independent reader and no parent.** It stays `UNKNOWN` with `NOT_INDEPENDENTLY_CHECKABLE`. Confirm its deletion yourself, with `./alz cost status` (`budget.state` `MISSING`) or in the console.
 - **Subscriptions are deleted with their topic, but `verify-cleanup` cannot confirm it.** The proposal deletes them with their topic as `UNVERIFIABLE` (`BEFORE_LAST_COLON`), but `verify-cleanup` matches parents only by identical identifier. A subscription's identifier is its own ARN, never the topic's, so it stays `UNKNOWN` (`NOT_INDEPENDENTLY_CHECKABLE`). Confirm the subscriptions are gone in the SNS console.
 - **An activated cost-allocation tag stays.** It is held for a person (`TYPE_UNREVIEWED`, not on the reviewed leaf list in `src/observe/aws-leaf-types.ts`).
 - **A cleanup cannot keep part of the run.** `propose-cleanup` has no per-resource selection: it takes only `--sealed`, `--requester` and `--key`, and the proposal deletes every run-created leaf.
-- **Billing data in the export bucket:** the bucket is rendered with `force_destroy = false` (`src/build/cost-baseline.ts`), so billing data is never deleted silently. A cleanup run against a bucket that holds a CUR 2.0 delivery is expected to go badly, as follows (inferred from the dependency order; untested):
-  - Terraform destroys the bucket's dependents first: the bucket policy, the public access block, the encryption configuration, the lifecycle configuration, the ownership controls and the export.
-  - Then `DeleteBucket` fails on the non-empty bucket.
-  - The billing data is left in a bucket without its own protections, and the run ends `PARTIAL_REQUIRES_REVIEW`.
-  - The stripped settings then read `UNKNOWN` in `verify-cleanup`, because their parent is not absent.
+- **Billing data in the export bucket: the bucket preflight.** The bucket is rendered with `force_destroy = false` (`src/build/cost-baseline.ts`), so billing data is never deleted silently. Without a check, Terraform would destroy the bucket's policy, public access block, encryption, lifecycle and ownership controls and the export before `DeleteBucket` failed on the non-empty bucket. So `cleanup` reads the bucket again as DISCOVERY immediately before the approvals are consumed (`src/apply/bucket-preflight.ts`; `docs/act-pilot-apply.md`, "The bucket preflight and cost-baseline retention"):
+  - any object version, delete marker or unfinished multipart upload, or an export delivery QUEUED or IN_PROGRESS, is `CLEANUP_BUCKET_NOT_EMPTY`;
+  - a read that fails, is denied or throttled, answers for another owner or region, or is malformed or cut short, or an unknown versioning state, is `CLEANUP_BUCKET_UNVERIFIED`.
 
-  **Before any cleanup, choose one of two ways:**
-  - **(a) Leave the run in place.** Run no cleanup until you have decided.
-  - **(b) Copy the billing data out and empty the bucket**, yourself, outside the product, with an admin identity. Do this before you run `propose-cleanup`.
+  Either way nothing is destroyed, no approval is consumed, and the bucket keeps its data and protections. Nothing empties it for you. Once it is empty, the same proposal and approvals run while the approvals are valid.
 
-  A partial cleanup spends its proposal. It needs your review and a new proposal, as in step 6.
+  **The residual race:** a delivery that lands after the check and before `DeleteBucket` cannot be excluded from outside S3. Then `DeleteBucket` still fails (no `force_destroy`), the settings destroyed before it are gone, and the run ends `PARTIAL_REQUIRES_REVIEW`. A partial cleanup spends its proposal; it needs your review and a new proposal, as in step 6.
+- **The DISCOVERY role needs the two new reads.** The preflight uses `s3:ListBucketVersions` and `s3:ListBucketMultipartUploads` (the `cleanupPreflight` group in `bootstrap/aws/discovery-policy.json`, flagged for your acceptance). Apply the bootstrap again before a teardown, or the preflight reads `CLEANUP_BUCKET_UNVERIFIED` (access denied) and refuses.
 - **Pass:** every proposed deletion is `CONFIRMED_DELETED`, except the budget and the subscriptions, which you confirm as above.
 - **Stop:** `STILL_PRESENT` or `UNKNOWN` for anything other than the budget and the subscriptions, or any cleanup outcome other than `SUCCEEDED`.
 
@@ -539,13 +541,7 @@ The emulated journey (`test/cost-baseline-emulated-aws.test.ts`, EMULATED) does 
 - **The CLI path itself:** the build command, `prepare`, `seal`, `apply` and `./alz cost status` against a real account (#376 review N3).
 - **The day-one status:** confirm what `overall`, `costAllocationTags.state`, `export.state` and `freshness.state` actually read (expected `INCOMPLETE`, `UNKNOWN`, `WAITING` and `WAITING`).
 - **Observe:** confirm that the mapped resources (bucket, topic, export) are VERIFIED and every unmapped type is UNVERIFIABLE.
-- **Cleanup with billing data:** confirm what a cleanup does once the export bucket holds a delivery. This is untested. Expected:
-  - the bucket's dependents are destroyed first;
-  - `DeleteBucket` then fails;
-  - the data is left in a bucket without its own protections;
-  - the run ends `PARTIAL_REQUIRES_REVIEW`.
-
-  Avoid it with choice (a) or (b) above. Also confirm by hand that the budget and the subscriptions are deleted, and that the topic policy is settled by its parent as expected.
+- **Cleanup (only when you later decide to tear down):** the bucket preflight's reads are tested against a fake CLI only (SYNTHETIC). Confirm live that `head-bucket` returns `BucketRegion`, that `--expected-bucket-owner` is honored by each read, that a bucket holding a delivery is refused with `CLEANUP_BUCKET_NOT_EMPTY` before anything is destroyed, and what states `list-executions` reports. Also confirm by hand that the budget and the subscriptions are deleted, and that the topic policy is settled by its parent as expected.
 
 ### Known limits from the #376 review
 
