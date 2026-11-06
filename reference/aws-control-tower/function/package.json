@@ -1,0 +1,9 @@
+{
+  "name": "alz-private-bedrock-reference",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "dependencies": { "@langchain/core": "1.3.0" },
+  "scripts": { "test": "node --test ../tests/handler.test.mjs" }
+}

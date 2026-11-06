@@ -18,6 +18,7 @@ import {
   awsCostReadArgs,
   carriesCostParameter,
   isAwsCostReadTool,
+  costQueryAccountMatches,
 } from "./aws-cost-reads.js";
 
 import {
@@ -341,7 +342,15 @@ export function executeTool(
     if (isAwsCostReadTool(request.tool)) {
       const built = awsCostReadArgs(request);
       if ("reason" in built) return blocked(request, built.reason);
-      return runAllowlistedProcess(request.tool, "aws", built.args, workspace);
+      const env = context.credentialEnvironment ? { ...process.env, ...context.credentialEnvironment } : undefined;
+      if (request.tool === "aws_ce_get_cost_and_usage") {
+        const identity = runAllowlistedProcess("aws_sts_identity", "aws", ["sts", "get-caller-identity", "--output", "json"], workspace, undefined, env);
+        let callerAccount = "";
+        try { callerAccount = identity.ok ? (JSON.parse(identity.stdout) as { Account?: string }).Account ?? "" : ""; } catch { /* fail closed below */ }
+        if (!costQueryAccountMatches(request.accountId, callerAccount))
+          return blocked(request, "Cost queries are restricted to the caller's current AWS account.");
+      }
+      return runAllowlistedProcess(request.tool, "aws", built.args, workspace, undefined, env);
     }
     if (carriesCostParameter(request))
       return blocked(request,"Cost read fields are accepted only by the cost read tools.");
@@ -367,11 +376,16 @@ export function executeTool(
       );
     }
 
+    const readEnvironment = request.tool === "aws_sts_identity" && context.credentialEnvironment
+      ? { ...process.env, ...context.credentialEnvironment }
+      : undefined;
     return runAllowlistedProcess(
       request.tool,
       "aws",
       args,
       workspace,
+      undefined,
+      readEnvironment,
     );
   }
 

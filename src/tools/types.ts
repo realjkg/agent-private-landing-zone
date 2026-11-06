@@ -54,7 +54,10 @@ export type ToolName =
   | "aws_bcm_get_export"
   | "aws_bcm_list_executions"
   | "aws_ce_list_cost_allocation_tags"
+  /** Account-scoped Cost Explorer spend query; strictly read-only and bounded by validated dates and dimensions. */
+  | "aws_ce_get_cost_and_usage"
   | "aws_tagging_get_resources"
+  | "aws_tagging_get_resources_by_type"
   | "azure_version"
   | "azure_account_show"
   | "azure_management_groups"
@@ -74,6 +77,13 @@ export type ToolRequest = {
   budgetName?: string;
   notification?: BudgetNotificationKey;
   exportArn?: string;
+  costStartDate?: string;
+  costEndDate?: string;
+  costGranularity?: "DAILY" | "MONTHLY";
+  costGroupBy?: Array<"SERVICE" | "REGION" | "USAGE_TYPE">;
+  costServices?: string[];
+  costRegion?: string;
+  resourceTypes?: string[];
   unitId?: string;
   region?: string;
   input?: AdapterInput;
@@ -111,5 +121,7 @@ export type ToolContext = {
   allowManagedAccess?: boolean;
   securityPolicyDecision?: SecurityPolicyDecision;
   compromiseState?: CompromiseState;
+  /** Internal short-lived credentials for an exact, read-only AWS request. Never surfaced to the agent or output. */
+  credentialEnvironment?: NodeJS.ProcessEnv;
   allowMutation: false;
 };

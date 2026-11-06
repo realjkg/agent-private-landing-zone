@@ -468,8 +468,8 @@ test("the broker, the console and the agent do not import or mention the driver 
 
 test("the tool allowlist is unchanged and offers no preview-run, destroy or mutation", () => {
   const posture = getToolSecurityPosture();
-  // 41 reviewed tools plus the eight read-only cost status reads (src/tools/aws-cost-reads.ts).
-  assert.equal(posture.allowedTools.length, 49);
+  // 41 reviewed tools plus the ten read-only cost and cost-inventory reads (src/tools/aws-cost-reads.ts).
+  assert.equal(posture.allowedTools.length, 51);
   assert.ok(posture.allowedTools.every((tool) => !/destroy|driver|preview_run|apply|teardown/i.test(tool)), posture.allowedTools.join());
   assert.deepEqual(posture.mutationTools, []);
   assert.equal(posture.arbitraryShell, false);

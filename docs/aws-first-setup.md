@@ -1,5 +1,8 @@
 # AWS-first guided setup (Terraform / CDK)
 
+For a first non-production deployment, start with the [AWS non-production quickstart](aws-nonproduction-quickstart.md)
+and **AWS DEV** in the local browser workspace. The terminal configuration flow below remains an advanced option.
+
 This change extends the **existing** `./alz` terminal configuration flow
 and `src/onboarding/plan.ts`. No installer, module framework, runtime
 service, provider integration, orchestration path or execution driver is

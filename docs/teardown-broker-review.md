@@ -127,3 +127,12 @@ Plan item 4 of the owner's cost-and-visibility direction (issue #39, comment 653
 - **Gates.** Cloud-read capability is required, as for every provider read. No tool name carries a mutation token, so `mutationTools` stays empty.
 - **What the answers contain.** The Budgets answers include the subscriber addresses the budget's owner configured. This is recorded with its scope and purpose in the `costStatus` allow of `bootstrap/aws/discovery-policy.json`.
 - **Authority.** Nothing here writes, deletes or previews a deletion.
+
+## Later addition: natural-language cost reads (2026-11-03)
+
+The operator explicitly authorized two further read-only broker tools for the local AWS cost conversation. This is a reviewed exception to the older “no change to the broker allowlist” statement above; it does **not** authorize a destroy tool or change `mutationTools`.
+
+- `aws_ce_get_cost_and_usage` accepts a validated date window of at most 366 days, DAILY or MONTHLY granularity, one or two dimensions from SERVICE/REGION/USAGE_TYPE, and optional fixed KMS/EC2-Other service values. Before the broker calls Cost Explorer, it reads STS identity and refuses unless the requested linked account equals that caller account.
+- `aws_tagging_get_resources_by_type` reads only selected KMS and EC2 cost-driver tag types in the configured region. It does not enumerate untagged resources.
+- An IAM Identity Center profile is exchanged for temporary credentials in memory for these fixed AWS reads. `credential_process` and `source_profile` profiles are refused. Credentials are not shown, saved or passed to the local model.
+- The data is usage-level spend and tag inventory, not resource-level charge attribution. Cleanup remains a separate owner-reviewed operation through an existing tracked deployment unit; arbitrary cost-bearing resources remain outside agent authority.

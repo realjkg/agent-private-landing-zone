@@ -148,14 +148,14 @@ async function openArea(name: string) {
 }
 
 describe("area navigation and summary strips", () => {
-  test("advanced and expert offer three areas; the open one is marked current", async () => {
+  test("advanced and expert offer AWS DEV alongside the existing areas; the open one is marked current", async () => {
     for (const level of ["ADVANCED", "EXPERT"] as const) {
       stubState(idleState);
       window.location.hash = "";
       const { unmount } = renderApp({ level });
       const nav = document.querySelector("nav.view-nav") as HTMLElement;
       expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual([
-        "Home", "Operations", "Pilot apply", "Reference",
+        "Home", "AWS DEV", "Operations", "Pilot apply", "Reference",
       ]);
       expect(nav.querySelector("[aria-current=page]")?.textContent).toBe("Home");
       for (const id of ["workflow", "evidence"]) expect(document.getElementById(id)).toBeTruthy();
@@ -168,12 +168,12 @@ describe("area navigation and summary strips", () => {
     }
   });
 
-  test("beginner offers Home, Operations and the guided Pilot apply, with no summary strip", () => {
+  test("beginner offers Home, AWS DEV, Operations and the guided Pilot apply, with no summary strip", () => {
     stubState(idleState);
     renderApp({ level: "BEGINNER" });
     const nav = document.querySelector("nav.view-nav") as HTMLElement;
     expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual([
-      "Home", "Operations", "Pilot apply",
+      "Home", "AWS DEV", "Operations", "Pilot apply",
     ]);
     expect(document.querySelector(".summary-strip")).toBeNull();
   });

@@ -394,6 +394,7 @@ export function runAllowlistedProcess(
   args: string[],
   cwd: string,
   identity?: ExecutionIdentity,
+  env?: NodeJS.ProcessEnv,
 ): ToolResult {
   const profile = PROFILES[executable];
   if (profile === undefined) {
@@ -401,5 +402,5 @@ export function runAllowlistedProcess(
       blocked: true, reason: "Executable has no process profile.",
     });
   }
-  return runBoundedProcess(tool, executable, args, cwd, { profile, identity });
+  return runBoundedProcess(tool, executable, args, cwd, { profile, identity, env });
 }

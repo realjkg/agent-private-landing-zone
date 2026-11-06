@@ -33,6 +33,10 @@ export type SessionCommand =
   | "PROMPT_GUIDE"
   | "GUARDRAIL"
   | "HELP"
+  /** Live read-only AWS Cost Explorer query, parsed from a bounded natural-language request. */
+  | "COST_QUERY"
+  /** Live read-only inventory of tags on supported cost-related KMS and EC2 resources. */
+  | "COST_INVENTORY"
   // Read-only pilot context (src/session/pilot-context.ts): the session reads the records a person's pilot runs left.
   | "PILOT_BLUEPRINT"
   | "PILOT_PREVIEW"
