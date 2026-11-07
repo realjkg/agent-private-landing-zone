@@ -317,6 +317,14 @@ test("the wrapper scan fails closed past its depth (SCAN_DEPTH): a leaf at the b
   const flagged = (values: Record<string, unknown>, type = "terraform_data") => blueprintFromTerraformState(show(type, values), []).entries[0].holdsIdentityArn === true;
   /** `leaf` under `containers` nested objects, the attribute set itself not counted: `{ input: { l: { l: ... leaf } } }` with `containers` objects below the attribute set. */
   const nested = (leaf: unknown, containers: number, key = "l"): Record<string, unknown> => { let value = leaf; for (let i = 0; i < containers; i++) value = { [key]: value }; return { input: value }; };
+  /**
+   * The same shape as `nested(leaf, containers).input`, written directly as JSON text by repetition. `JSON.stringify` recurses, so it
+   * cannot serialize the 5,000-level case below on a default stack (Node 22 overflows between 4,000 and 5,000 levels); the product
+   * entry point takes JSON text, so the text is built without serializing a deep object. `leafJson` is already JSON.
+   */
+  const deepInputText = (leafJson: string, containers: number, key = "l"): string => `{"${key}":`.repeat(containers) + leafJson + "}".repeat(containers);
+  /** `terraform show -json` text for one resource whose `input` attribute is already JSON text. */
+  const showWithInputText = (type: string, inputText: string) => `{"format_version":"1.0","values":{"root_module":{"resources":[{"address":${JSON.stringify(type + ".x")},"mode":"managed","type":${JSON.stringify(type)},"values":{"id":"x-id","input":${inputText}}}]}}}`;
   assert.equal(SCAN_DEPTH, 32);
   // The attribute set is the first container; `input`'s value is the second. A leaf under SCAN_DEPTH containers in all is read; one more container is not entered.
   const deepest = SCAN_DEPTH - 1;
@@ -326,7 +334,14 @@ test("the wrapper scan fails closed past its depth (SCAN_DEPTH): a leaf at the b
   assert.ok(flagged(nested("plain", deepest + 1)), "one container deeper cannot be entered: flagged without any ARN (fail closed)");
   assert.ok(flagged(nested([], deepest + 1)), "an empty container one level too deep is not entered either");
   assert.ok(flagged(nested(ROLE, 40)), "an ARN 40 levels deep is never passed over");
-  assert.ok(flagged(nested("plain", 5_000)), "very deep input");
+  // Very deep input (5,000 containers), delivered to the same entry point as valid JSON text. The preconditions keep the case from passing
+  // vacuously: the text really is 5,000 levels deep and is valid JSON, so the outcome below is the scan's own.
+  const veryDeep = showWithInputText("terraform_data", deepInputText('"CANARY_VERY_DEEP_VALUE"', 5_000));
+  assert.equal(veryDeep.split('{"l":').length - 1, 5_000, "the text nests 5,000 containers");
+  assert.doesNotThrow(() => JSON.parse(veryDeep), "the 5,000-level text is valid JSON");
+  const veryDeepBlueprint = blueprintFromTerraformState(veryDeep, []);
+  assert.deepEqual(veryDeepBlueprint.entries[0], { address: "terraform_data.x", type: "terraform_data", id: "x-id", arn: null, origin: "NOT_IN_PLAN", holdsIdentityArn: true }, "very deep input is flagged without being followed (fail closed), through the same entry point");
+  assert.ok(!JSON.stringify(veryDeepBlueprint).includes("CANARY_VERY_DEEP_VALUE"), "nothing of the very deep attributes is copied");
   assert.ok(flagged(nested("plain", 50, "self")), "cyclic-looking input (an object naming itself at every level) is flagged, not followed");
   // Width is read in full: the scan is linear and has no element limit.
   const wide = Array.from({ length: 200_000 }, (_, i) => "element-" + i);
