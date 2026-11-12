@@ -8,7 +8,7 @@ Use an authenticated IAM Identity Center profile. The AWS CLI command exchanges 
 
 ```sh
 aws sso login --profile adaptcloud-admin
-AWS_PROFILE=adaptcloud-admin ./alz
+AWS_PROFILE=adaptcloud-admin ./alz session aws
 ```
 
 In the local conversation, ask for example:

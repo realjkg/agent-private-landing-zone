@@ -151,6 +151,7 @@ async function sessionNode(
         state.history ?? [],
         state.fixture,
         progress,
+        state.provider,
       );
 
   if (command === "PILOT_HANDOFF") {
@@ -170,6 +171,11 @@ async function sessionNode(
         },
       ],
     };
+  }
+
+  if (command === "COST_UNSUPPORTED") {
+    const response = "Live cost and tag queries support AWS only. Specify AWS explicitly or use an AWS session for an unqualified request. No AWS calls were made.";
+    return { response, history: [{ at: new Date().toISOString(), request: state.request, command, response }] };
   }
 
   if (command === "COST_QUERY" || command === "COST_INVENTORY") {

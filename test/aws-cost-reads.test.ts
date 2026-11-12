@@ -52,6 +52,10 @@ test("each cost read is exactly one fixed, read-only AWS CLI call", () => {
   const regional = argsOf({ tool: "aws_ce_get_cost_and_usage", accountId: ACCOUNT, costStartDate: "2026-10-01", costEndDate: "2026-11-01",
     costGranularity: "MONTHLY", costGroupBy: ["SERVICE"], costRegion: "us-east-2" });
   assert.ok(regional.includes(JSON.stringify({ And: [{ Dimensions: { Key: "LINKED_ACCOUNT", Values: [ACCOUNT] } }, { Dimensions: { Key: "REGION", Values: ["us-east-2"] } }] })));
+  const services = ["AWS Key Management Service", "EC2 - Other", "Amazon Elastic Compute Cloud - Compute"];
+  const compute = argsOf({ tool: "aws_ce_get_cost_and_usage", accountId: ACCOUNT, costStartDate: "2026-10-01", costEndDate: "2026-11-01",
+    costGranularity: "MONTHLY", costGroupBy: ["SERVICE"], costServices: services });
+  assert.deepEqual(JSON.parse(compute[compute.indexOf("--filter") + 1]).And[1], { Dimensions: { Key: "SERVICE", Values: services } });
   // The verifier's own tag-filter shape (src/observe/aws-cli.ts), on the deletion unit's tag key.
   assert.equal(UNIT_TAG_KEY, ALZ_TAG_KEYS.unit);
   assert.deepEqual(argsOf({ tool: "aws_tagging_get_resources", unitId: "unit-0001", region: "us-east-2" }),

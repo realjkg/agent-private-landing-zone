@@ -1,5 +1,6 @@
 import type { AgentState } from "../agent/types.js";
 import type { IaCEngine } from "../build/types.js";
+import type { Provider } from "../discovery/types.js";
 import { promptGuide } from "./help.js";
 import { pilotHandoffKind } from "./pilot-answer.js";
 import type { PilotQuery } from "./pilot-context.js";
@@ -29,8 +30,14 @@ export function classifyPilotQuery(value: string): PilotQuery | undefined {
   return undefined;
 }
 
+function awsCostScope(value: string, provider?: Provider): boolean {
+  if (/\b(azure|gcp|google cloud|microsoft)\b/.test(value)) return false;
+  return /\b(aws|amazon)\b/.test(value) || provider === "AWS";
+}
+
 export function classifySessionCommand(
   request: string,
+  provider?: Provider,
 ): SessionCommand {
   const value = request.trim().toLowerCase();
 
@@ -43,12 +50,14 @@ export function classifySessionCommand(
       /\b(tags?|labels?|tagged|labeled|inventory|resources?)\b/.test(value) &&
       /\b(show|list|find|discover|inventory|which|what)\b/.test(value) &&
       !/\b(create|deploy|destroy|tear down|teardown|clean up|cleanup|delete|remove|change|modify|update|configure|enable|disable|set)\b/.test(value)) {
-    return "COST_INVENTORY";
+    return awsCostScope(value, provider) ? "COST_INVENTORY" : "COST_UNSUPPORTED";
   }
 
   if (/\b(cost|costs|costing|spend|spent|charges|billing|usage charges|price|prices|expensive)\b/.test(value) &&
+      /\b(show|list|fetch|get|retrieve|report|how much|what (?:did|were|was|are)|break ?down)\b/.test(value) &&
+      !/\b(explain|teach|define|how (?:does|do|is)|what (?:is|are) (?:aws |amazon |azure |gcp )?(?:billing|cost explorer|pricing))\b/.test(value) &&
       !/\b(create|deploy|destroy|tear down|teardown|clean up|cleanup|delete|remove|change|modify|update|configure|enable|disable|set)\b/.test(value)) {
-    return "COST_QUERY";
+    return awsCostScope(value, provider) ? "COST_QUERY" : "COST_UNSUPPORTED";
   }
 
   if (pilotHandoffKind(value)) {

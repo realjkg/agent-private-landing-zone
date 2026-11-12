@@ -61,6 +61,7 @@ export function parseCostQuestion(question: string, now = new Date()): CostQuery
   const services: string[] = [];
   if (/\b(kms|key management service)\b/.test(value)) services.push("AWS Key Management Service");
   if (/\b(ec2|ebs|elastic compute|nat gateway|vpc endpoint|snapshot)\b/.test(value)) services.push("EC2 - Other");
+  if (/\b(ec2|elastic compute)\b/.test(value)) services.push("Amazon Elastic Compute Cloud - Compute");
   const groupBy: CostQuery["groupBy"] = /\b(usage type|usage types|usage breakdown|detailed breakdown)\b/.test(value)
     ? ["SERVICE", "USAGE_TYPE"]
     : /\b(by|per|across) regions?\b|\bregional breakdown\b/.test(value)
@@ -140,20 +141,27 @@ export async function queryAwsCosts(question: string, now = new Date()): Promise
   if (!result.ok) return blockedMessage(result);
   const answer = parseOutput<CostResponse>(result);
   if (!answer?.ResultsByTime) return "Cost Explorer returned an unreadable response. No changes were made.";
-  const lines = ["AWS Cost Explorer (read-only)", "Account: " + identity.accountId, "Period: " + query.start + " through " + query.end + " (end date exclusive)"];
+  return formatAwsCosts(answer, query, identity.accountId);
+}
+
+export function formatAwsCosts(answer: CostResponse, query: CostQuery, accountId: string): string {
+  const lines = ["AWS Cost Explorer (read-only)", "Account: " + accountId, "Period: " + query.start + " through " + query.end + " (end date exclusive)"];
   let rows = 0;
-  for (const period of answer.ResultsByTime) {
+  for (const period of answer.ResultsByTime ?? []) {
+    const interval = period.TimePeriod?.Start && period.TimePeriod?.End
+      ? period.TimePeriod.Start + " through " + period.TimePeriod.End + " (end date exclusive)"
+      : "billing interval unavailable";
     for (const group of period.Groups ?? []) {
       if (rows >= 50) continue;
       const amount = group.Metrics?.UnblendedCost?.Amount;
       if (amount === undefined || !Number.isFinite(Number(amount))) continue;
       const labels = group.Keys ?? [];
       const label = labels.length ? labels.join(" / ") : "Total";
-      lines.push(label + ": " + Number(amount).toFixed(2) + " " + (group.Metrics?.UnblendedCost?.Unit ?? "USD"));
+      lines.push(interval + " — " + label + ": " + Number(amount).toFixed(2) + " " + (group.Metrics?.UnblendedCost?.Unit ?? "USD"));
       rows++;
     }
     if (!period.Groups?.length && period.Total?.UnblendedCost?.Amount !== undefined) {
-      lines.push("Total: " + Number(period.Total.UnblendedCost.Amount).toFixed(2) + " " + (period.Total.UnblendedCost.Unit ?? "USD"));
+      lines.push(interval + " — Total: " + Number(period.Total.UnblendedCost.Amount).toFixed(2) + " " + (period.Total.UnblendedCost.Unit ?? "USD"));
       rows++;
     }
   }
@@ -164,8 +172,8 @@ export async function queryAwsCosts(question: string, now = new Date()): Promise
   return lines.join("\n");
 }
 
-function tagValue(key: string, value: string): string {
-  return /secret|token|password|credential|private.?key/i.test(key) ? "[redacted]" : value;
+export function tagValue(key: string, value: string): string {
+  return /secret|token|password|credential|private.?key|(?:api|access)[\s_-]*key/i.test(key) ? "[redacted]" : value;
 }
 
 type TagInventory = { ResourceTagMappingList?: Array<{ ResourceARN?: string; Tags?: Array<{ Key?: string; Value?: string }> }> };

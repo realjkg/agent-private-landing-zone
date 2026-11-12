@@ -82,7 +82,6 @@ Regenerate with `npm run docs:ops`; a test fails if this table is stale.
 | Governance and policy | Restore the control plane | `./alz control-plane restore --evidence <encrypted-bundle> --restore-root <empty-isolated-path>` | HANDOFF | Guided handoff | WRITES restored files to the chosen empty directory — ACT stays disabled |
 | Governance and policy | Operating economics report | `./alz economics report <input.json> [--json]` | READ_ONLY | Run | ADVISORY — computed only from the pasted entries; no billing or cloud access |
 | Governance and policy | Cost and visibility status | `./alz cost status --account <12-digit account> [--unit <unit> --region <region>] [--export-arn <arn>]` | HANDOFF | Guided handoff | LIVE AWS READ-ONLY — budget, alerts, tags and cost export; advisory, a budget alerts and never caps spend; no change, ACT stays disabled |
-| Governance and policy | Natural-language AWS cost query and tag inventory | Local conversation: “How much did KMS and EC2 cost last month by usage type?” or “List tags on KMS keys and EC2 volumes.” | READ_ONLY | Session command | LIVE AWS READ-ONLY — Cost Explorer is scoped to the STS caller account; tag inventory is regional and tagged-resources-only. No destroy authority. |
 | Governance and policy | Runtime health and readiness | `./alz health [--serve]` | READ_ONLY | Run | LOCAL PROCESS SNAPSHOT — one shot, no listener started, no cloud |
 | Governance and policy | Operator self-check | `./alz doctor` | HANDOFF | Guided handoff | LOCAL READ-ONLY CHECK — no model, no cloud, no infrastructure change |
 | Governance and policy | Dependency check and guided installs | `./alz deps` | HANDOFF | Guided handoff | LOCAL CHECK — installs or updates only after you choose "Install it" or "Update it" for each tool, into your user folder; an earlier version stays until the new one is checked; no cloud, no infrastructure change |
@@ -129,3 +128,7 @@ Regenerate with `npm run docs:ops`; a test fails if this table is stale.
 | Enterprise libraries | Validate an environment provider | `./alz enterprise environment` | READ_ONLY | Run | OFFLINE CHECK OF PASTED JSON — NOTHING EXECUTED, NO CLOUD ACCESS, NO AUTHORITY GRANTED; NO REQUEST IS SENT TO THE ENVIRONMENT |
 | Enterprise libraries | Show knowledge source status | `./alz enterprise knowledge` | READ_ONLY | Run | BUILT-IN CATALOG, OFFLINE — NOTHING FETCHED, RUN OR QUALIFIED HERE; A PASTED SNAPSHOT IS CHECKED, NOT INGESTED |
 <!-- operations:end -->
+
+## Conversational AWS cost reads
+
+Start `./alz session aws` with an authenticated IAM Identity Center profile to ask “How much did KMS and EC2 cost last month by usage type?” or “List tags on KMS keys and EC2 volumes.” These are live AWS read-only session commands, not browser operations. Cost Explorer is scoped to the STS caller account; tag inventory is regional and includes only previously tagged resources. Neither command grants destroy authority. See [AWS cost commands](aws-cost-agent-commands.md) for sign-in and scope details.

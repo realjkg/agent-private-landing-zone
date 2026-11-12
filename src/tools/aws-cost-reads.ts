@@ -51,7 +51,7 @@ const COMPARISONS = new Set(["GREATER_THAN", "LESS_THAN", "EQUAL_TO"]);
 const THRESHOLD_TYPES = new Set(["PERCENTAGE", "ABSOLUTE_VALUE"]);
 
 const COST_GROUPS = new Set(["SERVICE", "REGION", "USAGE_TYPE"]);
-const COST_SERVICES = new Set(["AWS Key Management Service", "EC2 - Other"]);
+const COST_SERVICES = new Set(["AWS Key Management Service", "EC2 - Other", "Amazon Elastic Compute Cloud - Compute"]);
 const TAGGABLE_COST_RESOURCE_TYPES = new Set([
   "kms:key", "ec2:volume", "ec2:snapshot", "ec2:natgateway", "ec2:elastic-ip", "ec2:vpc-endpoint",
 ]);
@@ -165,7 +165,7 @@ export function awsCostReadArgs(request: ToolRequest): { args: string[] } | { re
       if (!Array.isArray(groupBy) || groupBy.length < 1 || groupBy.length > 2 ||
           groupBy.some((value) => typeof value !== "string" || !COST_GROUPS.has(value)) || new Set(groupBy).size !== groupBy.length)
         return { reason: "Choose one or two supported cost groupings: service, region or usage type." };
-      if (services !== undefined && (!Array.isArray(services) || services.length < 1 || services.length > 2 ||
+      if (services !== undefined && (!Array.isArray(services) || services.length < 1 || services.length > COST_SERVICES.size ||
           services.some((value) => typeof value !== "string" || !COST_SERVICES.has(value)) || new Set(services).size !== services.length))
         return { reason: "Service filters must be selected from the supported KMS and EC2 cost services." };
       if (region !== undefined && (typeof region !== "string" || !REGION.test(region))) return { reason: "The cost region must be a valid AWS region name." };
