@@ -20,6 +20,7 @@ import {
 import {
   implementedPlugins,
 } from "./plugins/validate.js";
+import { rehearseDemoAct } from "./demo/lifecycle.js";
 
 function valueAfter(
   name: string,
@@ -198,3 +199,19 @@ console.log(
   "ACT                         DISABLED",
 );
 console.log();
+
+console.log("ACT DEMO — IN-MEMORY SIMULATION");
+console.log("Scripted approvals and one synthetic canary; no live deployment or teardown.");
+try {
+  const rehearsal = rehearseDemoAct(state);
+  console.log("Discover → Plan → Approve → Build → Verify → Approve cleanup → Destroy → Verify cleanup");
+  console.log("Simulated build             " + rehearsal.built.phase);
+  console.log("Simulated cleanup           " + (rehearsal.cleaned.cleanupVerified ? "VERIFIED" : "FAILED"));
+  console.log("Existing baseline           PRESERVED");
+  console.log("Demo resources remaining    " + rehearsal.cleaned.demoResourcesRemaining.length);
+  console.log("Synthetic ACT evidence      " + JSON.stringify(rehearsal));
+} catch (error) {
+  console.log("Simulated ACT               BLOCKED");
+  console.log(error instanceof Error ? error.message : "Demo lifecycle unavailable.");
+}
+console.log("Live infrastructure ACT     DISABLED");
