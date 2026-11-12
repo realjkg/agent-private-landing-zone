@@ -30,17 +30,20 @@ export const ACT_PATH_NOT_AVAILABLE: Readonly<Partial<Record<ActPathId, string>>
 
 export type ActStageId = `act:${ActPathId}` | `cleanup:${ActPathId}`;
 
-export type StageId = "preflight" | "aws-readonly" | "azure-readonly" | "gcp-readonly" | ActStageId | "recovery" | "summary";
+export type StageId = "preflight" | "aws-readonly" | "azure-readonly" | "gcp-readonly" | "aws-aft-lza" | ActStageId | "recovery" | "summary";
 /** The stages of one run, in order. */
 export const STAGES: readonly StageId[] = [
-  "preflight", "aws-readonly", "azure-readonly", "gcp-readonly",
+  "preflight", "aws-readonly", "azure-readonly", "gcp-readonly", "aws-aft-lza",
   ...ACT_PATHS.map((path): StageId => `act:${path}`),
   ...ACT_PATHS.map((path): StageId => `cleanup:${path}`),
   "recovery", "summary",
 ];
 
-/** The read-only stages: they run beside no mutation identity. */
-export const READONLY_STAGES: readonly StageId[] = ["aws-readonly", "azure-readonly", "gcp-readonly"];
+/**
+ * The read-only stages: they run beside no mutation identity. `aws-aft-lza` reads pipelines, the account and controls; the
+ * writes it sequences are merges a person performs in GitHub, never by the runner (docs/aft-lza-act-workflow.md).
+ */
+export const READONLY_STAGES: readonly StageId[] = ["aws-readonly", "azure-readonly", "gcp-readonly", "aws-aft-lza"];
 
 /**
  * The stages `run` selects without `--stage`: the read-only stages and the summary. An ACT, cleanup or recovery stage runs
@@ -56,6 +59,7 @@ export function stageSlice(stage: StageId): string {
   if (stage === "azure-readonly") return "S3";
   if (stage === "gcp-readonly") return "S4";
   if (stage === "summary") return "S6";
+  if (stage === "aws-aft-lza") return "S7";
   return "S5";
 }
 

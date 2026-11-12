@@ -106,6 +106,15 @@ export const qualificationOperations: readonly OperationSpec[] = [
   }, "It asks the person who exported the run facts to type an attestation at the terminal, and the console never attests for anyone.",
   "./alz qualify ci-evidence --gate <source-ci|release-archive> --run <run-id> --artifacts <export-dir>"),
   handoff({
+    id: "aft-lza-drift", sub: "aft-lza-drift", cliScript: "src/cli/aft-lza-drift.ts",
+    args: "--card config/<card>.json --output .runs/qualification/aft-lza-drift.json [--summary <file>]",
+    title: "AFT/LZA drift detection",
+    summary: "Reads Control Tower, LZA stack, account placement and AFT/LZA pipeline drift against the pinned card and reports who owns each repair.",
+    evidenceBasis: "LIVE CLOUD IDENTITY — READ-ONLY, NO DRIFT DETECTION STARTED, NO REPAIR, ACT DISABLED — WRITES ONE REPORT UNDER .runs/qualification",
+  }, "It reads a real AWS organization and the customer repositories, so it" + CLOUD + " Scheduled runs belong in the aft-lza-drift GitHub Actions workflow.",
+  "./alz qualify aft-lza-drift --card config/aft-lza-card.json --output .runs/qualification/aft-lza-drift.json",
+  ["AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_REGION", "AFT_LZA_GITHUB_TOKEN"]),
+  handoff({
     id: "provider-qualification-aws", sub: "provider-aws", cliScript: "src/cli/provider-qualification.ts",
     args: "--provider AWS --source-commit <sha> --aws-stack <name> --aws-template <file>",
     title: "AWS provider qualification",

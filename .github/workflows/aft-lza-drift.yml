@@ -1,0 +1,131 @@
+name: AFT/LZA drift detection
+
+# Read-only drift detection for the AFT/LZA pilot (docs/aft-lza-act-workflow.md#drift).
+# It reads Control Tower, LZA stack, account placement and AFT/LZA pipeline state through a read-only role assumed with
+# GitHub OIDC (a web identity token file; no access keys are exported), compares them with the pinned card and the
+# customer repository branch heads, and reports the owner of every repair. It never starts a drift detection, never
+# repairs, never applies, and never authorizes: repairs go through the owning service's own pipeline (LZA, AFT or
+# Control Tower) after a person approves them.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      card:
+        description: "Card path under config/ (defaults to the environment variable AFT_LZA_CARD)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aft-lza-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    name: Read drift and report
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: aft-lza-drift
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    env:
+      AWS_ROLE_ARN: ${{ vars.AFT_LZA_DRIFT_ROLE_ARN }}
+      AWS_REGION: ${{ vars.AFT_LZA_HOME_REGION }}
+      AFT_LZA_CARD: ${{ inputs.card || vars.AFT_LZA_CARD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Install
+        run: npm ci
+
+      - name: Federated read-only identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${AWS_ROLE_ARN:?Set the aft-lza-drift environment variable AFT_LZA_DRIFT_ROLE_ARN to the read-only drift role}"
+          : "${AWS_REGION:?Set the aft-lza-drift environment variable AFT_LZA_HOME_REGION}"
+          : "${AFT_LZA_CARD:?Set the aft-lza-drift environment variable AFT_LZA_CARD (config/<card>.json)}"
+          umask 077
+          TOKEN_FILE="${RUNNER_TEMP}/aws-web-identity-token"
+          curl --fail --silent --show-error \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value' > "${TOKEN_FILE}"
+          echo "AWS_WEB_IDENTITY_TOKEN_FILE=${TOKEN_FILE}" >> "${GITHUB_ENV}"
+          echo "AWS_ROLE_SESSION_NAME=alz-aft-lza-drift-${GITHUB_RUN_ID}" >> "${GITHUB_ENV}"
+
+      - name: Detect drift (read-only)
+        id: drift
+        shell: bash
+        env:
+          AFT_LZA_GITHUB_TOKEN: ${{ secrets.AFT_LZA_GITHUB_READ_TOKEN }}
+        run: |
+          set -uo pipefail
+          aws sts get-caller-identity --query Arn --output text
+          code=0
+          npx tsx src/cli/aft-lza-drift.ts --card "${AFT_LZA_CARD}" \
+            --output .runs/qualification/aft-lza-drift.json --summary .runs/qualification/aft-lza-drift.md || code=$?
+          if [ -f .runs/qualification/aft-lza-drift.md ]; then cat .runs/qualification/aft-lza-drift.md >> "${GITHUB_STEP_SUMMARY}"; fi
+          echo "code=${code}" >> "${GITHUB_OUTPUT}"
+          case "${code}" in 0) v=IN_SYNC ;; 3) v=DRIFTED ;; 2) v=UNKNOWN ;; *) v=ERROR ;; esac
+          echo "verdict=${v}" >> "${GITHUB_OUTPUT}"
+
+      - name: Remove the web identity token
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/aws-web-identity-token"
+
+      - name: Upload the drift report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: aft-lza-drift-${{ github.run_id }}
+          path: |
+            .runs/qualification/aft-lza-drift.json
+            .runs/qualification/aft-lza-drift.md
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Open, update or close the drift issue
+        if: always() && steps.drift.outputs.verdict != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERDICT: ${{ steps.drift.outputs.verdict }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh label create aft-lza-drift --color B60205 --description "AFT/LZA drift detection" --force >/dev/null
+          issue="$(gh issue list --label aft-lza-drift --state open --json number --jq '.[0].number // empty')"
+          body="$(mktemp)"
+          { echo "Verdict: **${VERDICT}** — [run](${RUN_URL})"; echo; \
+            if [ -f .runs/qualification/aft-lza-drift.md ]; then cat .runs/qualification/aft-lza-drift.md; fi; } > "${body}"
+          if [ "${VERDICT}" = "IN_SYNC" ]; then
+            if [ -n "${issue}" ]; then gh issue close "${issue}" --comment "Back in sync — [run](${RUN_URL})"; fi
+          elif [ -n "${issue}" ]; then
+            gh issue comment "${issue}" --body-file "${body}"
+          else
+            gh issue create --title "AFT/LZA drift: ${VERDICT}" --label aft-lza-drift --body-file "${body}"
+          fi
+
+      - name: Fail unless in sync
+        if: steps.drift.outputs.code != '0'
+        run: |
+          echo "AFT/LZA drift verdict: ${{ steps.drift.outputs.verdict }} (exit ${{ steps.drift.outputs.code }})"
+          exit 1

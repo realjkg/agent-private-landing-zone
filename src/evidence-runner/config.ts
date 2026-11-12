@@ -10,7 +10,7 @@ import { ACT_PATHS, type ActPathId } from "./types.js";
  * the account, tenant and subscription each provider stage must find itself in. It never names a credential, a profile, a
  * key file or a token path, and a closed set of keys means one cannot be slipped in.
  */
-export type AwsTarget = { expectedAccountId: string; region: string; qualificationStack: string };
+export type AwsTarget = { expectedAccountId: string; region: string; qualificationStack: string; aftLzaCard?: string };
 export type AzureTarget = { expectedTenantId: string; expectedSubscriptionId: string; location: string };
 export type GcpTarget = { expectedProjectId: string; region: string };
 /**
@@ -58,7 +58,9 @@ const SECRET_LIKE = /^(AKIA|ASIA)[A-Z0-9]{16}$|^eyJ|[A-Za-z0-9+/=]{40,}/;
 const TOP_KEYS = new Set(["schemaVersion", "candidateCommit", "targetHardwareId", "evidenceDir", "aws", "azure", "gcp", "act"]);
 /** The only place evidence may go: git-ignored, so a run never dirties the checkout it is bound to. */
 export const EVIDENCE_ROOT = ".runs/evidence";
-const AWS_KEYS = new Set(["expectedAccountId", "region", "qualificationStack"]);
+const AWS_KEYS = new Set(["expectedAccountId", "region", "qualificationStack", "aftLzaCard"]);
+/** The AFT/LZA execution card: a JSON file under config/ (docs/aft-lza-act-workflow.md). Optional. */
+const CARD_PATH = /^config\/[A-Za-z0-9._-]{1,96}\.json$/;
 const AZURE_KEYS = new Set(["expectedTenantId", "expectedSubscriptionId", "location"]);
 const GCP_KEYS = new Set(["expectedProjectId", "region"]);
 const ACT_KEYS = new Set(["repository", "paths"]);
@@ -103,6 +105,7 @@ export function parseConfig(value: unknown): ConfigResult {
       field("config.aws.expectedAccountId", value.aws.expectedAccountId, ACCOUNT, "a 12-digit AWS account id");
       field("config.aws.region", value.aws.region, REGION, "an AWS region such as eu-west-1");
       field("config.aws.qualificationStack", value.aws.qualificationStack, STACK, "a CloudFormation stack name");
+      if (value.aws.aftLzaCard !== undefined) field("config.aws.aftLzaCard", value.aws.aftLzaCard, CARD_PATH, "a JSON file under config/, such as config/aft-lza-card.json");
     }
   }
   if (value.azure !== undefined) {
