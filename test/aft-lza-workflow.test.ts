@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, realpathSync } from "node:fs";
+import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 
 import { AwsCliReader, assertNoAmbientKeys, type AwsExec } from "../src/aft-lza/aws-reader.js";
@@ -158,8 +159,15 @@ test("recordMerge refuses a write the runner never offered and a changed digest"
 test("lost-aft-submission-response-reconciles and later processes reconcile instead of resubmitting (separate OS processes)", () => {
   const dir = join(realpathSync(mkdtempSync(join(tmpdir(), "alz-aftlza-proc-"))), "ops");
   const mod = resolve("src/aft-lza/operation-store.ts");
-  const child = (exitAfter: boolean) => spawnSync(process.execPath, ["--import", "tsx", "-e",
-    `import(${JSON.stringify(mod)}).then(({OperationStore})=>{const d=new OperationStore(${JSON.stringify(dir)}).beginEffect("pilot-001:aft-registration","${"c".repeat(64)}");process.stdout.write(d);${exitAfter ? "process.kill(process.pid,'SIGKILL');" : ""}})`], { encoding: "utf8" });
+  // A fixed child script; the module, directory and digest travel as arguments, never as generated code.
+  const script = join(dirname(dir), "child.mjs");
+  writeFileSync(script, [
+    "const [mod, dir, digest, kill] = process.argv.slice(2);",
+    "const { OperationStore } = await import(mod);",
+    "process.stdout.write(new OperationStore(dir).beginEffect('pilot-001:aft-registration', digest));",
+    "if (kill === 'kill') process.kill(process.pid, 'SIGKILL');",
+  ].join("\n"));
+  const child = (exitAfter: boolean) => spawnSync(process.execPath, ["--import", "tsx", script, pathToFileURL(mod).href, dir, "c".repeat(64), exitAfter ? "kill" : "stay"], { encoding: "utf8" });
   // The first process records intent and is killed before any receipt: the write may or may not have happened.
   const first = child(true);
   assert.equal(first.stdout, "EXECUTE_ONCE");

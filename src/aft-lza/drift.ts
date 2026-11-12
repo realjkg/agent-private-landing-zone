@@ -136,16 +136,19 @@ export function driftReport(card: AftLzaCard, obs: DriftObservations, at: string
 /** Exit codes for CI: 0 in sync, 3 drifted, 2 unknown (a signal could not be read), 1 error. */
 export const DRIFT_EXIT: Readonly<Record<DriftState, number>> = { IN_SYNC: 0, DRIFTED: 3, UNKNOWN: 2 };
 
+/** One Markdown table cell: backslashes first, then the characters that would end the cell, start code, or inject markup. */
+export const cell = (value: string): string => value.replace(/[\r\n]+/g, " ").replace(/[\\|`*_<>[\]]/g, (ch) => "\\" + ch);
+
 /** A short Markdown summary for a GitHub job summary or issue. Identifiers only; no credential is ever in a report. */
 export function driftMarkdown(report: DriftReport): string {
   const lines = [
     "## AFT/LZA drift: " + report.verdict,
     "",
-    "Run `" + report.runId + "`, card `" + report.cardDigest.slice(0, 12) + "`, observed " + report.observedAt + " (" + report.evidenceLabel + (report.callerArn ? ", as `" + report.callerArn + "`" : "") + ").",
+    "Run " + cell(report.runId) + ", card " + report.cardDigest.slice(0, 12) + ", observed " + cell(report.observedAt) + " (" + report.evidenceLabel + (report.callerArn ? ", as " + cell(report.callerArn) : "") + ").",
     "",
     "| State | Kind | Owner | Subject | Region | Detail |",
     "|---|---|---|---|---|---|",
-    ...report.findings.filter((f) => f.state !== "IN_SYNC").map((f) => "| " + [f.state, f.kind, f.owner, "`" + f.subject + "`", f.region ?? "", f.detail.replace(/\|/g, "\\|")].join(" | ") + " |"),
+    ...report.findings.filter((f) => f.state !== "IN_SYNC").map((f) => "| " + [f.state, f.kind, f.owner, cell(f.subject), cell(f.region ?? ""), cell(f.detail)].join(" | ") + " |"),
     "",
     report.counts.IN_SYNC + " in sync, " + report.counts.DRIFTED + " drifted, " + report.counts.UNKNOWN + " unknown. Detection only: each owner remediates through its own pipeline.",
   ];

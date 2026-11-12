@@ -107,6 +107,11 @@ test("the markdown summary lists only findings that need attention and escapes t
   assert.doesNotMatch(md, /\| IN_SYNC \|/);
   assert.match(md, /SYNTHETIC/);
   assert.match(md, /Detection only/);
+  // Untrusted text from AWS cannot break the table or inject markup: backslashes are escaped before pipes.
+  const hostile = driftMarkdown(driftReport(card, synced({ landingZone: { arn: "a\\|b`<img>\n| x", driftStatus: "DRIFTED" } }), "t", "SYNTHETIC"));
+  const row = hostile.split("\n").find((line) => line.startsWith("| DRIFTED | LANDING_ZONE"))!;
+  assert.ok(row.includes("a\\\\\\|b\\`\\<img\\> \\| x"), row);
+  assert.equal(row.split(/(?<!\\)\|/).length, 8, row);
 });
 
 test("collectDrift reads every signal and turns a failed read into UNKNOWN for that signal only", async () => {
@@ -134,7 +139,7 @@ test("collectDrift reads every signal and turns a failed read into UNKNOWN for t
   assert.deepEqual(report.findings.filter((f) => f.state !== "IN_SYNC").map((f) => [f.kind, f.region]), [["LZA_STACK", "us-west-2"]]);
   assert.ok(calls.includes("ou:" + OU));
   assert.equal(report.callerArn, "arn:aws:sts::000000000000:assumed-role/alz-aft-lza-drift/run");
-  assert.match(driftMarkdown(report), /as `arn:aws:sts::000000000000:assumed-role\/alz-aft-lza-drift\/run`/);
+  assert.match(driftMarkdown(report), /as arn:aws:sts::000000000000:assumed-role\/alz-aft-lza-drift\/run/);
 });
 
 test("the AWS reader issues only allow-listed read calls and maps Control Tower and CloudFormation drift", async () => {
@@ -198,4 +203,47 @@ test("the drift workflow is read-only, federated, pinned and not able to apply",
   assert.doesNotMatch(yml, /contents: write|pull-requests: write|alz apply|act-pilot-contract|detect-stack-drift/);
   for (const line of yml.split("\n").filter((l) => /^\s*(-\s*)?uses:/.test(l))) assert.match(line, /@[0-9a-f]{40} # v\d+/);
   assert.match(yml, /src\/cli\/aft-lza-drift\.ts/);
+});
+
+test("the drift CLI refuses static keys, missing identity and paths outside .runs, and writes a report it exits on", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync: read, realpathSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { runDriftCli } = await import("../src/cli/aft-lza-drift.js");
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "alz-drift-cli-")));
+  mkdirSync(join(root, "config"));
+  writeFileSync(join(root, "config", "card.json"), JSON.stringify({ ...card, lza: { ...card.lza, validatorEvidenceDigest: "b".repeat(64) } }));
+  const errors: string[] = [];
+  let lz = "IN_SYNC";
+  const readers = (): DriftReaders => ({
+    aws: {
+      async landingZone() { return { arn: "lz", driftStatus: lz }; },
+      async ouArn() { return "arn:ou"; },
+      async enabledOnOu() { return { baselines: [{ arn: "b", driftStatus: "IN_SYNC" }], controls: [] }; },
+      async lzaStacks(region) { return [{ region, stackName: "AWSAccelerator-SecurityStack", driftStatus: "IN_SYNC" }]; },
+      async findAccountByEmail() { return { lookup: "FOUND", account: { accountId: ID, parentOuId: OU } }; },
+      async pipelineExecutions(name) { return [run(name, name === "ct-aft-account-request" ? A : L)]; },
+    },
+    github: { async branchHead(repo) { return repo === "acme/lza-config" ? L : A; } },
+  });
+  const deps = (env: NodeJS.ProcessEnv) => ({ root, env, now: () => "2026-11-12T00:00:00.000Z", readers, log: () => {}, error: (line: string) => errors.push(line) });
+  const args = ["--card", "config/card.json", "--output", ".runs/q/drift.json", "--summary", ".runs/q/drift.md"];
+  const oidc = { AWS_ROLE_ARN: "arn:aws:iam::000000000000:role/r", AWS_WEB_IDENTITY_TOKEN_FILE: "/tmp/t" };
+
+  assert.equal(await runDriftCli(["--card", "config/card.json"], deps(oidc)), 1);
+  assert.equal(await runDriftCli(args, deps({ ...oidc, AWS_ACCESS_KEY_ID: "AKIA" })), 1);
+  assert.match(errors.at(-1)!, /AMBIENT_AWS_KEYS/);
+  assert.equal(await runDriftCli(args, deps({})), 2);
+  assert.match(errors.at(-1)!, /AFT_LZA_DRIFT_IDENTITY/);
+  assert.equal(await runDriftCli(["--card", "config/card.json", "--output", "../escape.json"], deps(oidc)), 1);
+  assert.equal(await runDriftCli(["--card", "config/card.json", "--output", ".runs/q/d.json", "--summary", "/tmp/x.md"], deps(oidc)), 1);
+  assert.match(errors.at(-1)!, /AFT_LZA_DRIFT_PATH/);
+
+  assert.equal(await runDriftCli(args, deps(oidc)), 0);
+  const report = JSON.parse(read(join(root, ".runs/q/drift.json"), "utf8"));
+  assert.equal(report.verdict, "IN_SYNC");
+  assert.equal(report.deploymentAuthorized, false);
+  lz = "DRIFTED";
+  assert.equal(await runDriftCli(args, { ...deps({ AWS_PROFILE: "sso" }) }), 3);
+  assert.match(read(join(root, ".runs/q/drift.md"), "utf8"), /DRIFTED \| LANDING_ZONE/);
 });
