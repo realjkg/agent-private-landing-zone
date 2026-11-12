@@ -8,9 +8,14 @@ import type { ControlObservation, PipelineObservation } from "./workflow.js";
  */
 export type AwsExec = (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
 
+/** How many recent executions are read per pipeline. */
+export const EXECUTION_WINDOW = 25;
+
 const READ_VERBS = new Set([
   "organizations list-accounts", "organizations list-parents", "codepipeline list-pipeline-executions",
   "controltower list-enabled-controls", "configservice describe-compliance-by-config-rule",
+  "controltower list-landing-zones", "controltower get-landing-zone", "controltower list-enabled-baselines",
+  "organizations describe-organizational-unit", "cloudformation describe-stacks", "sts get-caller-identity",
 ]);
 
 export function assertNoAmbientKeys(env: NodeJS.ProcessEnv): void {
@@ -32,7 +37,9 @@ export class AwsCliReader implements AftLzaReader {
   }
 
   async pipelineExecutions(pipelineName: string, region: string): Promise<PipelineObservation[]> {
-    const r = await this.call("codepipeline", "list-pipeline-executions", ["--pipeline-name", pipelineName, "--max-items", "25"], region);
+    const r = await this.call("codepipeline", "list-pipeline-executions", ["--pipeline-name", pipelineName, "--max-items", String(EXECUTION_WINDOW)], region);
+    // A denied read is not "no executions": callers would read it as never deployed.
+    if (r.denied) throw new Error("AWS_READ_DENIED: codepipeline list-pipeline-executions " + pipelineName);
     const rows = (r.value?.pipelineExecutionSummaries as Array<Record<string, unknown>> | undefined) ?? [];
     return rows.map((row) => ({
       pipelineName, executionId: String(row.pipelineExecutionId),
@@ -52,6 +59,53 @@ export class AwsCliReader implements AftLzaReader {
     if (p.denied) return { lookup: "ACCESS_DENIED" as const };
     const parent = ((p.value?.Parents as Array<Record<string, unknown>> | undefined) ?? [])[0];
     return { lookup: "FOUND" as const, account: { accountId: id, name: String(match[0]!.Name), email: String(match[0]!.Email), parentOuId: String(parent?.Id ?? ""), status: String(match[0]!.Status), evidence: "OBSERVED" as const } };
+  }
+
+  /** The identity the reads actually ran as, recorded in the report so it is bound to an account and role. */
+  async callerArn(): Promise<string | undefined> {
+    const r = await this.call("sts", "get-caller-identity", []);
+    return r.denied || typeof r.value?.Arn !== "string" ? undefined : r.value.Arn;
+  }
+
+  /** The landing zone and its drift status (Control Tower home Region). */
+  async landingZone(region: string): Promise<{ arn: string; driftStatus: string } | undefined> {
+    const list = await this.call("controltower", "list-landing-zones", [], region);
+    const arn = ((list.value?.landingZones as Array<Record<string, unknown>> | undefined) ?? [])[0]?.arn;
+    if (list.denied || typeof arn !== "string") return undefined;
+    const zone = await this.call("controltower", "get-landing-zone", ["--landing-zone-identifier", arn], region);
+    if (zone.denied) return undefined;
+    const status = ((zone.value?.landingZone as Record<string, unknown> | undefined)?.driftStatus as Record<string, unknown> | undefined)?.status;
+    return { arn, driftStatus: String(status ?? "UNKNOWN") };
+  }
+
+  async ouArn(ouId: string): Promise<string | undefined> {
+    const r = await this.call("organizations", "describe-organizational-unit", ["--organizational-unit-id", ouId]);
+    const arn = (r.value?.OrganizationalUnit as Record<string, unknown> | undefined)?.Arn;
+    return r.denied || typeof arn !== "string" ? undefined : arn;
+  }
+
+  /** Baselines and controls enabled on the OU, with Control Tower's drift summary. Undefined when unreadable. */
+  async enabledOnOu(ouArn: string, region: string): Promise<{ baselines?: Array<{ arn: string; driftStatus: string }>; controls?: Array<{ arn: string; driftStatus: string }> }> {
+    const drift = (row: Record<string, unknown>): string => {
+      const summary = (row.driftStatusSummary ?? {}) as Record<string, unknown>;
+      const inherited = ((summary.types as Record<string, unknown> | undefined)?.inheritance as Record<string, unknown> | undefined)?.status;
+      return String(summary.driftStatus ?? inherited ?? "UNKNOWN");
+    };
+    const b = await this.call("controltower", "list-enabled-baselines", ["--filter", JSON.stringify({ targetIdentifiers: [ouArn] })], region);
+    const c = await this.call("controltower", "list-enabled-controls", ["--target-identifier", ouArn], region);
+    return {
+      baselines: b.denied ? undefined : ((b.value?.enabledBaselines as Array<Record<string, unknown>> | undefined) ?? []).map((row) => ({ arn: String(row.arn ?? row.baselineIdentifier), driftStatus: drift(row) })),
+      controls: c.denied ? undefined : ((c.value?.enabledControls as Array<Record<string, unknown>> | undefined) ?? []).map((row) => ({ arn: String(row.arn ?? row.controlIdentifier), driftStatus: drift(row) })),
+    };
+  }
+
+  /** LZA's AWSAccelerator-* stacks in one Region with their last recorded drift status. Undefined when unreadable. */
+  async lzaStacks(region: string): Promise<Array<{ region: string; stackName: string; driftStatus: string }> | undefined> {
+    const r = await this.call("cloudformation", "describe-stacks", [], region);
+    if (r.denied) return undefined;
+    return ((r.value?.Stacks as Array<Record<string, unknown>> | undefined) ?? [])
+      .filter((stack) => String(stack.StackName).startsWith("AWSAccelerator-"))
+      .map((stack) => ({ region, stackName: String(stack.StackName), driftStatus: String((stack.DriftInformation as Record<string, unknown> | undefined)?.StackDriftStatus ?? "UNKNOWN") }));
   }
 
   /** AWS Config rule compliance per Region, read with the discovery identity's assumed audit view of the account. */

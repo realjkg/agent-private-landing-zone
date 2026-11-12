@@ -43,3 +43,59 @@ Tests are `SYNTHETIC`. A `LIVE` run's decision document is `LIVE_READ_ONLY` — 
 ## Gate status
 
 `act:aws-aft-lza` is defined by this workflow but **not yet** in `PRODUCTION_RELEASE_GATES`; adding it changes `config/release/status.json` and is an owner release decision.
+
+## Drift
+
+`./alz qualify aft-lza-drift --card config/aft-lza-card.json --output .runs/qualification/aft-lza-drift.json` reads the estate
+the card describes and reports every difference between the approved sources and what AWS reports
+(`src/aft-lza/drift.ts`). Detection only. It never starts a drift detection, never repairs, never re-runs a pipeline, and
+never authorizes anything. Each finding names the system that owns the fix:
+
+| Kind | Signal | Owner |
+|---|---|---|
+| `LANDING_ZONE` | Control Tower `get-landing-zone` `driftStatus` | Control Tower |
+| `BASELINE` | `list-enabled-baselines` `driftStatusSummary` on the card's OU (an OU with no baseline is UNKNOWN) | Control Tower |
+| `CONTROL` | `list-enabled-controls` `driftStatusSummary` on the card's OU | Control Tower |
+| `LZA_STACK` | CloudFormation `StackDriftStatus` of `AWSAccelerator-*` stacks in every card Region | LZA |
+| `ACCOUNT_PLACEMENT` | The account's parent OU against the card | LZA |
+| `LZA_UNDEPLOYED` | LZA configuration branch head (GitHub) against the last successful `AWSAccelerator-Pipeline` revision | LZA |
+| `AFT_UNDEPLOYED` | AFT request branch head (GitHub) against the last successful `ct-aft-account-request` revision | AFT |
+| `AFT_CUSTOMIZATION` | The latest `<account>-customizations-pipeline` execution | AFT |
+
+A signal that could not be read, or that AWS reports as `NOT_CHECKED`, `NOT_CHECKING` or `UNKNOWN`, is UNKNOWN, never IN_SYNC.
+DRIFTED outranks UNKNOWN in the verdict. A denied pipeline read is an error, not "no executions". When none of the last 25
+executions succeeded, the result is UNKNOWN rather than DRIFTED, because older history was not read. Exit codes are 0 for in
+sync, 3 for drifted, 2 for unknown, and 1 for an error. The report records the `sts get-caller-identity` ARN the reads ran as.
+
+Known limits:
+- `LZA_STACK` reads the stacks visible to the drift role's account (the LZA home account). Stacks LZA deploys into member
+  accounts need a per-account read role, which is not built yet.
+- `StackDriftStatus` is only as fresh as the last drift detection the owner ran. `NOT_CHECKED` is reported as UNKNOWN so it
+  stays visible.
+- The `AWSAccelerator-` prefix is LZA's default. A customized prefix is not supported yet.
+
+## GitHub Actions
+
+`.github/workflows/aft-lza-drift.yml` runs drift detection every six hours and on demand:
+
+- The workflow is `contents: read` at the top level. The job adds only `id-token: write`, for AWS OIDC, and `issues: write`,
+  for the drift issue. Every action is pinned by SHA.
+- It runs in the protected environment `aft-lza-drift`, with these settings:
+  - variables `AFT_LZA_DRIFT_ROLE_ARN` (the read-only role), `AFT_LZA_HOME_REGION` and `AFT_LZA_CARD` (`config/<card>.json`);
+  - optional secret `AFT_LZA_GITHUB_READ_TOKEN`, a read-only fine-grained token or GitHub App token for the LZA and AFT
+    repositories. Without it, the two `*_UNDEPLOYED` findings are UNKNOWN.
+- AWS access uses a web identity token file (`AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN`). No access keys are exported,
+  and the token file is deleted after the read.
+- It writes the job summary and uploads the JSON and Markdown report as an artifact. It opens or comments on one issue
+  labeled `aft-lza-drift` when the verdict is not IN_SYNC, and closes that issue when the estate is back in sync. The job
+  fails unless the verdict is IN_SYNC.
+
+The drift role's trust policy should pin `token.actions.githubusercontent.com:sub` to
+`repo:<owner>/<repo>:environment:aft-lza-drift`. Its permissions should be read-only:
+- `controltower:ListLandingZones`, `GetLandingZone`, `ListEnabledBaselines` and `ListEnabledControls`;
+- `organizations:DescribeOrganizationalUnit`, `ListAccounts` and `ListParents`;
+- `cloudformation:DescribeStacks`;
+- `codepipeline:ListPipelineExecutions`.
+
+Repairs stay with their owners: LZA through `AWSAccelerator-Pipeline`, AFT through its pipelines, and Control Tower through
+re-registering the OU or resetting the landing zone. Each repair is approved by a person.
