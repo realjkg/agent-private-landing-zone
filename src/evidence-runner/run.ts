@@ -12,6 +12,7 @@ import { Journal, JournalError, acquireRunLock, readJournal, stepRecord, type Jo
 import { authorizationState, contractEnablesPath, contractScope, identityHash, ownerInputs, runPreflight, type IdentityProbe, type Preflight } from "./preflight.js";
 import { readonlyStage, type StageResult } from "./readonly.js";
 import { stageFolder, type StageContext } from "./steps.js";
+import { aftLzaStage, loadCard } from "./aft-lza.js";
 import { summaryStage } from "./summary.js";
 import {
   ACT_PATH_NOT_AVAILABLE, DEFAULT_STAGES, EXIT, STAGES, isActStage, isCleanupStage, isGuidedStage, pathOfStage, stageSlice,
@@ -97,6 +98,14 @@ function planStage(stage: StageId, config: EvidenceRunnerConfig, preflight: Pref
     if (provider === "gcp") return { stage, outcome: "BLOCKED", code: "NO_PRODUCER", detail: "The project is verified; no read-only GCP inventory producer exists on main, so the stage reads nothing and stops." };
     return ready("Will run ./alz qualify provider-" + provider + " under the federated DISCOVERY identity, quietly, with its log in the run folder.");
   }
+  if (stage === "aws-aft-lza") {
+    if (!config.aws?.aftLzaCard) return { stage, outcome: "SKIPPED", code: "NOT_CONFIGURED", detail: "config.aws.aftLzaCard names no execution card." };
+    const identity = preflight.identities.find((check) => check.provider === "aws");
+    if (!identity || identity.status !== "PASS") return { stage, outcome: "BLOCKED", code: identity?.code ?? "AWS_IDENTITY", detail: identity?.detail ?? "No AWS DISCOVERY identity." };
+    const card = loadCard(root, config.aws.aftLzaCard);
+    if (!card.ok) return { stage, outcome: "BLOCKED", code: "OWNER_INPUT_AFT_LZA_CARD", detail: card.detail };
+    return ready("Will read the LZA and AFT pipelines, the account and the controls under the DISCOVERY identity, decide the next step, and ask you for each merge commit after you merge it. The runner merges nothing.");
+  }
   if (isActStage(stage) || isCleanupStage(stage)) {
     const path = pathOfStage(stage);
     const notAvailable = ACT_PATH_NOT_AVAILABLE[path];
@@ -150,6 +159,7 @@ async function runStage(ctx: StageContext, stage: StageId, plan: readonly GatePl
   if (stage === "aws-readonly") return readonlyStage(ctx, "aws");
   if (stage === "azure-readonly") return readonlyStage(ctx, "azure");
   if (stage === "gcp-readonly") return readonlyStage(ctx, "gcp");
+  if (stage === "aws-aft-lza") return aftLzaStage(ctx);
   if (isActStage(stage)) return actStage(ctx, pathOfStage(stage));
   if (isCleanupStage(stage)) return cleanupStage(ctx, pathOfStage(stage));
   if (stage === "recovery") return recoveryStage(ctx);

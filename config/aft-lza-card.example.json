@@ -1,0 +1,24 @@
+{
+  "_comment": "EXAMPLE ONLY. Not an authorization. Copy to config/aft-lza-card.json, replace every value, and name it in config.aws.aftLzaCard. The ACT pilot contract (config/act-pilot-contract.json) is owner-written and separate.",
+  "runId": "pilot-001",
+  "organizationId": "o-REPLACEWITH0",
+  "homeRegion": "us-east-1",
+  "regions": ["us-east-1", "us-west-2"],
+  "account": { "name": "REPLACE-WITH-account-name", "email": "REPLACE-WITH-unique@example.com", "ouId": "ou-REPLACE-WITHOUID" },
+  "lza": {
+    "repository": "REPLACE-WITH-owner/lza-config",
+    "baseBranch": "main",
+    "pipelineName": "AWSAccelerator-Pipeline",
+    "configurationDigest": "REPLACE-WITH-intake-bundle-sha256",
+    "validatorEvidenceDigest": "REPLACE-WITH-validator-evidence-sha256"
+  },
+  "aft": {
+    "repository": "REPLACE-WITH-owner/aft-account-request",
+    "baseBranch": "main",
+    "requestPipelineName": "ct-aft-account-request",
+    "requestDigest": "REPLACE-WITH-account-request-sha256",
+    "requestedName": "REPLACE-WITH-account-name",
+    "requestedEmail": "REPLACE-WITH-unique@example.com"
+  },
+  "disposition": "RETAIN"
+}
