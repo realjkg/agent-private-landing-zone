@@ -40,12 +40,28 @@ jobs:
       AFT_LZA_CARD: ${{ inputs.card || vars.AFT_LZA_CARD }}
 
     steps:
+      - name: Check configuration
+        id: config
+        shell: bash
+        run: |
+          missing=""
+          [ -n "${AWS_ROLE_ARN}" ] || missing="${missing} AFT_LZA_DRIFT_ROLE_ARN"
+          [ -n "${AWS_REGION}" ] || missing="${missing} AFT_LZA_HOME_REGION"
+          [ -n "${AFT_LZA_CARD}" ] || missing="${missing} AFT_LZA_CARD"
+          if [ -n "${missing}" ]; then
+            echo "::warning title=AFT/LZA drift detection skipped::Set the aft-lza-drift environment variables:${missing}"
+            echo "configured=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "configured=true" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Node
+        if: steps.config.outputs.configured == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "26"
@@ -54,9 +70,11 @@ jobs:
           package-manager-cache: false
 
       - name: Install
+        if: steps.config.outputs.configured == 'true'
         run: npm ci
 
       - name: Federated read-only identity
+        if: steps.config.outputs.configured == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -72,6 +90,7 @@ jobs:
           echo "AWS_ROLE_SESSION_NAME=alz-aft-lza-drift-${GITHUB_RUN_ID}" >> "${GITHUB_ENV}"
 
       - name: Detect drift (read-only)
+        if: steps.config.outputs.configured == 'true'
         id: drift
         shell: bash
         env:
@@ -88,11 +107,11 @@ jobs:
           echo "verdict=${v}" >> "${GITHUB_OUTPUT}"
 
       - name: Remove the web identity token
-        if: always()
+        if: always() && steps.config.outputs.configured == 'true'
         run: rm -f "${RUNNER_TEMP}/aws-web-identity-token"
 
       - name: Upload the drift report
-        if: always()
+        if: always() && steps.config.outputs.configured == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: aft-lza-drift-${{ github.run_id }}
