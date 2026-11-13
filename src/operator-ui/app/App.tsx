@@ -31,6 +31,7 @@ import { useRoute } from "./route";
 // Reference (connectors and compliance detail) is its own chunk: it downloads
 // when that area opens, not with the first paint.
 const ReferenceView = lazy(() => import("./components/ReferenceView"));
+const AwsDevJourney = lazy(() => import("./components/AwsDevJourney"));
 // The pilot wizard is its own chunk too: it downloads when the area opens. It reaches the server only through its own token-guarded routes.
 const PilotWizard = lazy(() => import("./pilot/PilotWizard"));
 
@@ -205,6 +206,8 @@ export function OperatorApp(props: OperatorAppProps) {
         )}
         {view === "home" && (
           <>
+            <p className="panel"><a href="#aws-dev">Start with AWS DEV</a>{" "}
+              — check private models, rehearse one AWS workflow, then prepare your development account.</p>
             {/* Conditional rendering (not CSS hiding) keeps the D1 ceiling literal:
                 at Beginner the advanced/expert markup does not exist in the tree. */}
             {level === "BEGINNER" && (
@@ -256,6 +259,22 @@ export function OperatorApp(props: OperatorAppProps) {
             {level !== "BEGINNER" && evidenceFor(null)}
             <Arrive route={route} titleId="operations-title" />
           </>
+        )}
+        {view === "aws-dev" && (
+          <Suspense fallback={<p role="status" className="loading">Loading AWS DEV setup…</p>}>
+            <AwsDevJourney
+              modelAvailability={modelAvailability}
+              scenarioAvailable={props.scenarioIds.includes("terraform-aws-brownfield")}
+              busy={running}
+              sessionUnavailable={sessionUnavailable}
+              jobState={jobState}
+              error={formError}
+              showTechnicalDetails={level !== "BEGINNER"}
+              onRecheckModels={recheckModels}
+              onLaunch={launch}
+            />
+            <Arrive route={route} titleId="aws-dev-title" />
+          </Suspense>
         )}
         {view === "pilot" && (
           <Suspense fallback={<p role="status" className="loading">Loading the pilot wizard…</p>}>

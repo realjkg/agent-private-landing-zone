@@ -129,3 +129,7 @@ Regenerate with `npm run docs:ops`; a test fails if this table is stale.
 | Enterprise libraries | Validate an environment provider | `./alz enterprise environment` | READ_ONLY | Run | OFFLINE CHECK OF PASTED JSON — NOTHING EXECUTED, NO CLOUD ACCESS, NO AUTHORITY GRANTED; NO REQUEST IS SENT TO THE ENVIRONMENT |
 | Enterprise libraries | Show knowledge source status | `./alz enterprise knowledge` | READ_ONLY | Run | BUILT-IN CATALOG, OFFLINE — NOTHING FETCHED, RUN OR QUALIFIED HERE; A PASTED SNAPSHOT IS CHECKED, NOT INGESTED |
 <!-- operations:end -->
+
+## Conversational AWS cost reads
+
+Start `./alz session aws` with an authenticated IAM Identity Center profile to ask “How much did KMS and EC2 cost last month by usage type?” or “List tags on KMS keys and EC2 volumes.” These are live AWS read-only session commands, not browser operations. Cost Explorer is scoped to the STS caller account; tag inventory is regional and includes only previously tagged resources. Neither command grants destroy authority. See [AWS cost commands](aws-cost-agent-commands.md) for sign-in and scope details.

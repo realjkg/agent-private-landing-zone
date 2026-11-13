@@ -55,7 +55,9 @@ const COST_STATUS_READS: Record<string, string> = {
   aws_bcm_get_export: "bcm-data-exports:GetExport",
   aws_bcm_list_executions: "bcm-data-exports:ListExecutions",
   aws_ce_list_cost_allocation_tags: "ce:ListCostAllocationTags",
+  aws_ce_get_cost_and_usage: "ce:GetCostAndUsage",
   aws_tagging_get_resources: "tag:GetResources",
+  aws_tagging_get_resources_by_type: "tag:GetResources",
 };
 const COST_STATUS_READS_LIST = [...new Set(Object.values(COST_STATUS_READS))];
 /**
@@ -164,7 +166,7 @@ test("cost status: each broker cost read has its allow, the group records scope 
   assert.deepEqual(Object.keys(COST_STATUS_READS).sort(), [...AWS_COST_READ_TOOLS].sort(), "every cost read tool has a recorded IAM action");
   for (const action of COST_STATUS_READS_LIST) assert.ok(allow.includes(action), "allowed: " + action);
   const group = policy.allow.costStatus!;
-  assert.deepEqual([...group.actions].sort(), ["bcm-data-exports:GetExport", "bcm-data-exports:ListExecutions", "bcm-data-exports:ListExports", "budgets:ViewBudget", "ce:ListCostAllocationTags"]);
+  assert.deepEqual([...group.actions].sort(), ["bcm-data-exports:GetExport", "bcm-data-exports:ListExecutions", "bcm-data-exports:ListExports", "budgets:ViewBudget", "ce:GetCostAndUsage", "ce:ListCostAllocationTags"]);
   assert.match(group.scope ?? "", /subscriber addresses/);
   assert.match(group.scope ?? "", /never the exported data/);
   assert.match(group.purpose ?? "", /never gates ACT/);

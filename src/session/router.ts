@@ -1,4 +1,5 @@
 import { loadConfig } from "../config.js";
+import type { Provider } from "../discovery/types.js";
 import {
   invokeLocalModel,
   STRUCTURED_MODEL_OPTIONS,
@@ -75,9 +76,10 @@ export async function routeSessionRequest(
   history: SessionTurn[],
   fixture: boolean,
   progress: (message: string) => void = () => {},
+  provider?: Provider,
 ): Promise<SessionCommand> {
   const deterministic =
-    classifySessionCommand(request);
+    classifySessionCommand(request, provider);
 
   if (
     deterministic !== "RUN" ||

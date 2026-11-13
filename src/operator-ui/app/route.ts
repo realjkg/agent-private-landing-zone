@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 
 /**
- * The console's three areas, addressed by hash so the back button, bookmarks
+ * The console's areas, addressed by hash so the back button, bookmarks
  * and the in-page links the cards already use (`#evidence`) keep working. The
  * hash selects what is shown; it never carries data and the server never sees it.
  */
-export type View = "home" | "operations" | "pilot" | "reference";
+export type View = "home" | "aws-dev" | "operations" | "pilot" | "reference";
 
 export type Route = {
   view: View;
@@ -17,6 +17,7 @@ export type Route = {
 
 const VIEW_OF_HASH: Readonly<Record<string, View | "current">> = {
   home: "home",
+  "aws-dev": "aws-dev",
   workflow: "home",
   operations: "operations",
   pilot: "pilot",

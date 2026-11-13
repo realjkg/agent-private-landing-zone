@@ -8,7 +8,7 @@ The governing statement: *the operator authorizes the preview, the driver enforc
 
 A human-invoked, preview-only driver. A person selects the exact target and asks for the operation; the driver validates, runs one engine adapter on a private snapshot, and returns redacted evidence. Destroy preview (`runDestroyPreview`) is a separate operation from ordinary preview (`runPreview`); neither is a mode of the other.
 
-It is **not** reachable by an agent. It is not in the tool broker (`src/tools/broker.ts`, `SAFE_TOOLS`, `ToolName` are untouched, the 39-tool allowlist snapshot still passes, and a test checks that nothing under `src/tools` refers to the driver). The invocation record below is how a caller claims a person is at the keyboard; the CLI builds it from a terminal prompt. That is a reduction of risk, not proof of a human: see Limits, "The human record".
+It is **not** reachable by an agent. It is not in the tool broker (`src/tools/broker.ts`, `SAFE_TOOLS`, `ToolName`); the broker allowlist snapshot remains read-only, and a test checks that nothing under `src/tools` refers to the driver. The invocation record below is how a caller claims a person is at the keyboard; the CLI builds it from a terminal prompt. That is a reduction of risk, not proof of a human: see Limits, "The human record".
 
 ## The contract
 
@@ -244,7 +244,7 @@ Be exact about these.
 
 ## Human invocation
 
-`./alz teardown destroy-preview-run` (destroy preview) and `./alz teardown preview-run` (ordinary preview) are the only entry to the driver. They are separate operations, as in the core. The code is `src/cli/teardown-driver.ts`; `src/cli/teardown.ts` dispatches to it. It is not a broker tool, and the console server, `src/operator-ui/**`, `src/agent/**` and `src/tools/**` do not import or mention it (a test scans them, and the 39-tool allowlist is unchanged). The operation catalog (`src/operations/**`) names the two commands only as handoff text and never runs them; its evidence viewer script (`src/cli/teardown-review.ts`) imports exactly one pure validator from `src/teardown/driver/evidence.ts` (a test pins that single import) and starts no driver code. The viewer requires every field of the evidence shape, a valid operation and an authority block equal to the driver's own.
+`./alz teardown destroy-preview-run` (destroy preview) and `./alz teardown preview-run` (ordinary preview) are the only entry to the driver. They are separate operations, as in the core. The code is `src/cli/teardown-driver.ts`; `src/cli/teardown.ts` dispatches to it. It is not a broker tool, and the console server, `src/operator-ui/**`, `src/agent/**` and `src/tools/**` do not import or mention it (a test scans them, and the broker allowlist remains read-only). The operation catalog (`src/operations/**`) names the two commands only as handoff text and never runs them; its evidence viewer script (`src/cli/teardown-review.ts`) imports exactly one pure validator from `src/teardown/driver/evidence.ts` (a test pins that single import) and starts no driver code. The viewer requires every field of the evidence shape, a valid operation and an authority block equal to the driver's own.
 
 ```
 ./alz teardown destroy-preview-run --request REQUEST.json --manifest MANIFEST.json \

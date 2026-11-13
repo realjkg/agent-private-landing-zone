@@ -42,6 +42,7 @@ import {
 } from "./help.js";
 import { decidePilotTurn } from "./pilot-gate.js";
 import { disableHostedTracing } from "./hosted-tracing.js";
+import { discoverCostResourceTags, queryAwsCosts } from "../cost/agent-queries.js";
 import {
   answerPilotQuery,
   localModelExplainer,
@@ -150,6 +151,7 @@ async function sessionNode(
         state.history ?? [],
         state.fixture,
         progress,
+        state.provider,
       );
 
   if (command === "PILOT_HANDOFF") {
@@ -168,6 +170,26 @@ async function sessionNode(
           response,
         },
       ],
+    };
+  }
+
+  if (command === "COST_UNSUPPORTED") {
+    const response = "Live cost and tag queries support AWS only. Specify AWS explicitly or use an AWS session for an unqualified request. No AWS calls were made.";
+    return { response, history: [{ at: new Date().toISOString(), request: state.request, command, response }] };
+  }
+
+  if (command === "COST_QUERY" || command === "COST_INVENTORY") {
+    if (state.fixture) {
+      const response = "Live AWS cost and tag queries are unavailable in fixture sessions. Start a live local session with an authenticated AWS profile; no AWS calls were made.";
+      return { response, history: [{ at: new Date().toISOString(), request: state.request, command, response }] };
+    }
+    progress(command === "COST_QUERY" ? "Querying AWS Cost Explorer (read-only)…" : "Discovering AWS cost-resource tags (read-only)…");
+    const response = command === "COST_QUERY"
+      ? await queryAwsCosts(state.request)
+      : await discoverCostResourceTags(state.request);
+    return {
+      response,
+      history: [{ at: new Date().toISOString(), request: state.request, command, response }],
     };
   }
 
