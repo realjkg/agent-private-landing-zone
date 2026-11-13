@@ -30,7 +30,7 @@ Recovery declares intent. It does not create a second policy engine.
 
 The existing security policy interface decides whether work is allowed. The existing capability, data-handling and egress gates enforce that decision. Existing typed adapters perform bounded work. Evidence proves what happened.
 
-Models may explain, compare, summarize and recommend. Models are never the source of authority.
+Models may explain, compare, summarize and recommend. Agents and subagents running the local models orchestrate the journeys (see "Agent and subagent orchestration"). Models are never the source of authority.
 
 ACT = DISABLED is the repository default. The one owner-approved exception is the internal reference-build pilot, enabled only by the owner's reviewed commit of the pilot contract and its `authorize` entry (`docs/act-pilot-plan.md`) and run only by a person, at the terminal or in the console's Pilot apply wizard, one channel per workflow (`docs/act-pilot-walkthrough.md`).
 
@@ -454,9 +454,65 @@ An App Landing Zone can introduce application-specific target schemas and adapte
 
 No App Landing Zone maturity claim should be made until those contracts are implemented and tested.
 
+## Agent and subagent orchestration
+
+Orchestration is done by agents and subagents with skills, running the required local models in LangChain and LangGraph. This is the operating model for every journey: discovery, design, preview, ACT preparation, drift and recovery. It is not an exception to the rules below. Agents orchestrate; people authorize; the deterministic engine enforces.
+
+**One orchestrator, one engine.** A supervisor agent owns the task envelope and routes bounded work to subagents. Subagents are roles inside the same engine, not a second system and not a distributed fabric (see "Thin sovereign orchestrator").
+
+**Runtime.** LangChain and LangGraph ship in the distribution. The conversational session is a LangGraph `StateGraph` with a SQLite checkpointer (`src/session/graph.ts`), so a session resumes by thread id after a restart. The same scenarios run through the direct path and the LangGraph path and must converge (`src/qualification/private-agent-matrix.ts`).
+
+**Required local models.** These are served by Ollama on loopback (`OLLAMA_BASE_URL`, default `http://127.0.0.1:11434`) and pinned by manifest digest (`src/models/digest-pins.ts`, `./alz models verify`):
+
+| Role | Default model | Setting |
+|---|---|---|
+| Supervisor / router, and adjudicator | `qwen3:1.7b` | `ROUTER_MODEL` |
+| Primary engineering reasoning | `qwen3:4b` | `PRIMARY_MODEL` |
+| Independent validator | `mistral-nemo:12b` | `VALIDATOR_MODEL` |
+
+Private estate data is reasoned over by these local models only. A hosted model or tracing service never receives it (`test/session-hosted-tracing.test.ts`). When a required model is missing, the session says so and offers the labeled offline rehearsal. It never silently substitutes another model. When the validator disagrees beyond `DISAGREEMENT_THRESHOLD`, or the adjudicator returns ABSTAIN, the result is BLOCKED with its reason, never a pass (`docs/model-qualification-abstain.md`).
+
+**Subagents.** Subagent roles are INVENTORY, PLAN, DESIGN, POLICY, IAC, VERIFY and OPERATE (`src/integrations/ai-studio/subagent-routing.ts`). The specialist agents (Discovery, Security, Cost, Resiliency, Reliability, Performance, Sustainability, Architecture, Build, Validator) work under those roles. Every role is granted read, assessment or preview capabilities only. The dispatcher grants no mutation.
+
+**Skills.** A skill is a reviewed, versioned instruction set together with the read and preview operations it may call. Skills in the repository:
+- `.claude/skills/act-pilot`, `review` and `steward`;
+- the GitHub agent profiles `.github/agents/qa.agent.md` and `independent-review.agent.md`.
+
+A hosted harness (for example AI Studio, Claude Code or GitHub Copilot) may be the outer orchestrator and reuse its own skills and connectors (`docs/ai-studio-private-subagents.md`). It reaches ALZ only through the governed operations and MCP interface, and the reasoning over private data stays on the local models.
+
+**What agents orchestrate end to end:**
+- discovery and inventory;
+- intent compilation;
+- drafting the target, the AFT/LZA card and the pilot contract for the owner to review;
+- `contract-check`, `preflight` and `status`;
+- read-only qualification;
+- plan preview, and preparing the seal;
+- drift detection (`./alz qualify aft-lza-drift` and the `aft-lza-drift` workflow);
+- collecting and reviewing evidence;
+- recovery planning;
+- telling the person the exact next step.
+
+**Where orchestration stops.** The authority points belong to a person and are never delegated to an agent:
+- signing the request and the approval with the person's own Ed25519 key, and typing the bound phrases, in the terminal or in the console's Pilot apply wizard. In DEV and QA one person may hold both the requester and the approver role (`REQUESTER_MAY_APPROVE`); PROD needs three distinct people;
+- committing `config/act-pilot-contract.json` and its `authorize` entry;
+- merging an LZA or AFT change;
+- starting an apply, a cleanup or a removal.
+
+An agent never holds the key, the console session token or a cloud credential. A chat message is never an approval. The journey is therefore: agents prepare in the conversation, the person signs and acts in the wizard or the terminal, and agents verify the evidence and watch for drift afterwards.
+
+**Built today and target.**
+
+| Capability | State |
+|---|---|
+| LangGraph session with checkpointed state; local router, primary and validator models; digest pins | Implemented |
+| Direct and LangGraph paths converging in the qualification matrices | Implemented (SYNTHETIC fixtures) |
+| Subagent role admission (read or preview only, no mutation) | Implemented as a pure admission contract (`subagent-routing.ts`) |
+| Subagents as separate LangGraph nodes, each with its own skill and tool grants | Target: the session graph is one node today |
+| Hosted harness reaching the private ALZ over authenticated MCP | Target: not yet proven (`docs/ai-studio-private-subagents.md`) |
+
 ## Thin sovereign orchestrator
 
-The orchestrator coordinates specialist work but is not a distributed multi-agent fabric.
+The orchestrator coordinates specialist work but is not a distributed multi-agent fabric. Agents and subagents run inside it (see "Agent and subagent orchestration").
 
 Its stable responsibilities are:
 

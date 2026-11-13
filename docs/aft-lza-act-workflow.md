@@ -23,6 +23,7 @@ Disposition is **RETAIN**. Removal (AFT first, then LZA) is out of scope. Drift 
 | Actor | May | Never |
 |---|---|---|
 | Runner (`aws-aft-lza`) | Read pipelines, account and controls under the federated DISCOVERY identity; decide; journal intent; ask for a merge commit | Merge, start a pipeline, invoke a Step Function, hold a credential, write the pilot contract |
+| Orchestrating agents (LangGraph, local models, skills) | Draft the card and the LZA and AFT changes for review; run the stage and drift detection; explain the next step | Merge, sign, type a phrase, start a pipeline, hold a key or credential |
 | Person at the terminal | Merge each approved change; type the merge commit; run the scoped re-invocation | — |
 | Owner | Write `config/act-pilot-contract.json` and its authorization | — |
 
