@@ -58,9 +58,9 @@ function writeRunConfig(root: string, commit: string): void {
   write(root, "config/evidence-runner.json", JSON.stringify(validConfig({ candidateCommit: commit }), null, 2));
 }
 
-function journalLine(commit: string, stage: string, event: "start" | "finish", outcome?: string, code?: string): string {
+function journalLine(commit: string, stage: string, event: "start" | "finish", outcome?: string, code?: string, label: "LIVE" | "SYNTHETIC" = "LIVE"): string {
   return JSON.stringify({
-    schemaVersion: 1, sourceCommit: commit, configSha256: "0".repeat(64), targetHardwareId: "owner-mac-01", label: "SYNTHETIC",
+    schemaVersion: 1, sourceCommit: commit, configSha256: "0".repeat(64), targetHardwareId: "owner-mac-01", label,
     host: "host", identityHash: "0".repeat(64), stage, step: stage, event, at: "2026-11-13T10:00:00Z", pid: 1234,
     ...(outcome ? { outcome } : {}), ...(code ? { code } : {}),
   });
@@ -289,4 +289,100 @@ test("the LZA/AFT change and cleanup are blocked, not judged done, because the r
   assert.equal(step(flow, "change").code, "NO_LZA_CHANGE_STAGE");
   assert.equal(step(flow, "cleanup").code, "NO_LZA_CLEANUP_STAGE");
   assert.notEqual(flow.next, "change");
+});
+
+// --- Simulated end to end, both paths. Simulation is rehearsal only: a simulated run is never pilot evidence, and the flow
+// never counts it as done for the change or the cleanup. Nothing here reaches AWS or a model.
+
+function writeSimulatedJournal(root: string, commit: string, lines: string[]): void {
+  write(root, ".runs/evidence/synthetic/" + commit.slice(0, 12) + "/journal.jsonl", lines.join("\n") + "\n");
+}
+
+for (const path of ["terraform", "lza-aft"] as const) {
+  test(path + ": a simulated walkthrough reaches the change step and never counts a simulated run as done", () => {
+    const { root, head } = checkout();
+    // 1. The owner's artifact is committed first, so every later artifact names the final commit.
+    if (path === "terraform") {
+      write(root, "config/act-pilot-contract.json", contract());
+    } else {
+      write(root, LZA_CARD, LZA_CARD_TEXT);
+    }
+    commitAll(root, "owner artifact");
+    const commit = head();
+
+    // 2. Build at the final commit: the next open step is the rehearsal.
+    markBuilt(root, commit);
+    let flow = readFlow({ root, env: {}, path });
+    assert.equal(flow.path, path);
+    assert.equal(flow.next, "rehearse");
+
+    // 3. Simulated rehearsal. Terraform needs one scenario; LZA/AFT needs both engines.
+    passingMatrixFor(root, "terraform-aws-brownfield", commit);
+    flow = readFlow({ root, env: {}, path });
+    if (path === "lza-aft") {
+      assert.equal(step(flow, "rehearse").state, "NEXT");
+      passingMatrixFor(root, "cdk-aws-brownfield", commit);
+      flow = readFlow({ root, env: {}, path });
+    }
+    assert.equal(step(flow, "rehearse").state, "DONE");
+
+    // 4. Describe the run at this commit. The run config is the owner's, and it is ignored by git.
+    if (path === "terraform") writeRunConfig(root, commit);
+    else lzaRunConfig(root, commit);
+    flow = readFlow({ root, env: {}, path });
+    assert.equal(step(flow, "authorize").state, "DONE");
+    assert.equal(step(flow, "describe").state, "DONE");
+    if (path === "terraform") {
+      assert.equal(step(flow, "change").state, "NEXT");
+      assert.equal(step(flow, "change").code, "NOT_APPLIED");
+      assert.equal(flow.next, "change");
+    } else {
+      assert.equal(step(flow, "change").state, "BLOCKED");
+      assert.equal(step(flow, "change").code, "NO_LZA_CHANGE_STAGE");
+    }
+
+    // 5. A simulated run is written where simulations go, with label SYNTHETIC. The flow never reads that folder for done-state.
+    writeSimulatedJournal(root, commit, [
+      journalLine(commit, "act:" + ACT_PATH, "start", undefined, undefined, "SYNTHETIC"),
+      journalLine(commit, "act:" + ACT_PATH, "finish", "PASS", undefined, "SYNTHETIC"),
+      journalLine(commit, "cleanup:" + ACT_PATH, "start", undefined, undefined, "SYNTHETIC"),
+      journalLine(commit, "cleanup:" + ACT_PATH, "finish", "PASS", undefined, "SYNTHETIC"),
+    ]);
+    flow = readFlow({ root, env: {}, path });
+    assert.notEqual(step(flow, "change").state, "DONE");
+    assert.notEqual(step(flow, "cleanup").state, "DONE");
+
+    // 6. A simulated record that lands in the live journal is blocked, not counted.
+    writeJournal(root, commit, [
+      journalLine(commit, "act:" + ACT_PATH, "start", undefined, undefined, "SYNTHETIC"),
+      journalLine(commit, "act:" + ACT_PATH, "finish", "PASS", undefined, "SYNTHETIC"),
+    ]);
+    flow = readFlow({ root, env: {}, path });
+    if (path === "terraform") {
+      assert.equal(step(flow, "change").state, "BLOCKED");
+      assert.equal(step(flow, "change").code, "SIMULATED_IN_LIVE_JOURNAL");
+    } else {
+      assert.equal(step(flow, "change").code, "NO_LZA_CHANGE_STAGE");
+    }
+    assert.notEqual(step(flow, "cleanup").state, "DONE");
+  });
+}
+
+test("a live PASS for the change and cleanup is the only thing that marks them done (Terraform)", () => {
+  const { root, head } = checkout();
+  write(root, "config/act-pilot-contract.json", contract());
+  commitAll(root, "owner artifact");
+  const commit = head();
+  markBuilt(root, commit);
+  passingMatrixFor(root, "terraform-aws-brownfield", commit);
+  writeRunConfig(root, commit);
+  writeJournal(root, commit, [
+    journalLine(commit, "act:" + ACT_PATH, "start"),
+    journalLine(commit, "act:" + ACT_PATH, "finish", "PASS"),
+    journalLine(commit, "cleanup:" + ACT_PATH, "start"),
+    journalLine(commit, "cleanup:" + ACT_PATH, "finish", "PASS"),
+  ]);
+  const flow = readFlow({ root, env: {}, path: "terraform" });
+  assert.equal(step(flow, "change").state, "DONE");
+  assert.equal(step(flow, "cleanup").state, "DONE");
 });

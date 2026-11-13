@@ -354,8 +354,17 @@ function runJournal(root: string): RunJournal {
 function judgeStage(root: string, stage: StageId, done: { code: string; detail: string }, missing: { code: string; detail: string }): Judged {
   const journal = runJournal(root);
   if (!journal.ok) return { state: journal.blocked ? "BLOCKED" : "NEXT", code: journal.code, detail: journal.detail };
-  const rec: StepRecord = stepRecord(journal.lines, stage, stage);
   const where = relative(root, journal.path);
+  // Only a LIVE record can be pilot evidence. A simulated record never makes a step DONE, even if one lands in the live journal.
+  const live = journal.lines.filter((line) => line.label === "LIVE");
+  const simulated = journal.lines.some((line) => line.stage === stage && line.label !== "LIVE");
+  if (simulated && !live.some((line) => line.stage === stage)) {
+    return {
+      state: "BLOCKED", code: "SIMULATED_IN_LIVE_JOURNAL",
+      detail: "A simulated run is recorded in the live journal at " + where + ". The flow does not count it; the stage must be run live.",
+    };
+  }
+  const rec: StepRecord = stepRecord(live, stage, stage);
   if (rec.status === "FINISHED" && rec.outcome === "PASS") return { state: "DONE", ...done };
   if (rec.status === "FINISHED") {
     const reason = rec.code ? " (" + rec.code + ")" : "";
