@@ -46,7 +46,7 @@ const CLEANUP_STAGE: StageId = `cleanup:${ACT_PATH}`;
 const CONTRACT = "config/act-pilot-contract.json";
 const DRIFT_REPORT = ".runs/qualification/aft-lza-drift.json";
 /** A drift report older than this is not evidence that the watch is running. The scheduled workflow runs every six hours. */
-const DRIFT_REPORT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const DRIFT_REPORT_MAX_AGE_MS = 8 * 60 * 60 * 1000;
 const TERMINAL_ONLY = "Not in the browser: run the terminal command. The console shows this step on its Flow card but never runs it.";
 const CHAT_READS = "Ask “where am I in the flow?”; the session reads this step's state and names the command. It never runs the step.";
 
@@ -308,7 +308,7 @@ function judgeWatch(root: string, now: number): Judged {
   }
   return {
     state: "DONE", code: "DRIFT_REPORT_FRESH",
-    detail: "A local drift report from the last 12 hours exists. It does not show that the scheduled GitHub Actions run passed.",
+    detail: "A local drift report from the last 8 hours exists. It does not show that the scheduled GitHub Actions run passed.",
   };
 }
 

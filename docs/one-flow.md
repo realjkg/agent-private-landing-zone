@@ -50,7 +50,7 @@ What counts as DONE:
 | Describe | `config/evidence-runner.json` loads and names HEAD as its candidate. |
 | Make the change | The journal's last finish for `act:aws-terraform` is PASS. |
 | Clean up | The journal's last finish for `cleanup:aws-terraform` is PASS. |
-| Watch | A local drift report exists and was written in the last 12 hours. |
+| Watch | A local drift report exists and was written in the last 8 hours. |
 
 ## Known limits
 
