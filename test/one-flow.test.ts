@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 
-import { ACT_PATH, FLOW, readFlow, type FlowStatus, type StepId, type StepStatus } from "../src/flow/one-flow.js";
-import { validConfig } from "./helpers/evidence-fixtures.js";
+import { ACT_PATH, FLOW, LZA_CARD, flowFor, readFlow, type FlowStatus, type StepId, type StepStatus } from "../src/flow/one-flow.js";
+import { ACCOUNT, validConfig } from "./helpers/evidence-fixtures.js";
 
 // SYNTHETIC: throwaway git checkouts under the OS temp folder. Nothing here reaches a cloud, a model or a real account.
 
@@ -214,4 +214,79 @@ test("the flow has one step per name in the documented order, and every need is 
   for (const item of FLOW) {
     assert.ok(item.actions.terminal.length > 0 && item.actions.browser.length > 0 && item.actions.chat.length > 0, item.id);
   }
+});
+
+// --- The LZA/AFT path: LZA is CDK/CloudFormation, the AFT customizations are Terraform. The runner has no LZA/AFT change stage yet.
+
+const LZA_CARD_TEXT = JSON.stringify({ runId: "pilot-001", lza: { repository: "owner/lza-config" }, aft: { repository: "owner/aft-account-request" } }, null, 2) + "\n";
+const CDK_MATRIX = ".runs/qualification/private-agent-matrix/matrix-cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee.json";
+
+function passingMatrixFor(root: string, scenario: string, commit: string): void {
+  const file = scenario === "cdk-aws-brownfield" ? CDK_MATRIX : MATRIX_FILE;
+  write(root, file, JSON.stringify({ mode: "OFFLINE_FIXTURE", passed: true, sourceCommit: commit, results: [{ id: scenario, converged: true }] }));
+}
+
+function lzaRunConfig(root: string, commit: string): void {
+  write(root, "config/evidence-runner.json", JSON.stringify(validConfig({
+    candidateCommit: commit,
+    aws: { expectedAccountId: ACCOUNT, region: "us-east-1", qualificationStack: "alz-qualification-noop", aftLzaCard: LZA_CARD },
+  }), null, 2));
+}
+
+test("the default path is Terraform, and the LZA/AFT path has its own operator actions", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "alz-one-flow-default-")));
+  assert.equal(status(root).path, "terraform");
+  assert.equal(readFlow({ root, env: {}, path: "lza-aft" }).path, "lza-aft");
+  assert.deepEqual(flowFor("terraform"), FLOW);
+  const lza = flowFor("lza-aft");
+  assert.deepEqual(lza.map((item) => item.id), FLOW.map((item) => item.id), "same eight steps, in the same order");
+  const change = lza.find((item) => item.id === "change");
+  assert.ok(change?.actions.terminal.includes("aws-aft-lza") && change.actions.terminal.includes("merges nothing"));
+  const rehearse = lza.find((item) => item.id === "rehearse");
+  assert.ok(rehearse?.actions.terminal.includes("cdk-aws-brownfield") && rehearse.actions.terminal.includes("terraform-aws-brownfield"));
+});
+
+test("the LZA rehearsal needs both engines to pass at this commit", () => {
+  const { root, head } = checkout();
+  markBuilt(root, head());
+  passingMatrixFor(root, "terraform-aws-brownfield", head());
+  const onlyTerraform = readFlow({ root, env: {}, path: "lza-aft" });
+  assert.equal(step(onlyTerraform, "rehearse").state, "NEXT");
+  assert.ok(step(onlyTerraform, "rehearse").detail.includes("cdk-aws-brownfield"));
+  passingMatrixFor(root, "cdk-aws-brownfield", head());
+  assert.equal(step(readFlow({ root, env: {}, path: "lza-aft" }), "rehearse").state, "DONE");
+});
+
+test("the LZA card is the owner's: committed, complete, and named in the run config", () => {
+  const { root, head } = checkout();
+  markBuilt(root, head());
+  assert.equal(step(readFlow({ root, env: {}, path: "lza-aft" }), "authorize").code, "CARD_NOT_COMMITTED");
+
+  write(root, LZA_CARD, LZA_CARD_TEXT.replace("owner/lza-config", "REPLACE-WITH-owner/lza-config"));
+  commitAll(root, "card with placeholders");
+  markBuilt(root, head());
+  const incomplete = step(readFlow({ root, env: {}, path: "lza-aft" }), "authorize");
+  assert.equal(incomplete.code, "CARD_INCOMPLETE");
+  assert.equal(incomplete.who, "Owner");
+
+  write(root, LZA_CARD, LZA_CARD_TEXT);
+  commitAll(root, "complete card");
+  markBuilt(root, head());
+  assert.equal(step(readFlow({ root, env: {}, path: "lza-aft" }), "authorize").code, "CARD_COMMITTED");
+
+  assert.equal(step(readFlow({ root, env: {}, path: "lza-aft" }), "describe").code, "NOT_DESCRIBED");
+  writeRunConfig(root, head());
+  assert.equal(step(readFlow({ root, env: {}, path: "lza-aft" }), "describe").code, "CARD_NOT_NAMED");
+  lzaRunConfig(root, head());
+  assert.equal(step(readFlow({ root, env: {}, path: "lza-aft" }), "describe").state, "DONE");
+});
+
+test("the LZA/AFT change and cleanup are blocked, not judged done, because the runner has no such stage", () => {
+  const { root, head } = checkout();
+  markBuilt(root, head());
+  const flow = readFlow({ root, env: {}, path: "lza-aft" });
+  assert.equal(step(flow, "change").state, "BLOCKED");
+  assert.equal(step(flow, "change").code, "NO_LZA_CHANGE_STAGE");
+  assert.equal(step(flow, "cleanup").code, "NO_LZA_CLEANUP_STAGE");
+  assert.notEqual(flow.next, "change");
 });

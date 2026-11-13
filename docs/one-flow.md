@@ -52,11 +52,25 @@ What counts as DONE:
 | Clean up | The journal's last finish for `cleanup:aws-terraform` is PASS. |
 | Watch | A local drift report exists and was written in the last 8 hours. |
 
+## Two paths: Terraform or LZA/AFT
+
+The operator chooses the path. The eight steps and their order are the same on both; the commands and the judgements differ.
+
+- **Terraform** (`path: "terraform"`, the default): the ACT pilot on `aws-terraform`, with the runner's `act:` and `cleanup:` stages.
+- **LZA/AFT** (`path: "lza-aft"`): LZA is CDK/CloudFormation and creates the account from its configuration files; the AFT
+  customizations are Terraform and run after LZA finishes. The owner's card is `config/aft-lza-card.json`, copied from the
+  example, and the run config names it in `config.aws.aftLzaCard`. The rehearsal needs both engine scenarios
+  (`cdk-aws-brownfield` and `terraform-aws-brownfield`) to pass at this commit. The read-only `aws-aft-lza` stage observes the
+  pipelines and merges nothing.
+
+On the LZA/AFT path the change and cleanup steps are BLOCKED with `NO_LZA_CHANGE_STAGE` and `NO_LZA_CLEANUP_STAGE`. The
+runner has no LZA/AFT change or cleanup stage yet, so the flow does not judge them done. The watch step is the same drift check
+on both paths.
+
 ## Known limits
 
 - The watch step says only that a local report is recent. It does not read the report's findings, and it does not see the
   scheduled GitHub Actions run (`.github/workflows/aft-lza-drift.yml`).
 - The change and cleanup steps read the journal's stage-level record. They do not re-verify the cloud.
-- The flow is not yet wired to a command or to the console. `readFlow` is the reader; the surfaces that show it are a later change.
-- ACT is for the `aws-terraform` path. The customer's AWS direction is LZA-first (LZA creates accounts, AFT customizes existing
-  ones). This flow does not model that yet; see `docs/aft-lza-act-workflow.md`.
+- The LZA/AFT path has no runner stage for its change or cleanup yet. See `docs/aft-lza-act-workflow.md`.
+- The path is a parameter of `readFlow`; no command or console surface sets it yet.

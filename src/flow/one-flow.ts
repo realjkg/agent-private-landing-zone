@@ -44,6 +44,9 @@ export const ACT_PATH = "aws-terraform";
 const ACT_STAGE: StageId = `act:${ACT_PATH}`;
 const CLEANUP_STAGE: StageId = `cleanup:${ACT_PATH}`;
 const CONTRACT = "config/act-pilot-contract.json";
+export const LZA_CARD = "config/aft-lza-card.json";
+/** The LZA/AFT path rehearses both engines: LZA is CDK/CloudFormation, the AFT customizations are Terraform. */
+export const LZA_ENGINE_SCENARIOS = ["cdk-aws-brownfield", "terraform-aws-brownfield"] as const;
 const DRIFT_REPORT = ".runs/qualification/aft-lza-drift.json";
 /** A drift report older than this is not evidence that the watch is running. The scheduled workflow runs every six hours. */
 const DRIFT_REPORT_MAX_AGE_MS = 8 * 60 * 60 * 1000;
@@ -125,11 +128,54 @@ export const FLOW: readonly FlowStep[] = [
   },
 ];
 
+const LZA_ACTIONS: Partial<Record<StepId, Readonly<Record<Surface, string>>>> = {
+  rehearse: {
+    terminal: "./alz matrix --offline-fixture --scenario cdk-aws-brownfield, then --scenario terraform-aws-brownfield (LZA is CDK/CloudFormation; the AFT customizations are Terraform).",
+    browser: "Not in the browser for this path yet.",
+    chat: CHAT_READS,
+  },
+  models: {
+    terminal: "Not modelled for LZA/AFT yet. Optional; the Terraform path's models cover the AWS scenario.",
+    browser: "Not in the browser for this path yet.",
+    chat: CHAT_READS,
+  },
+  authorize: {
+    terminal: "Owner: copy config/aft-lza-card.example.json to " + LZA_CARD + ", fill in every value (LZA side: CDK/CloudFormation; AFT customizations: Terraform), and commit it. An agent never fills it in or commits it.",
+    browser: "Not in the browser: the card is written and committed by the owner.",
+    chat: "Ask “am I ready to seal?”; the session reads the card's state. It never writes or commits the card.",
+  },
+  describe: {
+    terminal: "./alz evidence init, with config.aws.aftLzaCard set to " + LZA_CARD + ". The run config is yours to fill in.",
+    browser: TERMINAL_ONLY,
+    chat: CHAT_READS,
+  },
+  change: {
+    terminal: "Not runnable yet: no LZA/AFT change stage. ./alz evidence run --stage aws-aft-lza reads the pipelines and asks you for each merge commit; the runner merges nothing.",
+    browser: TERMINAL_ONLY,
+    chat: "Ask “show the preview” or “status of run <id>”; the session reads the records. It never seals, approves or applies.",
+  },
+  cleanup: {
+    terminal: "Not runnable yet: no LZA/AFT cleanup stage.",
+    browser: TERMINAL_ONLY,
+    chat: "Ask “what is left over?”; the session reads the observed resources. It never cleans up.",
+  },
+};
+
+/** The flow's steps for one path: the same eight steps, in the same order, with that path's operator actions. */
+export function flowFor(path: FlowPath): readonly FlowStep[] {
+  if (path === "terraform") return FLOW;
+  return FLOW.map((step) => {
+    const actions = LZA_ACTIONS[step.id];
+    return actions ? { ...step, actions } : step;
+  });
+}
+
 export type StepState = "DONE" | "NEXT" | "WAITING" | "BLOCKED";
 export type StepStatus = { id: StepId; state: StepState; code: string; detail: string; who: Who };
 export type FlowStatus = {
   schemaVersion: 1;
   kind: "ONE_FLOW_STATUS";
+  path: FlowPath;
   sourceCommit: string;
   /** The first required step that is NEXT, else the first optional step that is NEXT, or null when nothing is NEXT. */
   next: StepId | null;
@@ -138,9 +184,17 @@ export type FlowStatus = {
   evidenceBasis: "LOCAL FILES ONLY — NO CLOUD, NO MODEL, NOTHING RUN";
 };
 
+/**
+ * The operator's choice of path. `terraform`: the ACT pilot on aws-terraform (ACT stages in the runner). `lza-aft`: the LZA/AFT
+ * integration (LZA creates the account from its config files, AFT customizes it afterwards). The runner has no LZA/AFT change
+ * or cleanup stage yet, so on this path those steps say so instead of being judged done.
+ */
+export type FlowPath = "terraform" | "lza-aft";
+export const FLOW_PATHS: readonly FlowPath[] = ["terraform", "lza-aft"];
+
 type Judged = { state: "DONE" | "NEXT" | "BLOCKED"; code: string; detail: string; who?: Who };
 /** `now` is epoch milliseconds; it defaults to the clock and exists so the drift-report age can be tested. */
-export type FlowInputs = { root: string; env?: NodeJS.ProcessEnv; now?: number };
+export type FlowInputs = { root: string; env?: NodeJS.ProcessEnv; now?: number; path?: FlowPath };
 
 function git(root: string, ...args: string[]): string | undefined {
   try {
@@ -167,20 +221,35 @@ function judgeSetup(root: string, source: SourceCommit, head: string | undefined
 }
 
 /** The newest passing private-agent matrix for the AWS scenario in `mode`, if any (`.runs/qualification/private-agent-matrix`). */
-function matrixPass(root: string, mode: "OFFLINE_FIXTURE" | "LIVE_PRIVATE_MODELS"): string | undefined {
+function matrixPass(root: string, mode: "OFFLINE_FIXTURE" | "LIVE_PRIVATE_MODELS", scenario: string = SCENARIO): string | undefined {
   const dir = join(root, ".runs", "qualification", "private-agent-matrix");
   let names: string[];
   try { names = readdirSync(dir).filter((name) => /^matrix-[0-9a-f-]+\.json$/.test(name)); } catch { return undefined; }
   for (const name of names) {
     const report = record(readJson(join(dir, name)));
     if (!report || report.mode !== mode || report.passed !== true || !Array.isArray(report.results)) continue;
-    const lane = report.results.map(record).find((item) => item?.id === SCENARIO);
+    const lane = report.results.map(record).find((item) => item?.id === scenario);
     if (lane?.converged === true && typeof report.sourceCommit === "string") return report.sourceCommit;
   }
   return undefined;
 }
 
-function judgeRehearse(root: string, head: string | undefined): Judged {
+const NOT_MODELLED_LZA = "The runner has no offline rehearsal for the LZA/AFT path's models: only the offline matrix's engine scenarios exist.";
+
+/** The LZA/AFT path: each engine's offline scenario must pass at this commit (LZA is CDK/CloudFormation, AFT is Terraform). */
+function judgeRehearseLza(root: string, head: string | undefined): Judged {
+  const missing = LZA_ENGINE_SCENARIOS.filter((scenario) => matrixPass(root, "OFFLINE_FIXTURE", scenario) !== head);
+  if (missing.length > 0 || !head) {
+    return {
+      state: "NEXT", code: "NOT_REHEARSED",
+      detail: "No passing offline rehearsal at this commit for " + missing.join(" and ") + ". Run ./alz matrix --offline-fixture --scenario <id> for each (LZA is CDK/CloudFormation; the AFT customizations are Terraform).",
+    };
+  }
+  return { state: "DONE", code: "REHEARSED", detail: "Offline rehearsals passed at " + head.slice(0, 12) + " for both engines: " + LZA_ENGINE_SCENARIOS.join(" and ") + " (SYNTHETIC: fixtures, not AWS)." };
+}
+
+function judgeRehearse(root: string, head: string | undefined, path: FlowPath): Judged {
+  if (path === "lza-aft") return judgeRehearseLza(root, head);
   const commit = matrixPass(root, "OFFLINE_FIXTURE");
   if (!commit) {
     return { state: "NEXT", code: "NOT_REHEARSED", detail: "No passing offline rehearsal for " + SCENARIO + " yet. Run ./alz matrix --offline-fixture --scenario " + SCENARIO + "." };
@@ -191,7 +260,8 @@ function judgeRehearse(root: string, head: string | undefined): Judged {
   return { state: "DONE", code: "REHEARSED", detail: "Offline rehearsal passed at " + commit.slice(0, 12) + " (SYNTHETIC: fixtures, not AWS)." };
 }
 
-function judgeModels(root: string, head: string | undefined): Judged {
+function judgeModels(root: string, head: string | undefined, path: FlowPath): Judged {
+  if (path === "lza-aft") return { state: "BLOCKED", code: "NOT_MODELLED", detail: NOT_MODELLED_LZA };
   const commit = matrixPass(root, "LIVE_PRIVATE_MODELS");
   if (commit && commit === head) {
     return { state: "DONE", code: "MODELS_REHEARSED", detail: "Live private-model rehearsal passed at " + commit.slice(0, 12) + " (local models, no AWS)." };
@@ -203,7 +273,27 @@ function judgeModels(root: string, head: string | undefined): Judged {
   };
 }
 
-function judgeAuthorize(root: string): Judged {
+/** The owner's LZA/AFT card: committed, and with no REPLACE-WITH placeholders left. A shape check only; the run checks the rest. */
+function judgeLzaCard(root: string): Judged {
+  const committed = git(root, "cat-file", "-e", "HEAD:" + LZA_CARD) !== undefined;
+  if (!committed) {
+    return {
+      state: "NEXT", code: "CARD_NOT_COMMITTED", who: "Owner",
+      detail: "The owner copies config/aft-lza-card.example.json to " + LZA_CARD + ", fills in every value, and commits it. An agent never fills it in or commits it.",
+    };
+  }
+  let text: string;
+  try { text = readFileSync(join(root, LZA_CARD), "utf8"); } catch {
+    return { state: "NEXT", code: "CARD_NOT_READABLE", detail: "The committed card could not be read.", who: "Owner" };
+  }
+  if (text.includes("REPLACE-WITH")) {
+    return { state: "NEXT", code: "CARD_INCOMPLETE", who: "Owner", detail: "The committed card still has REPLACE-WITH placeholders. The owner fills in every value." };
+  }
+  return { state: "DONE", code: "CARD_COMMITTED", who: "Owner", detail: "The owner's LZA/AFT card is committed with no placeholders left. This is a shape check only." };
+}
+
+function judgeAuthorize(root: string, path: FlowPath): Judged {
+  if (path === "lza-aft") return judgeLzaCard(root);
   const scope = contractScope(root);
   // A contract in the working tree only counts once it is committed: the owner's reviewed commit is the switch.
   const committed = git(root, "cat-file", "-e", "HEAD:" + CONTRACT) !== undefined;
@@ -226,9 +316,12 @@ function judgeAuthorize(root: string): Judged {
   };
 }
 
-function judgeDescribe(root: string, head: string | undefined): Judged {
+function judgeDescribe(root: string, head: string | undefined, path: FlowPath): Judged {
   const loaded = loadConfig(root);
   if (!loaded.ok) return { state: "NEXT", code: "NOT_DESCRIBED", detail: loaded.problems.join(" ") };
+  if (path === "lza-aft" && loaded.config.aws?.aftLzaCard !== LZA_CARD) {
+    return { state: "NEXT", code: "CARD_NOT_NAMED", detail: "Set config.aws.aftLzaCard to " + LZA_CARD + " in the run config, then rerun ./alz evidence init." };
+  }
   if (!head || loaded.config.candidateCommit !== head) {
     return {
       state: "NEXT", code: "CANDIDATE_MISMATCH",
@@ -280,7 +373,10 @@ function judgeStage(root: string, stage: StageId, done: { code: string; detail: 
   return { state: "NEXT", ...missing };
 }
 
-function judgeChange(root: string): Judged {
+const NO_LZA_STAGE = "The runner has no LZA/AFT change stage yet: the ACT stages cover aws-terraform only, not the CDK/CloudFormation LZA side or the AFT customizations. The read-only aws-aft-lza stage observes the pipelines and merges nothing.";
+
+function judgeChange(root: string, path: FlowPath): Judged {
+  if (path === "lza-aft") return { state: "BLOCKED", code: "NO_LZA_CHANGE_STAGE", detail: NO_LZA_STAGE };
   return judgeStage(
     root, ACT_STAGE,
     { code: "APPLIED", detail: "The DEV apply ran and was observed; the journal records it PASS. Cleanup is the next step." },
@@ -288,7 +384,8 @@ function judgeChange(root: string): Judged {
   );
 }
 
-function judgeCleanup(root: string): Judged {
+function judgeCleanup(root: string, path: FlowPath): Judged {
+  if (path === "lza-aft") return { state: "BLOCKED", code: "NO_LZA_CLEANUP_STAGE", detail: NO_LZA_STAGE };
   return judgeStage(
     root, CLEANUP_STAGE,
     { code: "CLEANED", detail: "The cleanup ran and the journal records it PASS: the canary is removed and the live record is written." },
@@ -314,18 +411,19 @@ function judgeWatch(root: string, now: number): Judged {
 
 export function readFlow(input: FlowInputs): FlowStatus {
   const root = input.root;
+  const path: FlowPath = input.path ?? "terraform";
   const now = input.now ?? Date.now();
   const head = git(root, "rev-parse", "--verify", "HEAD^{commit}");
   const source = resolveSourceCommit(root, input.env ?? process.env, [CONTRACT]);
 
   const judged: Record<StepId, Judged> = {
     setup: judgeSetup(root, source, head),
-    rehearse: judgeRehearse(root, head),
-    models: judgeModels(root, head),
-    authorize: judgeAuthorize(root),
-    describe: judgeDescribe(root, head),
-    change: judgeChange(root),
-    cleanup: judgeCleanup(root),
+    rehearse: judgeRehearse(root, head, path),
+    models: judgeModels(root, head, path),
+    authorize: judgeAuthorize(root, path),
+    describe: judgeDescribe(root, head, path),
+    change: judgeChange(root, path),
+    cleanup: judgeCleanup(root, path),
     watch: judgeWatch(root, now),
   };
 
@@ -355,6 +453,7 @@ export function readFlow(input: FlowInputs): FlowStatus {
   return {
     schemaVersion: 1,
     kind: "ONE_FLOW_STATUS",
+    path,
     sourceCommit: source.ok ? source.commit : (head ?? "NONE"),
     next,
     steps,
