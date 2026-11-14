@@ -65,8 +65,9 @@ The operator chooses the path. The eight steps and their order are the same on b
 
 On the LZA/AFT path the change step is judged from the live journal record of the `aws-aft-lza` stage: DONE (`VERIFIED`)
 only when its last live run finished PASS, which the stage reports once LZA created the account, AFT registered it, its
-customizations ran and the controls were verified. The cleanup step is BLOCKED with `NO_LZA_CLEANUP_STAGE`: the runner has no
-stage that removes the AFT registration and then the LZA account entry. The watch step is the same drift check
+customizations ran and the controls were verified. The cleanup step is judged from the live journal record of the `aws-aft-lza-removal` stage: DONE
+(`RETIRED`) only when its last live run finished PASS. The pilot keeps the account (RETAIN), so it shows NEXT (`NOT_REMOVED`)
+until the owner decides to remove it. The watch step is the same drift check
 on both paths.
 
 ## Known limits

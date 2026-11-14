@@ -281,13 +281,12 @@ test("the LZA card is the owner's: committed, complete, and named in the run con
   assert.equal(step(readFlow({ root, env: {}, path: "lza-aft" }), "describe").state, "DONE");
 });
 
-test("the LZA/AFT cleanup is blocked, not judged done, because the runner has no such stage", () => {
+test("the LZA/AFT change and cleanup are not judged done without a described run", () => {
   const { root, head } = checkout();
   markBuilt(root, head());
   const flow = readFlow({ root, env: {}, path: "lza-aft" });
   assert.notEqual(step(flow, "change").state, "DONE");
-  assert.equal(step(flow, "cleanup").state, "BLOCKED");
-  assert.equal(step(flow, "cleanup").code, "NO_LZA_CLEANUP_STAGE");
+  assert.notEqual(step(flow, "cleanup").state, "DONE");
   assert.notEqual(flow.next, "change");
 });
 
@@ -314,8 +313,31 @@ test("LZA/AFT: the change step is judged from the live aws-aft-lza journal recor
   flow = readFlow({ root, env: {}, path: "lza-aft" });
   assert.equal(step(flow, "change").state, "DONE");
   assert.equal(step(flow, "change").code, "VERIFIED");
-  assert.equal(step(flow, "cleanup").state, "BLOCKED");
-  assert.equal(step(flow, "cleanup").code, "NO_LZA_CLEANUP_STAGE");
+  assert.equal(step(flow, "cleanup").state, "NEXT", "a forward PASS does not remove anything");
+  assert.equal(step(flow, "cleanup").code, "NOT_REMOVED");
+});
+
+test("LZA/AFT: the cleanup step is judged from the live aws-aft-lza-removal journal record", () => {
+  const { root, commit } = lzaReady();
+  const forward = [journalLine(commit, "aws-aft-lza", "start"), journalLine(commit, "aws-aft-lza", "finish", "PASS")];
+  writeJournal(root, commit, [...forward, journalLine(commit, "aws-aft-lza-removal", "start"), journalLine(commit, "aws-aft-lza-removal", "finish", "PASS")]);
+  let cleanup = step(readFlow({ root, env: {}, path: "lza-aft" }), "cleanup");
+  assert.equal(cleanup.state, "DONE");
+  assert.equal(cleanup.code, "RETIRED");
+
+  const cases: [string[], string, string][] = [
+    [[journalLine(commit, "aws-aft-lza-removal", "start"), journalLine(commit, "aws-aft-lza-removal", "finish", "BLOCKED", "AWAIT_UNMANAGE")], "BLOCKED", "LAST_RUN_BLOCKED:AWAIT_UNMANAGE"],
+    [[journalLine(commit, "aws-aft-lza-removal", "start"), journalLine(commit, "aws-aft-lza-removal", "finish", "FAIL", "ACCOUNT_NOT_IN_IGNORED_OU")], "BLOCKED", "LAST_RUN_FAIL:ACCOUNT_NOT_IN_IGNORED_OU"],
+    [[journalLine(commit, "aws-aft-lza-removal", "start")], "BLOCKED", "INTERRUPTED"],
+    [[journalLine(commit, "aws-aft-lza-removal", "start", undefined, undefined, "SYNTHETIC"), journalLine(commit, "aws-aft-lza-removal", "finish", "PASS", undefined, "SYNTHETIC")], "BLOCKED", "JOURNAL_LABEL_MISMATCH"],
+    [[journalLine(commit, "cleanup:" + ACT_PATH, "start"), journalLine(commit, "cleanup:" + ACT_PATH, "finish", "PASS")], "NEXT", "NOT_REMOVED"],
+  ];
+  for (const [lines, state, code] of cases) {
+    writeJournal(root, commit, [...forward, ...lines]);
+    cleanup = step(readFlow({ root, env: {}, path: "lza-aft" }), "cleanup");
+    assert.equal(cleanup.state, state, code);
+    assert.equal(cleanup.code, code);
+  }
 });
 
 test("LZA/AFT: a blocked, failed or interrupted aws-aft-lza run blocks the change step", () => {

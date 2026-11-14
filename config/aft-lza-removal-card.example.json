@@ -1,0 +1,19 @@
+{
+  "_comment": "EXAMPLE ONLY. Not an authorization. Copy to config/aft-lza-removal-card.json, replace every value from the owner's records, and name it in config.aws.aftLzaRemovalCard. The runner never closes the account.",
+  "runId": "pilot-001",
+  "homeRegion": "us-east-1",
+  "account": { "accountId": "REPLACE-WITH-12-digit-id", "name": "REPLACE-WITH-account-name", "email": "REPLACE-WITH-unique@example.com" },
+  "ignoredOuId": "ou-REPLACE-WITHIGNOREDOU",
+  "aft": {
+    "repository": "REPLACE-WITH-owner/aft-account-request",
+    "baseBranch": "main",
+    "requestPipelineName": "ct-aft-account-request",
+    "removalDigest": "REPLACE-WITH-request-removal-sha256"
+  },
+  "lza": {
+    "repository": "REPLACE-WITH-owner/lza-config",
+    "baseBranch": "main",
+    "pipelineName": "AWSAccelerator-Pipeline",
+    "configurationDigest": "REPLACE-WITH-ignored-ou-change-sha256"
+  }
+}

@@ -26,9 +26,9 @@ No new stage. The one-flow judges the LZA/AFT change step from the live journal 
 
 Account creation stays with LZA through `accounts-config.yaml`. AFT registration follows only after the LZA operation succeeded, which `decideNext` already enforces. The runner never starts a pipeline, invokes a Step Function, or merges.
 
-## Proposed scope for the cleanup stage
+## Cleanup stage (built)
 
-Cleanup runs in reverse order: AFT registration is removed before LZA. It follows the same intent, merge, observe, and receipt pattern. The pilot's disposition is RETAIN (`docs/aft-lza-act-workflow.md`), so this stays blocked in the one-flow until a cleanup stage is built and rehearsed.
+Built as `aws-aft-lza-removal` (`src/aft-lza/removal.ts`, `src/evidence-runner/aft-lza-removal.ts`), in AWS's documented order: the person merges the AFT account-request deletion, unmanages the account in Control Tower, then merges the LZA change that moves it under the ignored OU. The stage confirms the account sits under that OU and ends `RETIRED`. Closing the account stays the owner's decision. See `docs/aft-lza-act-workflow.md`, "Removal".
 
 ## Acceptance
 
