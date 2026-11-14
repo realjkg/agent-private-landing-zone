@@ -381,10 +381,17 @@ function judgeStage(root: string, stage: StageId, done: { code: string; detail: 
   return { state: "NEXT", ...missing };
 }
 
-const NO_LZA_STAGE = "The runner has no LZA/AFT change stage yet: the ACT stages cover aws-terraform only, not the CDK/CloudFormation LZA side or the AFT customizations. The read-only aws-aft-lza stage observes the pipelines and merges nothing.";
+const AFT_LZA_STAGE: StageId = "aws-aft-lza";
+const NO_LZA_CLEANUP = "The runner has no LZA/AFT cleanup stage: removing the AFT registration and then the LZA account entry is not modelled. The pilot keeps the account (disposition RETAIN, docs/aft-lza-act-workflow.md).";
 
 function judgeChange(root: string, path: FlowPath): Judged {
-  if (path === "lza-aft") return { state: "BLOCKED", code: "NO_LZA_CHANGE_STAGE", detail: NO_LZA_STAGE };
+  if (path === "lza-aft") {
+    return judgeStage(
+      root, AFT_LZA_STAGE,
+      { code: "VERIFIED", detail: "The aws-aft-lza stage ran live and the journal records it PASS: LZA created the account, AFT registered it, its customizations ran and the controls were verified." },
+      { code: "NOT_RUN", detail: "No live aws-aft-lza run recorded yet. Run ./alz evidence run --stage " + AFT_LZA_STAGE + "; you merge each change and type its merge commit." },
+    );
+  }
   return judgeStage(
     root, ACT_STAGE,
     { code: "APPLIED", detail: "The DEV apply ran and was observed; the journal records it PASS. Cleanup is the next step." },
@@ -393,7 +400,7 @@ function judgeChange(root: string, path: FlowPath): Judged {
 }
 
 function judgeCleanup(root: string, path: FlowPath): Judged {
-  if (path === "lza-aft") return { state: "BLOCKED", code: "NO_LZA_CLEANUP_STAGE", detail: NO_LZA_STAGE };
+  if (path === "lza-aft") return { state: "BLOCKED", code: "NO_LZA_CLEANUP_STAGE", detail: NO_LZA_CLEANUP };
   return judgeStage(
     root, CLEANUP_STAGE,
     { code: "CLEANED", detail: "The cleanup ran and the journal records it PASS: the canary is removed and the live record is written." },

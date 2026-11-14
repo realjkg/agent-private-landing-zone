@@ -60,11 +60,13 @@ The operator chooses the path. The eight steps and their order are the same on b
 - **LZA/AFT** (`path: "lza-aft"`): LZA is CDK/CloudFormation and creates the account from its configuration files; the AFT
   customizations are Terraform and run after LZA finishes. The owner's card is `config/aft-lza-card.json`, copied from the
   example, and the run config names it in `config.aws.aftLzaCard`. The rehearsal needs both engine scenarios
-  (`cdk-aws-brownfield` and `terraform-aws-brownfield`) to pass at this commit. The read-only `aws-aft-lza` stage observes the
-  pipelines and merges nothing.
+  (`cdk-aws-brownfield` and `terraform-aws-brownfield`) to pass at this commit. The `aws-aft-lza` stage observes the pipelines,
+  asks the person for each merge commit and merges nothing itself.
 
-On the LZA/AFT path the change and cleanup steps are BLOCKED with `NO_LZA_CHANGE_STAGE` and `NO_LZA_CLEANUP_STAGE`. The
-runner has no LZA/AFT change or cleanup stage yet, so the flow does not judge them done. The watch step is the same drift check
+On the LZA/AFT path the change step is judged from the live journal record of the `aws-aft-lza` stage: DONE (`VERIFIED`)
+only when its last live run finished PASS, which the stage reports once LZA created the account, AFT registered it, its
+customizations ran and the controls were verified. The cleanup step is BLOCKED with `NO_LZA_CLEANUP_STAGE`: the runner has no
+stage that removes the AFT registration and then the LZA account entry. The watch step is the same drift check
 on both paths.
 
 ## Known limits

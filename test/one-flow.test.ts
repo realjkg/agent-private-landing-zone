@@ -281,14 +281,73 @@ test("the LZA card is the owner's: committed, complete, and named in the run con
   assert.equal(step(readFlow({ root, env: {}, path: "lza-aft" }), "describe").state, "DONE");
 });
 
-test("the LZA/AFT change and cleanup are blocked, not judged done, because the runner has no such stage", () => {
+test("the LZA/AFT cleanup is blocked, not judged done, because the runner has no such stage", () => {
   const { root, head } = checkout();
   markBuilt(root, head());
   const flow = readFlow({ root, env: {}, path: "lza-aft" });
-  assert.equal(step(flow, "change").state, "BLOCKED");
-  assert.equal(step(flow, "change").code, "NO_LZA_CHANGE_STAGE");
+  assert.notEqual(step(flow, "change").state, "DONE");
+  assert.equal(step(flow, "cleanup").state, "BLOCKED");
   assert.equal(step(flow, "cleanup").code, "NO_LZA_CLEANUP_STAGE");
   assert.notEqual(flow.next, "change");
+});
+
+/** A described LZA/AFT checkout at its final commit, ready for the change step. */
+function lzaReady(): { root: string; commit: string } {
+  const { root, head } = checkout();
+  write(root, LZA_CARD, LZA_CARD_TEXT);
+  commitAll(root, "owner artifact");
+  const commit = head();
+  markBuilt(root, commit);
+  passingMatrixFor(root, "terraform-aws-brownfield", commit);
+  passingMatrixFor(root, "cdk-aws-brownfield", commit);
+  lzaRunConfig(root, commit);
+  return { root, commit };
+}
+
+test("LZA/AFT: the change step is judged from the live aws-aft-lza journal record", () => {
+  const { root, commit } = lzaReady();
+  let flow = readFlow({ root, env: {}, path: "lza-aft" });
+  assert.equal(step(flow, "change").state, "NEXT");
+  assert.equal(step(flow, "change").code, "NOT_RUN");
+
+  writeJournal(root, commit, [journalLine(commit, "aws-aft-lza", "start"), journalLine(commit, "aws-aft-lza", "finish", "PASS")]);
+  flow = readFlow({ root, env: {}, path: "lza-aft" });
+  assert.equal(step(flow, "change").state, "DONE");
+  assert.equal(step(flow, "change").code, "VERIFIED");
+  assert.equal(step(flow, "cleanup").state, "BLOCKED");
+  assert.equal(step(flow, "cleanup").code, "NO_LZA_CLEANUP_STAGE");
+});
+
+test("LZA/AFT: a blocked, failed or interrupted aws-aft-lza run blocks the change step", () => {
+  const { root, commit } = lzaReady();
+  const cases: [string[], string][] = [
+    [[journalLine(commit, "aws-aft-lza", "start"), journalLine(commit, "aws-aft-lza", "finish", "BLOCKED", "AWAIT_LZA_SUBMISSION")], "LAST_RUN_BLOCKED:AWAIT_LZA_SUBMISSION"],
+    [[journalLine(commit, "aws-aft-lza", "start"), journalLine(commit, "aws-aft-lza", "finish", "FAIL", "LZA_PIPELINE_FAILED")], "LAST_RUN_FAIL:LZA_PIPELINE_FAILED"],
+    [[journalLine(commit, "aws-aft-lza", "start")], "INTERRUPTED"],
+  ];
+  for (const [lines, code] of cases) {
+    writeJournal(root, commit, lines);
+    const change = step(readFlow({ root, env: {}, path: "lza-aft" }), "change");
+    assert.equal(change.state, "BLOCKED", code);
+    assert.equal(change.code, code);
+  }
+});
+
+test("LZA/AFT: a PASS for another stage or a non-live PASS does not mark the change done", () => {
+  const { root, commit } = lzaReady();
+  writeJournal(root, commit, [
+    journalLine(commit, "act:" + ACT_PATH, "start"), journalLine(commit, "act:" + ACT_PATH, "finish", "PASS"),
+    journalLine(commit, "aws-readonly", "start"), journalLine(commit, "aws-readonly", "finish", "PASS"),
+  ]);
+  assert.equal(step(readFlow({ root, env: {}, path: "lza-aft" }), "change").code, "NOT_RUN");
+
+  writeJournal(root, commit, [
+    journalLine(commit, "aws-aft-lza", "start", undefined, undefined, "SYNTHETIC"),
+    journalLine(commit, "aws-aft-lza", "finish", "PASS", undefined, "SYNTHETIC"),
+  ]);
+  const change = step(readFlow({ root, env: {}, path: "lza-aft" }), "change");
+  assert.equal(change.state, "BLOCKED");
+  assert.equal(change.code, "JOURNAL_LABEL_MISMATCH");
 });
 
 // --- End-to-end walkthroughs, both paths. Nothing here reaches AWS or a model.
@@ -331,19 +390,15 @@ for (const path of ["terraform", "lza-aft"] as const) {
     flow = readFlow({ root, env: {}, path });
     assert.equal(step(flow, "authorize").state, "DONE");
     assert.equal(step(flow, "describe").state, "DONE");
-    if (path === "terraform") {
-      assert.equal(step(flow, "change").state, "NEXT");
-      assert.equal(step(flow, "change").code, "NOT_APPLIED");
-      assert.equal(flow.next, "change");
-    } else {
-      assert.equal(step(flow, "change").state, "BLOCKED");
-      assert.equal(step(flow, "change").code, "NO_LZA_CHANGE_STAGE");
-    }
+    assert.equal(step(flow, "change").state, "NEXT");
+    assert.equal(step(flow, "change").code, path === "terraform" ? "NOT_APPLIED" : "NOT_RUN");
+    assert.equal(flow.next, "change");
+    const changeStage = path === "terraform" ? "act:" + ACT_PATH : "aws-aft-lza";
 
     // 5. A non-live record is written to the other folder. The flow does not read that folder for done-state.
     writeNonLiveJournal(root, commit, [
-      journalLine(commit, "act:" + ACT_PATH, "start", undefined, undefined, "SYNTHETIC"),
-      journalLine(commit, "act:" + ACT_PATH, "finish", "PASS", undefined, "SYNTHETIC"),
+      journalLine(commit, changeStage, "start", undefined, undefined, "SYNTHETIC"),
+      journalLine(commit, changeStage, "finish", "PASS", undefined, "SYNTHETIC"),
       journalLine(commit, "cleanup:" + ACT_PATH, "start", undefined, undefined, "SYNTHETIC"),
       journalLine(commit, "cleanup:" + ACT_PATH, "finish", "PASS", undefined, "SYNTHETIC"),
     ]);
@@ -353,16 +408,12 @@ for (const path of ["terraform", "lza-aft"] as const) {
 
     // 6. A non-live record in the live journal does not count.
     writeJournal(root, commit, [
-      journalLine(commit, "act:" + ACT_PATH, "start", undefined, undefined, "SYNTHETIC"),
-      journalLine(commit, "act:" + ACT_PATH, "finish", "PASS", undefined, "SYNTHETIC"),
+      journalLine(commit, changeStage, "start", undefined, undefined, "SYNTHETIC"),
+      journalLine(commit, changeStage, "finish", "PASS", undefined, "SYNTHETIC"),
     ]);
     flow = readFlow({ root, env: {}, path });
-    if (path === "terraform") {
-      assert.equal(step(flow, "change").state, "BLOCKED");
-      assert.equal(step(flow, "change").code, "JOURNAL_LABEL_MISMATCH");
-    } else {
-      assert.equal(step(flow, "change").code, "NO_LZA_CHANGE_STAGE");
-    }
+    assert.equal(step(flow, "change").state, "BLOCKED");
+    assert.equal(step(flow, "change").code, "JOURNAL_LABEL_MISMATCH");
     assert.notEqual(step(flow, "cleanup").state, "DONE");
   });
 }
