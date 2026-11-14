@@ -4,35 +4,36 @@ Status: proposal (docs only). No code, no live cloud access, no merge or pipelin
 
 ## Problem
 
-`src/flow/one-flow.ts` reports the LZA/AFT path as `BLOCKED` at two steps: `NO_LZA_CHANGE_STAGE` and `NO_LZA_CLEANUP_STAGE`. The read-only `aws-aft-lza` stage observes pipelines and journals intent, but no stage carries a change through to a verified result or back out again.
+`src/flow/one-flow.ts` reports the LZA/AFT path as `BLOCKED` at two steps: `NO_LZA_CHANGE_STAGE` and `NO_LZA_CLEANUP_STAGE`.
+
+For the change step, the stage already exists. `aws-aft-lza` walks the whole forward path: it offers the LZA change, takes the merge commit from the person, observes the LZA pipeline and the new account, then does the same for the AFT request, the account's customizations pipeline and the controls. It ends PASS only at `VERIFIED`. The gap is in the one-flow, which reports the change step blocked without reading that stage's journal.
+
+For the cleanup step, the gap is real. No stage removes an account's AFT registration or its LZA entry.
 
 ## What already exists
 
 - `./alz evidence init | run | status` (`src/cli/evidence.ts`). This is the runner's single entry point. No second CLI is planned.
-- The `aws-aft-lza` stage (`src/evidence-runner/aft-lza.ts`), which observes, journals, and asks the person for the merge commit.
+- The `aws-aft-lza` stage (`src/evidence-runner/aft-lza.ts`, with `src/aft-lza/run.ts`), which observes, journals, asks the person for each merge commit, and reaches `VERIFIED` once the controls are confirmed.
 - A write-ahead operation store (`src/aft-lza/operation-store.ts`). Intent is written with an exclusive create before a person is asked to act. A receipt holds identifiers only. A repeated run reconciles instead of repeating an action. This covers the durable correlation requirement.
 
-## Proposed scope for the change stage
+## Proposed change for the change step
 
-The change stage covers account creation through LZA only. AFT registration and cleanup come later as separate stages.
+No new stage. The one-flow judges the LZA/AFT change step from the live journal record of `aws-aft-lza`, the same way it judges the Terraform path from `act:<path>`:
 
-1. Read the card (`config.aws.aftLzaCard`) and validate it with `validateCard`.
-2. Observe the LZA pipeline and its accounts-config source (read-only).
-3. Journal the LZA change intent in the operation store.
-4. Ask the person to merge the approved change, then type the merge commit at the terminal.
-5. Observe the LZA pipeline run until it reports a terminal state. Record its identifiers as a receipt.
-6. Stop. The runner never starts a pipeline, invokes a Step Function, or merges.
+- DONE only when the last live run of `aws-aft-lza` finished PASS.
+- NEXT when no live run is recorded.
+- BLOCKED when the last live run ended FAIL or BLOCKED, or stopped mid-step.
 
-Each step is idempotent through the operation store. An interruption at any point resumes by reconciling, never by repeating an external action.
+Account creation stays with LZA through `accounts-config.yaml`. AFT registration follows only after the LZA operation succeeded, which `decideNext` already enforces. The runner never starts a pipeline, invokes a Step Function, or merges.
 
 ## Proposed scope for the cleanup stage
 
-Cleanup runs in reverse order: AFT registration is removed before LZA. It follows the same intent, merge, observe, and receipt pattern. It is out of scope until the change stage has passed its offline rehearsal.
+Cleanup runs in reverse order: AFT registration is removed before LZA. It follows the same intent, merge, observe, and receipt pattern. The pilot's disposition is RETAIN (`docs/aft-lza-act-workflow.md`), so this stays blocked in the one-flow until a cleanup stage is built and rehearsed.
 
 ## Acceptance
 
 - Offline: a synthetic run of each step, including an interrupted run and an unauthorized run, labelled SYNTHETIC.
-- The one-flow reports the stage as `DONE` only after a receipt exists at the current commit.
+- The one-flow reports the change step as `DONE` only after a live PASS of `aws-aft-lza` at the current candidate commit.
 - No live AWS evidence is claimed until the owner runs the stage on the owner's account.
 
 ## Open questions
