@@ -22,7 +22,7 @@ import type { StageResult } from "./readonly.js";
  */
 export const AFT_LZA_STAGE = "aws-aft-lza" as const;
 
-const awsExec = (env: Record<string, string>): AwsExec => (args) => new Promise((done) => {
+export const awsExec = (env: Record<string, string>): AwsExec => (args) => new Promise((done) => {
   execFile("aws", args, { env, maxBuffer: 16 * 1024 * 1024, shell: false, windowsHide: true }, (error, stdout, stderr) => {
     done({ code: error ? (typeof (error as NodeJS.ErrnoException).code === "number" ? Number((error as NodeJS.ErrnoException).code) : 1) : 0, stdout, stderr });
   });

@@ -219,5 +219,5 @@ export function routeDrift(finding: DriftFinding): { route: "LZA_OWNER" | "AFT_O
   return { route: "OWNERSHIP_CONFLICT", autoRepair: false };
 }
 
-/** Removal is outside this pilot. If ever authorized, AWS's order is AFT first, then LZA. */
+/** The forward run never removes. Removal is its own run (removal.ts, stage aws-aft-lza-removal), in AWS's order: AFT first, then LZA. */
 export const REMOVAL = { authorized: false, order: ["AFT", "LZA"] as const } as const;

@@ -382,7 +382,7 @@ function judgeStage(root: string, stage: StageId, done: { code: string; detail: 
 }
 
 const AFT_LZA_STAGE: StageId = "aws-aft-lza";
-const NO_LZA_CLEANUP = "The runner has no LZA/AFT cleanup stage: removing the AFT registration and then the LZA account entry is not modelled. The pilot keeps the account (disposition RETAIN, docs/aft-lza-act-workflow.md).";
+const AFT_LZA_REMOVAL_STAGE: StageId = "aws-aft-lza-removal";
 
 function judgeChange(root: string, path: FlowPath): Judged {
   if (path === "lza-aft") {
@@ -400,7 +400,13 @@ function judgeChange(root: string, path: FlowPath): Judged {
 }
 
 function judgeCleanup(root: string, path: FlowPath): Judged {
-  if (path === "lza-aft") return { state: "BLOCKED", code: "NO_LZA_CLEANUP_STAGE", detail: NO_LZA_CLEANUP };
+  if (path === "lza-aft") {
+    return judgeStage(
+      root, AFT_LZA_REMOVAL_STAGE,
+      { code: "RETIRED", detail: "The aws-aft-lza-removal stage ran live and the journal records it PASS: the account is out of AFT, unmanaged in Control Tower and under LZA's ignored OU. Closing it is the owner's decision." },
+      { code: "NOT_REMOVED", detail: "No live removal recorded yet. The pilot keeps the account (RETAIN) unless the owner decides to remove it; then run ./alz evidence run --stage " + AFT_LZA_REMOVAL_STAGE + "." },
+    );
+  }
   return judgeStage(
     root, CLEANUP_STAGE,
     { code: "CLEANED", detail: "The cleanup ran and the journal records it PASS: the canary is removed and the live record is written." },

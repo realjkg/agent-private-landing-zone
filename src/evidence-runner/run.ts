@@ -13,6 +13,7 @@ import { authorizationState, contractEnablesPath, contractScope, identityHash, o
 import { readonlyStage, type StageResult } from "./readonly.js";
 import { stageFolder, type StageContext } from "./steps.js";
 import { aftLzaStage, loadCard } from "./aft-lza.js";
+import { aftLzaRemovalStage, loadRemovalCard } from "./aft-lza-removal.js";
 import { summaryStage } from "./summary.js";
 import {
   ACT_PATH_NOT_AVAILABLE, DEFAULT_STAGES, EXIT, STAGES, isActStage, isCleanupStage, isGuidedStage, pathOfStage, stageSlice,
@@ -106,6 +107,14 @@ function planStage(stage: StageId, config: EvidenceRunnerConfig, preflight: Pref
     if (!card.ok) return { stage, outcome: "BLOCKED", code: "OWNER_INPUT_AFT_LZA_CARD", detail: card.detail };
     return ready("Will read the LZA and AFT pipelines, the account and the controls under the DISCOVERY identity, decide the next step, and ask you for each merge commit after you merge it. The runner merges nothing.");
   }
+  if (stage === "aws-aft-lza-removal") {
+    if (!config.aws?.aftLzaRemovalCard) return { stage, outcome: "SKIPPED", code: "NOT_CONFIGURED", detail: "config.aws.aftLzaRemovalCard names no removal card." };
+    const identity = preflight.identities.find((check) => check.provider === "aws");
+    if (!identity || identity.status !== "PASS") return { stage, outcome: "BLOCKED", code: identity?.code ?? "AWS_IDENTITY", detail: identity?.detail ?? "No AWS DISCOVERY identity." };
+    const card = loadRemovalCard(root, config.aws.aftLzaRemovalCard);
+    if (!card.ok) return { stage, outcome: "BLOCKED", code: "OWNER_INPUT_REMOVAL_CARD", detail: card.detail };
+    return ready("Will read the AFT and LZA pipelines and the account under the DISCOVERY identity and walk the removal in AWS's order: AFT, then Control Tower, then LZA. You merge each change and unmanage the account; the runner changes nothing and never closes the account.");
+  }
   if (isActStage(stage) || isCleanupStage(stage)) {
     const path = pathOfStage(stage);
     const notAvailable = ACT_PATH_NOT_AVAILABLE[path];
@@ -160,6 +169,7 @@ async function runStage(ctx: StageContext, stage: StageId, plan: readonly GatePl
   if (stage === "azure-readonly") return readonlyStage(ctx, "azure");
   if (stage === "gcp-readonly") return readonlyStage(ctx, "gcp");
   if (stage === "aws-aft-lza") return aftLzaStage(ctx);
+  if (stage === "aws-aft-lza-removal") return aftLzaRemovalStage(ctx);
   if (isActStage(stage)) return actStage(ctx, pathOfStage(stage));
   if (isCleanupStage(stage)) return cleanupStage(ctx, pathOfStage(stage));
   if (stage === "recovery") return recoveryStage(ctx);

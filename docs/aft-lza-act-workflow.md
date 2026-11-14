@@ -16,7 +16,7 @@ AWS's pattern ([Deploying custom Terraform to LZA-managed accounts with AFT](htt
 4. **Customization** — the account's `<id>-customizations-pipeline` must succeed. On failure the stage enters `RECOVER_CUSTOMIZATION`; the only recovery write is `aft-invoke-customizations` with `{"include":[{"type":"accounts","target_value":["<id>"]}]}`, scoped to the one account, after the previous invocation is reconciled, at most 3 attempts (`checkReinvocation`).
 5. **Verification** — read-only control observations in every card Region. Pipeline success is not verification; simulated or unknown observations keep the run `UNRESOLVED`.
 
-Disposition is **RETAIN**. Removal (AFT first, then LZA) is out of scope. Drift is routed to its owning system (`routeDrift`); overlap or unknown ownership is a conflict; nothing is auto-adopted or auto-repaired.
+Disposition is **RETAIN**. Removing the account is a separate stage, run only when the owner decides to (see "Removal" below). Drift is routed to its owning system (`routeDrift`); overlap or unknown ownership is a conflict; nothing is auto-adopted or auto-repaired.
 
 ## Who does what
 
@@ -39,6 +39,21 @@ Each write (`<runId>:lza`, `<runId>:aft-registration`) gets an intent file creat
 ## Evidence labels
 
 Tests are `SYNTHETIC`. A `LIVE` run's decision document is `LIVE_READ_ONLY` — evidence of observed state, not authorization. `deploymentAuthorized` and `actStartedByRunner` are always `false`.
+
+## Removal (`aws-aft-lza-removal`)
+
+```
+./alz evidence run --stage aws-aft-lza-removal
+```
+
+Run only when named, with `config.aws.aftLzaRemovalCard` naming a card under `config/` (see `config/aft-lza-removal-card.example.json`). It follows AWS's documented order:
+
+1. **AFT** — the person merges the deletion of the account's `aft-account-request` entry; the stage binds the request pipeline's execution to that commit. AFT deletes the account's customization pipeline and metadata; Control Tower still manages the account. Deleting the account's Terraform state folders in the AFT backend buckets is the person's step and is not observed.
+2. **Control Tower** — the person unmanages the account and types its account id.
+3. **LZA** — the person merges the change that moves the account under the ignored OU in `organization-config.yaml` and `accounts-config.yaml`; the stage binds the LZA pipeline execution to that commit.
+4. **Confirmation** — the account is read by email and must sit under the card's `ignoredOuId`. Then the stage ends `RETIRED` (PASS).
+
+Closing the account is account deletion and stays the owner's decision; LZA's guidance is to close it only after the pipeline run in step 3 succeeded. The stage never closes an account, and its decision document records `accountClosedByRunner: false`. Each step is journaled under `.runs/evidence/aft-lza/<runId>/removal/` before it is offered, with the same `RECONCILE` rule as the forward run.
 
 ## Gate status
 
