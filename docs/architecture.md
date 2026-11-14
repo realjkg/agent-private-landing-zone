@@ -458,11 +458,11 @@ No App Landing Zone maturity claim should be made until those contracts are impl
 
 Orchestration is done by agents and subagents with skills, running the required local models in LangChain and LangGraph. This is the operating model for every journey: discovery, design, preview, ACT preparation, drift and recovery. It is not an exception to the rules below. Agents orchestrate; people authorize; the deterministic engine enforces.
 
-**One orchestrator, one engine.** A supervisor agent owns the task envelope and routes bounded work to subagents. Subagents are roles inside the same engine, not a second system and not a distributed fabric (see "Thin sovereign orchestrator").
+**One orchestrator, one engine.** A supervisor agent owns the task envelope and routes bounded work to subagents (target: today the session graph is one node and the subagent admission contract has no runtime caller; see the table below). Subagents are roles inside the same engine, not a second system and not a distributed fabric (see "Thin sovereign orchestrator").
 
-**Runtime.** LangChain and LangGraph ship in the distribution. The conversational session is a LangGraph `StateGraph` with a SQLite checkpointer (`src/session/graph.ts`), so a session resumes by thread id after a restart. The same scenarios run through the direct path and the LangGraph path and must converge (`src/qualification/private-agent-matrix.ts`).
+**Runtime.** LangChain and LangGraph ship in the distribution. The conversational session is a LangGraph `StateGraph` (`src/session/graph.ts`). Given a database path it uses a SQLite checkpointer, so a session resumes by thread id after a restart; `./alz session` (`src/cli/session.ts`) passes none today and keeps state in memory for the life of the process. The same scenarios run through the direct path and the LangGraph path and must converge (`src/qualification/private-agent-matrix.ts`).
 
-**Required local models.** These are served by Ollama on loopback (`OLLAMA_BASE_URL`, default `http://127.0.0.1:11434`) and pinned by manifest digest (`src/models/digest-pins.ts`, `./alz models verify`):
+**Required local models.** These are served by Ollama on loopback (`OLLAMA_BASE_URL`, default `http://127.0.0.1:11434`) and pinned by manifest digest (`src/models/digest-pins.ts`, `./alz models verify`). The three digests in `config/tool-pins.json` are owner inputs still to be recorded, and until they are, `./alz models verify` refuses each model as `MODEL_DIGEST_UNPINNED`:
 
 | Role | Default model | Setting |
 |---|---|---|
@@ -470,7 +470,7 @@ Orchestration is done by agents and subagents with skills, running the required 
 | Primary engineering reasoning | `qwen3:4b` | `PRIMARY_MODEL` |
 | Independent validator | `mistral-nemo:12b` | `VALIDATOR_MODEL` |
 
-Private estate data is reasoned over by these local models only. A hosted model or tracing service never receives it (`test/session-hosted-tracing.test.ts`). When a required model is missing, the session says so and offers the labeled offline rehearsal. It never silently substitutes another model. When the validator disagrees beyond `DISAGREEMENT_THRESHOLD`, or the adjudicator returns ABSTAIN, the result is BLOCKED with its reason, never a pass (`docs/model-qualification-abstain.md`).
+Private estate data is reasoned over by these local models only. A hosted model or tracing service never receives it (`test/session-hosted-tracing.test.ts`). When a required model is missing, the model client refuses with `MODEL_NOT_INSTALLED` (`src/ollama.ts`). It never silently substitutes another model. When the validator disagrees beyond `DISAGREEMENT_THRESHOLD`, or the adjudicator returns ABSTAIN, the result is BLOCKED with its reason, never a pass (`docs/model-qualification-abstain.md`).
 
 **Subagents.** Subagent roles are INVENTORY, PLAN, DESIGN, POLICY, IAC, VERIFY and OPERATE (`src/integrations/ai-studio/subagent-routing.ts`). Each role's granted capabilities are the `ROLE_CAPABILITIES` table in that module. Every role is granted read, assessment or preview capabilities only. The dispatcher grants no mutation.
 
@@ -504,9 +504,9 @@ An agent never holds the key, the console session token or a cloud credential. A
 
 | Capability | State |
 |---|---|
-| LangGraph session with checkpointed state; local router, primary and validator models; digest pins | Implemented |
+| LangGraph session with checkpointed state; local router, primary and validator models; digest pin check | Implemented (the CLI session uses the in-memory checkpointer; digest values are owner inputs) |
 | Direct and LangGraph paths converging in the qualification matrices | Implemented (SYNTHETIC fixtures) |
-| Subagent role admission (read or preview only, no mutation) | Implemented as a pure admission contract (`subagent-routing.ts`) |
+| Subagent role admission (read or preview only, no mutation) | Implemented as a pure admission contract (`subagent-routing.ts`), exercised by its tests; no runtime caller yet |
 | Subagents as separate LangGraph nodes, each with its own skill and tool grants | Target: the session graph is one node today |
 | Hosted harness reaching the private ALZ over authenticated MCP | Target: not yet proven (`docs/ai-studio-private-subagents.md`) |
 
