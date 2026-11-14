@@ -135,7 +135,7 @@ const LZA_ACTIONS: Partial<Record<StepId, Readonly<Record<Surface, string>>>> = 
     chat: CHAT_READS,
   },
   models: {
-    terminal: "Not modelled for LZA/AFT yet. Optional; the Terraform path's models cover the AWS scenario.",
+    terminal: "./alz matrix --live-models --scenario cdk-aws-brownfield, then --scenario terraform-aws-brownfield (local Ollama, no AWS; docs/pilot-human-in-the-loop.md).",
     browser: "Not in the browser for this path yet.",
     chat: CHAT_READS,
   },
@@ -186,8 +186,8 @@ export type FlowStatus = {
 
 /**
  * The operator's choice of path. `terraform`: the ACT pilot on aws-terraform (ACT stages in the runner). `lza-aft`: the LZA/AFT
- * integration (LZA creates the account from its config files, AFT customizes it afterwards). The runner has no LZA/AFT change
- * or cleanup stage yet, so on this path those steps say so instead of being judged done.
+ * integration (LZA creates the account from its config files, AFT customizes it afterwards). Its change and cleanup steps are
+ * judged from the aws-aft-lza and aws-aft-lza-removal stages.
  */
 export type FlowPath = "terraform" | "lza-aft";
 export const FLOW_PATHS: readonly FlowPath[] = ["terraform", "lza-aft"];
@@ -234,8 +234,6 @@ function matrixPass(root: string, mode: "OFFLINE_FIXTURE" | "LIVE_PRIVATE_MODELS
   return undefined;
 }
 
-const NOT_MODELLED_LZA = "The runner has no offline rehearsal for the LZA/AFT path's models: only the offline matrix's engine scenarios exist.";
-
 /** The LZA/AFT path: each engine's offline scenario must pass at this commit (LZA is CDK/CloudFormation, AFT is Terraform). */
 function judgeRehearseLza(root: string, head: string | undefined): Judged {
   const missing = LZA_ENGINE_SCENARIOS.filter((scenario) => matrixPass(root, "OFFLINE_FIXTURE", scenario) !== head);
@@ -261,7 +259,16 @@ function judgeRehearse(root: string, head: string | undefined, path: FlowPath): 
 }
 
 function judgeModels(root: string, head: string | undefined, path: FlowPath): Judged {
-  if (path === "lza-aft") return { state: "BLOCKED", code: "NOT_MODELLED", detail: NOT_MODELLED_LZA };
+  if (path === "lza-aft") {
+    const missing = LZA_ENGINE_SCENARIOS.filter((scenario) => matrixPass(root, "LIVE_PRIVATE_MODELS", scenario) !== head);
+    if (missing.length === 0 && head) {
+      return { state: "DONE", code: "MODELS_REHEARSED", detail: "Live private-model rehearsals passed at " + head.slice(0, 12) + " for " + LZA_ENGINE_SCENARIOS.join(" and ") + " (local models, no AWS)." };
+    }
+    return {
+      state: "NEXT", code: "MODELS_NOT_CHECKED",
+      detail: "Optional. Run ./alz matrix --live-models --scenario <id> at this commit for " + missing.join(" and ") + " (local Ollama, no AWS).",
+    };
+  }
   const commit = matrixPass(root, "LIVE_PRIVATE_MODELS");
   if (commit && commit === head) {
     return { state: "DONE", code: "MODELS_REHEARSED", detail: "Live private-model rehearsal passed at " + commit.slice(0, 12) + " (local models, no AWS)." };

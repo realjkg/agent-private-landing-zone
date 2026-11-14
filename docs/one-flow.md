@@ -60,7 +60,8 @@ The operator chooses the path. The eight steps and their order are the same on b
 - **LZA/AFT** (`path: "lza-aft"`): LZA is CDK/CloudFormation and creates the account from its configuration files; the AFT
   customizations are Terraform and run after LZA finishes. The owner's card is `config/aft-lza-card.json`, copied from the
   example, and the run config names it in `config.aws.aftLzaCard`. The rehearsal needs both engine scenarios
-  (`cdk-aws-brownfield` and `terraform-aws-brownfield`) to pass at this commit. The `aws-aft-lza` stage observes the pipelines,
+  (`cdk-aws-brownfield` and `terraform-aws-brownfield`) to pass at this commit, offline for `rehearse` and with the live
+  private models for the optional `models` step (`docs/pilot-human-in-the-loop.md`). The `aws-aft-lza` stage observes the pipelines,
   asks the person for each merge commit and merges nothing itself.
 
 On the LZA/AFT path the change step is judged from the live journal record of the `aws-aft-lza` stage: DONE (`VERIFIED`)
