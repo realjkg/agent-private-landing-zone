@@ -26,6 +26,7 @@ The gates come from `ACT_RELEASE_PATHS` in `src/qualification/release-admission.
 
 - **Engineering:** code, tests and docs for the driver, engines, providers, contract validation, readiness, cleanup and the console wizard, through the normal PR workflow (`steward` skill).
 - **Synthetic evidence:** fake-engine tests and the opt-in emulated simulations (G1b: `docs/act-pilot-simulation-aws.md`, `docs/act-pilot-simulation.md`). Label it SYNTHETIC. It never counts as live provider qualification or release approval.
+- **Orchestration:** agents and subagents with skills, running the local models in LangChain and LangGraph, orchestrate the journey up to the authority points (`docs/architecture.md`, "Agent and subagent orchestration"). Signing, typing phrases and starting an apply stay with the person.
 - **Read-only helpers:** commands that compute, check or report without changing anything, for example `./alz apply contract-check --file <draft>`, `./alz apply status`, `./alz apply preflight`. Run them on fixtures or the owner's draft only when asked.
 
 ## What only the owner may do
