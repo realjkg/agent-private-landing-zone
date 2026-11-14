@@ -472,7 +472,7 @@ Orchestration is done by agents and subagents with skills, running the required 
 
 Private estate data is reasoned over by these local models only. A hosted model or tracing service never receives it (`test/session-hosted-tracing.test.ts`). When a required model is missing, the session says so and offers the labeled offline rehearsal. It never silently substitutes another model. When the validator disagrees beyond `DISAGREEMENT_THRESHOLD`, or the adjudicator returns ABSTAIN, the result is BLOCKED with its reason, never a pass (`docs/model-qualification-abstain.md`).
 
-**Subagents.** Subagent roles are INVENTORY, PLAN, DESIGN, POLICY, IAC, VERIFY and OPERATE (`src/integrations/ai-studio/subagent-routing.ts`). The specialist agents (Discovery, Security, Cost, Resiliency, Reliability, Performance, Sustainability, Architecture, Build, Validator) work under those roles. Every role is granted read, assessment or preview capabilities only. The dispatcher grants no mutation.
+**Subagents.** Subagent roles are INVENTORY, PLAN, DESIGN, POLICY, IAC, VERIFY and OPERATE (`src/integrations/ai-studio/subagent-routing.ts`). Each role's granted capabilities are the `ROLE_CAPABILITIES` table in that module. Every role is granted read, assessment or preview capabilities only. The dispatcher grants no mutation.
 
 **Skills.** A skill is a reviewed, versioned instruction set together with the read and preview operations it may call. Skills in the repository:
 - `.claude/skills/act-pilot`, `review` and `steward`;
