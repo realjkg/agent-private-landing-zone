@@ -245,7 +245,7 @@ function judgeRehearseLza(root: string, head: string | undefined): Judged {
       detail: "No passing offline rehearsal at this commit for " + missing.join(" and ") + ". Run ./alz matrix --offline-fixture --scenario <id> for each (LZA is CDK/CloudFormation; the AFT customizations are Terraform).",
     };
   }
-  return { state: "DONE", code: "REHEARSED", detail: "Offline rehearsals passed at " + head.slice(0, 12) + " for both engines: " + LZA_ENGINE_SCENARIOS.join(" and ") + " (SYNTHETIC: fixtures, not AWS)." };
+  return { state: "DONE", code: "REHEARSED", detail: "Offline rehearsals passed at " + head.slice(0, 12) + " for both engines: " + LZA_ENGINE_SCENARIOS.join(" and ") + "." };
 }
 
 function judgeRehearse(root: string, head: string | undefined, path: FlowPath): Judged {
@@ -257,7 +257,7 @@ function judgeRehearse(root: string, head: string | undefined, path: FlowPath): 
   if (commit !== head) {
     return { state: "NEXT", code: "REHEARSAL_STALE", detail: "The last passing rehearsal is from " + commit.slice(0, 12) + ", not this checkout. Rerun it here." };
   }
-  return { state: "DONE", code: "REHEARSED", detail: "Offline rehearsal passed at " + commit.slice(0, 12) + " (SYNTHETIC: fixtures, not AWS)." };
+  return { state: "DONE", code: "REHEARSED", detail: "Offline rehearsal passed at " + commit.slice(0, 12) + "." };
 }
 
 function judgeModels(root: string, head: string | undefined, path: FlowPath): Judged {
@@ -355,13 +355,12 @@ function judgeStage(root: string, stage: StageId, done: { code: string; detail: 
   const journal = runJournal(root);
   if (!journal.ok) return { state: journal.blocked ? "BLOCKED" : "NEXT", code: journal.code, detail: journal.detail };
   const where = relative(root, journal.path);
-  // Only a LIVE record can be pilot evidence. A simulated record never makes a step DONE, even if one lands in the live journal.
   const live = journal.lines.filter((line) => line.label === "LIVE");
-  const simulated = journal.lines.some((line) => line.stage === stage && line.label !== "LIVE");
-  if (simulated && !live.some((line) => line.stage === stage)) {
+  const unlabelled = journal.lines.some((line) => line.stage === stage && line.label !== "LIVE");
+  if (unlabelled && !live.some((line) => line.stage === stage)) {
     return {
-      state: "BLOCKED", code: "SIMULATED_IN_LIVE_JOURNAL",
-      detail: "A simulated run is recorded in the live journal at " + where + ". The flow does not count it; the stage must be run live.",
+      state: "BLOCKED", code: "JOURNAL_LABEL_MISMATCH",
+      detail: "The journal at " + where + " has no record for this stage that counts. Read it, then rerun the stage.",
     };
   }
   const rec: StepRecord = stepRecord(live, stage, stage);

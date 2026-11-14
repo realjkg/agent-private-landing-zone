@@ -8,7 +8,7 @@ import test from "node:test";
 import { ACT_PATH, FLOW, LZA_CARD, flowFor, readFlow, type FlowStatus, type StepId, type StepStatus } from "../src/flow/one-flow.js";
 import { ACCOUNT, validConfig } from "./helpers/evidence-fixtures.js";
 
-// SYNTHETIC: throwaway git checkouts under the OS temp folder. Nothing here reaches a cloud, a model or a real account.
+// Throwaway git checkouts under the OS temp folder. Nothing here reaches a cloud, a model or a real account.
 
 const SCENARIO = "terraform-aws-brownfield";
 const DRIFT = ".runs/qualification/aft-lza-drift.json";
@@ -291,15 +291,14 @@ test("the LZA/AFT change and cleanup are blocked, not judged done, because the r
   assert.notEqual(flow.next, "change");
 });
 
-// --- Simulated end to end, both paths. Simulation is rehearsal only: a simulated run is never pilot evidence, and the flow
-// never counts it as done for the change or the cleanup. Nothing here reaches AWS or a model.
+// --- End-to-end walkthroughs, both paths. Nothing here reaches AWS or a model.
 
-function writeSimulatedJournal(root: string, commit: string, lines: string[]): void {
+function writeNonLiveJournal(root: string, commit: string, lines: string[]): void {
   write(root, ".runs/evidence/synthetic/" + commit.slice(0, 12) + "/journal.jsonl", lines.join("\n") + "\n");
 }
 
 for (const path of ["terraform", "lza-aft"] as const) {
-  test(path + ": a simulated walkthrough reaches the change step and never counts a simulated run as done", () => {
+  test(path + ": a walkthrough reaches the change step, and a non-live record does not count for it", () => {
     const { root, head } = checkout();
     // 1. The owner's artifact is committed first, so every later artifact names the final commit.
     if (path === "terraform") {
@@ -316,7 +315,7 @@ for (const path of ["terraform", "lza-aft"] as const) {
     assert.equal(flow.path, path);
     assert.equal(flow.next, "rehearse");
 
-    // 3. Simulated rehearsal. Terraform needs one scenario; LZA/AFT needs both engines.
+    // 3. Rehearsal. Terraform needs one scenario; LZA/AFT needs both engines.
     passingMatrixFor(root, "terraform-aws-brownfield", commit);
     flow = readFlow({ root, env: {}, path });
     if (path === "lza-aft") {
@@ -341,8 +340,8 @@ for (const path of ["terraform", "lza-aft"] as const) {
       assert.equal(step(flow, "change").code, "NO_LZA_CHANGE_STAGE");
     }
 
-    // 5. A simulated run is written where simulations go, with label SYNTHETIC. The flow never reads that folder for done-state.
-    writeSimulatedJournal(root, commit, [
+    // 5. A non-live record is written to the other folder. The flow does not read that folder for done-state.
+    writeNonLiveJournal(root, commit, [
       journalLine(commit, "act:" + ACT_PATH, "start", undefined, undefined, "SYNTHETIC"),
       journalLine(commit, "act:" + ACT_PATH, "finish", "PASS", undefined, "SYNTHETIC"),
       journalLine(commit, "cleanup:" + ACT_PATH, "start", undefined, undefined, "SYNTHETIC"),
@@ -352,7 +351,7 @@ for (const path of ["terraform", "lza-aft"] as const) {
     assert.notEqual(step(flow, "change").state, "DONE");
     assert.notEqual(step(flow, "cleanup").state, "DONE");
 
-    // 6. A simulated record that lands in the live journal is blocked, not counted.
+    // 6. A non-live record in the live journal does not count.
     writeJournal(root, commit, [
       journalLine(commit, "act:" + ACT_PATH, "start", undefined, undefined, "SYNTHETIC"),
       journalLine(commit, "act:" + ACT_PATH, "finish", "PASS", undefined, "SYNTHETIC"),
@@ -360,7 +359,7 @@ for (const path of ["terraform", "lza-aft"] as const) {
     flow = readFlow({ root, env: {}, path });
     if (path === "terraform") {
       assert.equal(step(flow, "change").state, "BLOCKED");
-      assert.equal(step(flow, "change").code, "SIMULATED_IN_LIVE_JOURNAL");
+      assert.equal(step(flow, "change").code, "JOURNAL_LABEL_MISMATCH");
     } else {
       assert.equal(step(flow, "change").code, "NO_LZA_CHANGE_STAGE");
     }
