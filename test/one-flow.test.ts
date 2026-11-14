@@ -303,6 +303,36 @@ function lzaReady(): { root: string; commit: string } {
   return { root, commit };
 }
 
+function liveMatrixFor(root: string, scenario: string, commit: string): void {
+  const id = scenario === "cdk-aws-brownfield" ? "dddddddd" : "ffffffff";
+  write(root, ".runs/qualification/private-agent-matrix/matrix-" + id + "-bbbb-4ccc-8ddd-eeeeeeeeeeee.json", JSON.stringify({
+    mode: "LIVE_PRIVATE_MODELS", passed: true, sourceCommit: commit, results: [{ id: scenario, converged: true }],
+  }));
+}
+
+test("LZA/AFT: the models step needs a live private-model pass for both engines at this commit", () => {
+  const { root, commit } = lzaReady();
+  let models = step(readFlow({ root, env: {}, path: "lza-aft" }), "models");
+  assert.equal(models.state, "NEXT");
+  assert.equal(models.code, "MODELS_NOT_CHECKED");
+  assert.match(models.detail, /cdk-aws-brownfield and terraform-aws-brownfield/);
+
+  // The offline rehearsals that lzaReady wrote do not count as live model evidence.
+  liveMatrixFor(root, "cdk-aws-brownfield", commit);
+  models = step(readFlow({ root, env: {}, path: "lza-aft" }), "models");
+  assert.equal(models.state, "NEXT");
+  assert.match(models.detail, /terraform-aws-brownfield/);
+  assert.doesNotMatch(models.detail, /cdk-aws-brownfield/);
+
+  liveMatrixFor(root, "terraform-aws-brownfield", "0".repeat(40));
+  assert.equal(step(readFlow({ root, env: {}, path: "lza-aft" }), "models").state, "NEXT", "a pass at another commit does not count");
+
+  liveMatrixFor(root, "terraform-aws-brownfield", commit);
+  models = step(readFlow({ root, env: {}, path: "lza-aft" }), "models");
+  assert.equal(models.state, "DONE");
+  assert.equal(models.code, "MODELS_REHEARSED");
+});
+
 test("LZA/AFT: the change step is judged from the live aws-aft-lza journal record", () => {
   const { root, commit } = lzaReady();
   let flow = readFlow({ root, env: {}, path: "lza-aft" });
